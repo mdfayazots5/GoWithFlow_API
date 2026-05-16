@@ -2,7 +2,7 @@ namespace GoWithFlow.API.Constants;
 
 public static class ApiRoutes
 {
-	public const string VersionPrefix = "api/v{version:apiVersion}";
+	public const string VersionPrefix = "api";
 
 	public static class Auth
 	{
@@ -66,7 +66,7 @@ public static class ApiRoutes
 		public const string End = "{sessionId:long}/end";
 		public const string History = "history";
 		public const string Leave = "{sessionId:long}/leave";
-		public const string CompleteAbsolute = "~/" + VersionPrefix + "/sessions/{sessionId:long}/complete";
+		public const string CompleteAbsolute = "~/api/sessions/{sessionId:long}/complete";
 	}
 
 	public static class LiveSession

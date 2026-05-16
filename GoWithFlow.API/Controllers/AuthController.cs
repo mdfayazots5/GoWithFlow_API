@@ -8,7 +8,6 @@ using Microsoft.AspNetCore.RateLimiting;
 namespace GoWithFlow.API.Controllers;
 
 [ApiController]
-[ApiVersion("1.0")]
 [Route(ApiRoutes.Auth.Base)]
 [EnableRateLimiting(RateLimitPolicyNames.AuthEndpoints)]
 public sealed class AuthController : ControllerBase

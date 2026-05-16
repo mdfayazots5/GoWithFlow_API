@@ -8,7 +8,6 @@ using Microsoft.AspNetCore.Mvc;
 namespace GoWithFlow.API.Controllers;
 
 [ApiController]
-[ApiVersion("1.0")]
 [Authorize(Policy = AuthorizationPolicies.ActiveUser)]
 [Route(ApiRoutes.Script.Base)]
 public sealed class ScriptController : ControllerBase
