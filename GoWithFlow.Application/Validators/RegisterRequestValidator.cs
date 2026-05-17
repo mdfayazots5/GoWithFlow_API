@@ -20,6 +20,11 @@ public sealed class RegisterRequestValidator : AbstractValidator<RegisterRequest
 			.EmailAddress()
 			.When(request => string.IsNullOrWhiteSpace(request.Email) == false);
 
+		RuleFor(request => request.Password)
+			.NotEmpty()
+			.MinimumLength(6)
+			.MaximumLength(100);
+
 		RuleFor(request => request.AgeGroup)
 			.IsInEnum();
 

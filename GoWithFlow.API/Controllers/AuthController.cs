@@ -19,21 +19,12 @@ public sealed class AuthController : ControllerBase
 		_authService = authService;
 	}
 
-	[HttpPost(ApiRoutes.Auth.SendOtp)]
-	[ProducesResponseType(StatusCodes.Status200OK)]
-	[ProducesResponseType(StatusCodes.Status400BadRequest)]
-	public async Task<IActionResult> SendOtpAsync([FromBody] SendOtpRequestDto dto, CancellationToken cancellationToken)
-	{
-		var response = await _authService.SendOtpAsync(dto, cancellationToken);
-		return BuildActionResult(response, StatusCodes.Status200OK);
-	}
-
-	[HttpPost(ApiRoutes.Auth.VerifyOtp)]
+	[HttpPost(ApiRoutes.Auth.Login)]
 	[ProducesResponseType(StatusCodes.Status200OK)]
 	[ProducesResponseType(StatusCodes.Status401Unauthorized)]
-	public async Task<IActionResult> VerifyOtpAsync([FromBody] VerifyOtpRequestDto dto, CancellationToken cancellationToken)
+	public async Task<IActionResult> LoginAsync([FromBody] LoginRequestDto dto, CancellationToken cancellationToken)
 	{
-		var response = await _authService.VerifyOtpAsync(dto, cancellationToken);
+		var response = await _authService.LoginAsync(dto, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status401Unauthorized);
 	}
 
@@ -84,7 +75,7 @@ public sealed class AuthController : ControllerBase
 		}
 
 		if (message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase) ||
-			message.Contains("otp", StringComparison.OrdinalIgnoreCase) ||
+			message.Contains("invalid credentials", StringComparison.OrdinalIgnoreCase) ||
 			message.Contains("refresh token", StringComparison.OrdinalIgnoreCase) ||
 			message.Contains("authentication", StringComparison.OrdinalIgnoreCase))
 		{

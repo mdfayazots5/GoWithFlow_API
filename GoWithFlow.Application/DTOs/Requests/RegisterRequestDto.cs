@@ -10,6 +10,8 @@ public sealed class RegisterRequestDto
 
 	public string? Email { get; set; }
 
+	public string Password { get; set; } = string.Empty;
+
 	public AgeGroupType AgeGroup { get; set; }
 
 	public PreferredHintLanguageType PreferredHintLanguage { get; set; }

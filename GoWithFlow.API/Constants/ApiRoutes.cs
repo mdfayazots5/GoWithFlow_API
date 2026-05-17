@@ -7,8 +7,7 @@ public static class ApiRoutes
 	public static class Auth
 	{
 		public const string Base = VersionPrefix + "/auth";
-		public const string SendOtp = "send-otp";
-		public const string VerifyOtp = "verify-otp";
+		public const string Login = "login";
 		public const string Register = "register";
 		public const string RefreshToken = "refresh-token";
 		public const string Logout = "logout";

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using AutoMapper;
 using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests;
@@ -15,97 +16,43 @@ public sealed class AuthService : IAuthService
 {
 	private readonly IMapper _mapper;
 	private readonly IUserRepository _userRepository;
-	private readonly IOtpRepository _otpRepository;
 	private readonly IRefreshTokenRepository _refreshTokenRepository;
 	private readonly IJwtService _jwtService;
-	private readonly IOtpService _otpService;
 	private readonly JwtSettings _jwtSettings;
-	private readonly OtpSettings _otpSettings;
 
 	public AuthService(
 		IMapper mapper,
 		IUserRepository userRepository,
-		IOtpRepository otpRepository,
 		IRefreshTokenRepository refreshTokenRepository,
 		IJwtService jwtService,
-		IOtpService otpService,
-		IOptions<JwtSettings> jwtOptions,
-		IOptions<OtpSettings> otpOptions)
+		IOptions<JwtSettings> jwtOptions)
 	{
 		_mapper = mapper;
 		_userRepository = userRepository;
-		_otpRepository = otpRepository;
 		_refreshTokenRepository = refreshTokenRepository;
 		_jwtService = jwtService;
-		_otpService = otpService;
 		_jwtSettings = jwtOptions.Value;
-		_otpSettings = otpOptions.Value;
 	}
 
-	public async Task<ApiResponse<OtpResponseDto>> SendOtpAsync(SendOtpRequestDto dto, CancellationToken cancellationToken = default)
+	public async Task<ApiResponse<AuthResponseDto>> LoginAsync(LoginRequestDto dto, CancellationToken cancellationToken = default)
 	{
-		var otpCode = _otpService.GenerateOtp();
-		var expiresAt = DateTime.Now.AddMinutes(_otpSettings.ExpiryMinutes);
+		var user = await _userRepository.GetByMobileNumberAsync(dto.MobileNumber, cancellationToken);
 
-		var otpVerification = new OtpVerification
+		if (user is null || string.IsNullOrWhiteSpace(user.PasswordHash) || !VerifyPassword(dto.Password, user.PasswordHash))
 		{
-			MobileNumber = dto.MobileNumber,
-			OtpCode = otpCode,
-			ExpiresAt = expiresAt,
-			CreatedBy = "System",
-			IPAddress = "127.0.0.1"
-		};
-
-		await _otpRepository.InsertOtpAsync(otpVerification, cancellationToken);
-
-		var response = new OtpResponseDto
-		{
-			Sent = true,
-			ExpiresIn = _otpSettings.ExpiryMinutes * 60,
-			MobileNumber = dto.MobileNumber,
-			OtpCode = otpCode
-		};
-
-		return ApiResponse<OtpResponseDto>.SuccessResult(response, "OTP sent successfully.");
-	}
-
-	public async Task<ApiResponse<AuthResponseDto>> VerifyOtpAsync(VerifyOtpRequestDto dto, CancellationToken cancellationToken = default)
-	{
-		var verificationResult = await _otpRepository.VerifyOtpAsync(dto.MobileNumber, dto.OtpCode, "System", "127.0.0.1", cancellationToken);
-
-		if (verificationResult.IsValid == false)
-		{
-			return ApiResponse<AuthResponseDto>.FailureResult(new[] { "Invalid or expired OTP." }, "OTP verification failed.");
+			return ApiResponse<AuthResponseDto>.FailureResult(new[] { "Invalid mobile number or password." }, "Authentication failed.");
 		}
 
-		if (verificationResult.UserId is null or <= 0)
+		if (!user.IsActive)
 		{
-			return ApiResponse<AuthResponseDto>.SuccessResult(
-				new AuthResponseDto
-				{
-					AccessToken = string.Empty,
-					RefreshToken = string.Empty,
-					ExpiresIn = _jwtSettings.AccessTokenExpiryMinutes * 60,
-					UserId = 0,
-					FullName = string.Empty,
-					Role = UserRoleType.USER.ToString(),
-					AvatarUrl = null
-				},
-				"OTP verified. Registration required.");
-		}
-
-		var user = await _userRepository.GetByUserIdAsync(verificationResult.UserId.Value, cancellationToken);
-
-		if (user is null)
-		{
-			return ApiResponse<AuthResponseDto>.FailureResult(new[] { "User account was not found." }, "Authentication failed.");
+			return ApiResponse<AuthResponseDto>.FailureResult(new[] { "Account is inactive." }, "Authentication failed.");
 		}
 
 		await _userRepository.UpdateLastLoginAsync(user.UserId, user.FullName, "127.0.0.1", cancellationToken);
 
 		var authResponse = await CreateAuthResponseAsync(user, cancellationToken);
 
-		return ApiResponse<AuthResponseDto>.SuccessResult(authResponse, "OTP verified successfully.");
+		return ApiResponse<AuthResponseDto>.SuccessResult(authResponse, "Login successful.");
 	}
 
 	public async Task<ApiResponse<UserProfileResponseDto>> RegisterAsync(RegisterRequestDto dto, CancellationToken cancellationToken = default)
@@ -122,6 +69,7 @@ public sealed class AuthService : IAuthService
 			FullName = dto.FullName.Trim(),
 			MobileNumber = dto.MobileNumber.Trim(),
 			Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim(),
+			PasswordHash = HashPassword(dto.Password),
 			AgeGroup = MapAgeGroup(dto.AgeGroup),
 			PreferredHintLanguage = dto.PreferredHintLanguage.ToString(),
 			AvatarUrl = string.IsNullOrWhiteSpace(dto.AvatarUrl) ? null : dto.AvatarUrl.Trim(),
@@ -206,6 +154,23 @@ public sealed class AuthService : IAuthService
 			Role = user.Role,
 			AvatarUrl = user.AvatarUrl
 		};
+	}
+
+	private static string HashPassword(string password)
+	{
+		byte[] salt = RandomNumberGenerator.GetBytes(16);
+		byte[] hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 100_000, HashAlgorithmName.SHA256, 32);
+		return $"{Convert.ToBase64String(salt)}:{Convert.ToBase64String(hash)}";
+	}
+
+	private static bool VerifyPassword(string password, string storedHash)
+	{
+		var parts = storedHash.Split(':');
+		if (parts.Length != 2) return false;
+		byte[] salt = Convert.FromBase64String(parts[0]);
+		byte[] expectedHash = Convert.FromBase64String(parts[1]);
+		byte[] actualHash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 100_000, HashAlgorithmName.SHA256, 32);
+		return CryptographicOperations.FixedTimeEquals(expectedHash, actualHash);
 	}
 
 	private static string MapAgeGroup(AgeGroupType ageGroup)

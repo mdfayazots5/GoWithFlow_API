@@ -12,9 +12,7 @@ public sealed class GoWithFlowDbContext : DbContext
 
 	public DbSet<User> Users => Set<User>();
 
-	public DbSet<OtpVerification> OtpVerifications => Set<OtpVerification>();
-
-	public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
 	public DbSet<AdminNote> AdminNotes => Set<AdminNote>();
 

@@ -14,6 +14,7 @@ using GoWithFlow.Application.Mappings;
 using GoWithFlow.Application.Services;
 using GoWithFlow.Application.Settings;
 using GoWithFlow.Application.Validators;
+
 using GoWithFlow.Infrastructure.Data;
 using GoWithFlow.Infrastructure.ExternalServices;
 using GoWithFlow.Infrastructure.Repositories;
@@ -54,7 +55,6 @@ builder.Host.UseSerilog((context, services, configuration) =>
 });
 
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("JwtSettings"));
-builder.Services.Configure<OtpSettings>(builder.Configuration.GetSection("OtpSettings"));
 builder.Services.Configure<FileStorageSettings>(builder.Configuration.GetSection("FileStorage"));
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddMemoryCache();
@@ -244,7 +244,6 @@ builder.Services.AddScoped<IAuthorizationHandler, ActiveUserRequirementHandler>(
 
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
-builder.Services.AddScoped<IOtpRepository, OtpRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IAdminRepository, AdminRepository>();
 builder.Services.AddScoped<IScriptRepository, ScriptRepository>();
@@ -262,7 +261,6 @@ builder.Services.AddScoped<IRepracticeService, RepracticeService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IUserDashboardService, UserDashboardService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
-builder.Services.AddTransient<IOtpService, OtpService>();
 builder.Services.AddScoped<IExcelParserService, ExcelParserService>();
 builder.Services.AddScoped<IExcelExportService, ExcelExportService>();
 
