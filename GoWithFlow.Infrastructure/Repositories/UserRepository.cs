@@ -21,18 +21,28 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 
 	public async Task<User?> GetByMobileNumberAsync(string mobileNumber, CancellationToken cancellationToken = default)
 	{
-		return await DbContext.Users
-			.FromSqlInterpolated($"EXEC dbo.uspGetUserByMobileNumber @MobileNumber = {mobileNumber}")
-			.AsNoTracking()
-			.FirstOrDefaultAsync(cancellationToken);
+		var connection = DbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetUserByMobileNumber");
+		command.Parameters.Add(CreateParameter("@MobileNumber", mobileNumber));
+
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+		return await reader.ReadAsync(cancellationToken) ? MapUserFromReader(reader) : null;
 	}
 
 	public async Task<User?> GetByUserIdAsync(long userId, CancellationToken cancellationToken = default)
 	{
-		return await DbContext.Users
-			.FromSqlInterpolated($"EXEC dbo.uspGetUserByUserId @UserId = {userId}")
-			.AsNoTracking()
-			.FirstOrDefaultAsync(cancellationToken);
+		var connection = DbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetUserByUserId");
+		command.Parameters.Add(CreateParameter("@UserId", userId));
+
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+		return await reader.ReadAsync(cancellationToken) ? MapUserFromReader(reader) : null;
 	}
 
 	public async Task<long> InsertUserAsync(User user, CancellationToken cancellationToken = default)
@@ -519,6 +529,34 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		}
 
 		return items;
+	}
+
+	private static User MapUserFromReader(DbDataReader reader)
+	{
+		return new User
+		{
+			UserId = GetInt64(reader, "UserId"),
+			FullName = GetString(reader, "FullName"),
+			MobileNumber = GetString(reader, "MobileNumber"),
+			Email = GetNullableString(reader, "Email"),
+			PasswordHash = GetNullableString(reader, "PasswordHash"),
+			AgeGroup = GetString(reader, "AgeGroup"),
+			PreferredHintLanguage = GetString(reader, "PreferredHintLanguage"),
+			AvatarUrl = GetNullableString(reader, "AvatarUrl"),
+			GroupCode = GetNullableString(reader, "GroupCode"),
+			Role = GetString(reader, "Role"),
+			DailyStreakCount = GetInt32(reader, "DailyStreakCount"),
+			TotalSessionsPlayed = GetInt32(reader, "TotalSessionsPlayed"),
+			LastLoginDate = GetNullableDateTime(reader, "LastLoginDate"),
+			IsActive = GetBoolean(reader, "IsActive"),
+			RegistrationDate = GetDateTime(reader, "RegistrationDate"),
+			CreatedBy = GetString(reader, "CreatedBy"),
+			DateCreated = GetDateTime(reader, "DateCreated"),
+			IPAddress = GetString(reader, "IPAddress"),
+			UpdatedBy = GetNullableString(reader, "UpdatedBy"),
+			LastUpdated = GetNullableDateTime(reader, "LastUpdated"),
+			IsDeleted = GetBoolean(reader, "IsDeleted")
+		};
 	}
 
 	private static DbCommand CreateStoredProcedureCommand(DbConnection connection, string storedProcedureName)
