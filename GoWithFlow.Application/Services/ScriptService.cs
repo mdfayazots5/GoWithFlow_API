@@ -56,7 +56,7 @@ public sealed class ScriptService : IScriptService
 			ValidCount = parseResult.ValidCount,
 			ErrorCount = parseResult.ErrorCount,
 			ErrorRows = parseResult.ErrorRows,
-			ValidRows = parseResult.ValidRows.Take(5).ToList()
+			ValidRows = parseResult.ValidRows
 		};
 
 		return ApiResponse<ExcelValidationResponseDto>.SuccessResult(response, "Excel validation completed successfully.");

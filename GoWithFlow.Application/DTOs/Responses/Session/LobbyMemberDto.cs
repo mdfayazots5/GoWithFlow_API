@@ -10,6 +10,8 @@ public sealed class LobbyMemberDto
 
 	public byte SlotIndex { get; set; }
 
+	public string SlotName { get; set; } = string.Empty;
+
 	public bool IsReady { get; set; }
 
 	public bool IsHost { get; set; }

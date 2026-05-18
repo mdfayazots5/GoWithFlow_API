@@ -135,6 +135,8 @@ public sealed class SessionRepository : ISessionRepository
 			JoinCode = GetString(reader, "JoinCode"),
 			SessionMode = GetString(reader, "SessionMode"),
 			ScriptTitle = GetString(reader, "ScriptTitle"),
+			MaxMembers = GetByte(reader, "MaxMembers"),
+			SessionDuration = GetInt32(reader, "SessionDuration"),
 			CanStart = false
 		};
 
@@ -148,6 +150,7 @@ public sealed class SessionRepository : ISessionRepository
 					FullName = GetString(reader, "FullName"),
 					AvatarUrl = GetNullableString(reader, "AvatarUrl"),
 					SlotIndex = GetByte(reader, "SlotIndex"),
+					SlotName = GetString(reader, "SlotName"),
 					IsReady = GetBoolean(reader, "IsReady"),
 					IsHost = GetBoolean(reader, "IsHost")
 				});
@@ -293,6 +296,41 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
 		await command.ExecuteNonQueryAsync(cancellationToken);
+	}
+
+	public async Task<(bool Exists, string Status, bool IsExpired, int CurrentMemberCount, int MaxMembers)?> CheckJoinCodeStatusAsync(string joinCode, CancellationToken cancellationToken = default)
+	{
+		var connection = _dbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		await using var command = connection.CreateCommand();
+		command.CommandType = CommandType.Text;
+		command.CommandText = """
+			SELECT TOP (1)
+			    ses.Status,
+			    CAST(CASE WHEN ses.RoomExpiresAt IS NOT NULL AND ses.RoomExpiresAt <= GETDATE() THEN 1 ELSE 0 END AS BIT) AS IsExpired,
+			    ses.MaxMembers,
+			    COUNT(sem.SessionMemberId) AS CurrentMemberCount
+			FROM dbo.tblSession AS ses
+			LEFT JOIN dbo.tblSessionMember AS sem
+			    ON sem.SessionId = ses.SessionId AND sem.IsDeleted = 0 AND sem.IsActive = 1
+			WHERE ses.JoinCode  = @JoinCode
+			  AND ses.IsDeleted = 0
+			GROUP BY ses.Status, ses.RoomExpiresAt, ses.MaxMembers
+			""";
+		command.Parameters.Add(CreateParameter("@JoinCode", joinCode));
+
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+		if (!await reader.ReadAsync(cancellationToken))
+			return null;
+
+		return (
+			Exists: true,
+			Status: GetString(reader, "Status"),
+			IsExpired: GetBoolean(reader, "IsExpired"),
+			CurrentMemberCount: GetInt32(reader, "CurrentMemberCount"),
+			MaxMembers: reader["MaxMembers"] == DBNull.Value ? 0 : Convert.ToInt32(reader["MaxMembers"]));
 	}
 
 	private async Task<(long SessionId, string JoinCode)> InsertSessionInternalAsync(Session session, DbTransaction transaction, CancellationToken cancellationToken)

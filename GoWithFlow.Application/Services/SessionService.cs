@@ -115,7 +115,21 @@ public sealed class SessionService : ISessionService
 
 		if (preview is null)
 		{
-			return ApiResponse<SessionPreviewResponseDto>.FailureResult(new[] { "Join code is invalid or expired." }, "Session preview not found.");
+			var reason = await _sessionRepository.CheckJoinCodeStatusAsync(normalizedJoinCode, cancellationToken);
+
+			if (reason is null)
+				return ApiResponse<SessionPreviewResponseDto>.FailureResult(new[] { "This join code does not exist. Please check and try again." }, "Session not found.");
+
+			if (reason.Value.IsExpired)
+				return ApiResponse<SessionPreviewResponseDto>.FailureResult(new[] { "This session has expired. Ask the host to create a new session." }, "Session expired.");
+
+			if (reason.Value.Status is "ENDED" or "CANCELLED")
+				return ApiResponse<SessionPreviewResponseDto>.FailureResult(new[] { $"This session has already {reason.Value.Status.ToLower()}." }, "Session unavailable.");
+
+			if (reason.Value.CurrentMemberCount >= reason.Value.MaxMembers)
+				return ApiResponse<SessionPreviewResponseDto>.FailureResult(new[] { "This session is full. No available slots." }, "Session full.");
+
+			return ApiResponse<SessionPreviewResponseDto>.FailureResult(new[] { "This session is no longer available." }, "Session unavailable.");
 		}
 
 		return ApiResponse<SessionPreviewResponseDto>.SuccessResult(preview, "Session preview retrieved successfully.");

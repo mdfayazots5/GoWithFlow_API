@@ -27,4 +27,6 @@ public interface ISessionRepository
 	Task<(bool IsValid, long SessionId, string SessionName, string Status, int CurrentMemberCount)?> ValidateJoinCodeAsync(string joinCode, CancellationToken cancellationToken = default);
 
 	Task UpdateSessionMemberLeftAsync(long sessionId, long userId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
+
+	Task<(bool Exists, string Status, bool IsExpired, int CurrentMemberCount, int MaxMembers)?> CheckJoinCodeStatusAsync(string joinCode, CancellationToken cancellationToken = default);
 }
