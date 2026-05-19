@@ -1,0 +1,204 @@
+You are a Senior ASP.NET Core architect working on the Coolzo / CoolElite project.
+
+The backend is ASP.NET Core Clean Architecture + CQRS + MediatR + EF Core 8+.
+The codebase is at: C:\Live\Coolzo\Backend
+
+The goal is to make the API work correctly with BOTH SQL Server and PostgreSQL 
+without any code change — only the config value "DatabaseProvider" switches the provider.
+
+---
+
+CURRENT STATE:
+- The API was built targeting SQL Server only.
+- We are now adding PostgreSQL support as an alternate environment.
+- No existing working code should break.
+- SQL Server remains the production provider.
+- PostgreSQL must work identically for all features.
+
+---
+
+YOUR TASK — Make the following API-level changes:
+
+===========================================================
+CHANGE 1 — Provider Switch in Program.cs / DbContext Registration
+===========================================================
+- Read DatabaseProvider from appsettings.json ("SqlServer" or "PostgreSQL")
+- Register DbContext with the correct provider based on that config key
+- Connection strings are separate: ConnectionStrings:SqlServer and ConnectionStrings:PostgreSQL
+- If DatabaseProvider is missing or invalid, throw a clear startup exception
+
+Pattern to implement:
+var provider = builder.Configuration["DatabaseProvider"];
+if (provider == "PostgreSQL")
+    services.AddDbContext<AppDbContext>(o => o.UseNpgsql(connString));
+else
+    services.AddDbContext<AppDbContext>(o => o.UseSqlServer(connString));
+
+===========================================================
+CHANGE 2 — Fix DateTime / Timestamp Handling for Npgsql
+===========================================================
+- Add this switch at the very top of Program.cs before builder is created:
+  AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+- This prevents Npgsql from throwing on DateTime columns that are not DateTimeOffset.
+- Do NOT change entity property types from DateTime to DateTimeOffset — keep all entities unchanged.
+
+===========================================================
+CHANGE 3 — EF Core Entity Configuration — Column Types
+===========================================================
+In all entity configurations (IEntityTypeConfiguration<T> files), add explicit column type mappings 
+that are provider-aware using a helper. 
+
+For every decimal / money column:
+- SQL Server: HasColumnType("money")  
+- PostgreSQL: HasColumnType("numeric(19,4)")
+
+Create a provider-aware helper:
+public static class ColumnTypeHelper
+{
+    public static string Money(string provider) 
+        => provider == "PostgreSQL" ? "numeric(19,4)" : "money";
+    
+    public static string LargeText(string provider)
+        => provider == "PostgreSQL" ? "text" : "nvarchar(max)";
+    
+    public static string Json(string provider)
+        => provider == "PostgreSQL" ? "jsonb" : "nvarchar(max)";
+}
+
+Inject the provider string into OnModelCreating via a property on DbContext:
+public string DatabaseProvider { get; set; } = "SqlServer";
+
+Use ColumnTypeHelper inside entity configurations.
+
+===========================================================
+CHANGE 4 — Fix String / Text Search (LIKE vs ILIKE)
+===========================================================
+- SQL Server LIKE is case-insensitive by default.
+- PostgreSQL LIKE is case-sensitive. ILike must be used for case-insensitive search.
+
+Create an extension method:
+public static class QueryableExtensions
+{
+    public static IQueryable<T> WhereNameContains<T>(
+        this IQueryable<T> query, 
+        Expression<Func<T, string>> selector, 
+        string searchTerm,
+        string provider)
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm)) return query;
+        
+        if (provider == "PostgreSQL")
+            return query.Where(e => EF.Functions.ILike(
+                EF.Property<string>(e, GetPropertyName(selector)), 
+                $"%{searchTerm}%"));
+        
+        return query.Where(e => EF.Property<string>(e, GetPropertyName(selector))
+            .Contains(searchTerm));
+    }
+}
+
+Apply this wherever search/filter queries use .Contains() on string fields.
+
+===========================================================
+CHANGE 5 — Remove Raw SQL with T-SQL Syntax
+===========================================================
+Scan the entire Infrastructure layer for any:
+- context.Database.ExecuteSqlRaw(...)
+- context.Database.ExecuteSqlInterpolated(...)
+- FromSqlRaw(...)
+
+For each one found:
+- If it contains GETDATE() → replace with provider-aware: provider == "PostgreSQL" ? "NOW()" : "GETDATE()"
+- If it contains ISNULL( → replace with COALESCE( (works on both)
+- If it contains TOP n → replace with LIMIT n for PostgreSQL or abstract it
+- If it contains WITH (NOLOCK) → remove entirely for PostgreSQL path
+- If it contains SET NOCOUNT ON / SET XACT_ABORT ON → remove for PostgreSQL path
+- Best approach: convert raw SQL calls to EF Core LINQ equivalents wherever possible.
+  Only keep raw SQL if LINQ cannot express the query.
+
+===========================================================
+CHANGE 6 — JSON Column Handling
+===========================================================
+Columns that store JSON (SRNotes, JobReport observations, metadata fields, config values):
+- SQL Server: stored as nvarchar(max)
+- PostgreSQL: should use jsonb for correct querying
+
+In entity configurations, use ColumnTypeHelper.Json(provider) for these columns.
+Do not change the C# property type — keep as string.
+EF Core will handle serialization; the column type changes per provider.
+
+===========================================================
+CHANGE 7 — Migrations — Separate Per Provider
+===========================================================
+Set up two migration directories:
+- Migrations/SqlServer/
+- Migrations/PostgreSQL/
+
+In DbContext, override the migrations assembly to point to the correct folder 
+based on the provider.
+
+Add two CLI commands to README or a script:
+# SQL Server migration
+dotnet ef migrations add <Name> --context AppDbContext -- --provider SqlServer --output-dir Migrations/SqlServer
+
+# PostgreSQL migration  
+dotnet ef migrations add <Name> --context AppDbContext -- --provider PostgreSQL --output-dir Migrations/PostgreSQL
+
+===========================================================
+CHANGE 8 — appsettings.json Structure
+===========================================================
+Ensure appsettings.json has this structure:
+
+{
+  "DatabaseProvider": "SqlServer",
+  "ConnectionStrings": {
+    "SqlServer": "Server=...;Database=CoolzoDB;...",
+    "PostgreSQL": "Host=localhost;Port=5432;Database=coolzodb;Username=...;Password=..."
+  }
+}
+
+appsettings.Development.json can override DatabaseProvider to "PostgreSQL" for local dev.
+
+===========================================================
+CHANGE 9 — Repository Layer — ISNULL / COALESCE Audit
+===========================================================
+In all repository implementations:
+- Replace any ISNULL(x, y) in raw SQL with COALESCE(x, y)
+- Replace any string + concatenation in raw SQL with CONCAT() or parameterized approach
+- Replace any @@ROWCOUNT references with EF Core's return value from SaveChangesAsync()
+
+===========================================================
+CHANGE 10 — Startup Validation
+===========================================================
+Add a startup health check that:
+- Reads DatabaseProvider config
+- Attempts context.Database.CanConnectAsync() on startup
+- Logs which provider is active: "Database provider: PostgreSQL — Connection: OK"
+- Throws descriptive exception if connection fails, naming which provider failed
+
+===========================================================
+
+STANDARDS TO FOLLOW (non-negotiable):
+- Clean Architecture — no DB logic in controllers or application layer
+- All changes go in Infrastructure layer only (DbContext, Repositories, Configurations)
+- Program.cs changes only for registration and switch
+- No hardcoded connection strings anywhere
+- All method names stay exactly the same — mobile API contract is frozen
+- Common response envelope unchanged: { success, statusCode, data, errors, meta }
+- No breaking changes to any existing endpoint
+- Every change must be backward compatible — SQL Server path must work exactly as before
+
+===========================================================
+
+WHAT TO DELIVER:
+1. Updated Program.cs (provider switch + timestamp switch)
+2. ColumnTypeHelper.cs (new utility class)
+3. QueryableExtensions.cs (ILike helper)
+4. Updated AppDbContext.cs (DatabaseProvider property, OnModelCreating with helper)
+5. List of all raw SQL found in repositories and their fixed versions
+6. Updated appsettings.json structure
+7. Migration setup instructions for both providers
+8. Startup health check implementation
+
+Review every Infrastructure layer file before making changes. 
+List what you find first, then apply fixes one file at a time.

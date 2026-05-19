@@ -1,0 +1,428 @@
+You are a Senior Database Architect working on the Coolzo / CoolElite project.
+
+The project uses SQL Server as production database and PostgreSQL as alternate environment.
+All database objects must work correctly on PostgreSQL while the SQL Server versions remain untouched.
+
+Your job is to convert / rewrite all SQL Server database objects to PostgreSQL equivalents,
+following the Coolzo project SQL standards as closely as PostgreSQL allows.
+
+---
+
+COOLZO SQL NAMING STANDARDS (preserve these exactly in PostgreSQL versions):
+- Table prefix: tbl (singular) — tblCustomer, tblServiceRequest
+- SP/Function prefix: usp — uspInsertCustomer, uspGetTechnicianDetailBySearch
+- PK: PK_<TableName>_<ColumnName>
+- FK: FK_<Child>_<ChildCol>_<Parent>_<ParentCol>
+- Default: DF_<TableName>_<ColumnName>
+- Index: IDX_<TableName>_<Col1>_<Col2>
+- Unique: UK_<TableName>_<Col1>_<Col2>
+- All names lowercase in PostgreSQL (PostgreSQL folds unquoted identifiers to lowercase)
+- Use quoted identifiers only where absolutely required
+
+---
+
+CONVERSION RULES — APPLY EVERY ONE WITHOUT EXCEPTION:
+
+===========================================================
+RULE 1 — Data Type Conversions (mandatory replacements)
+===========================================================
+
+SQL Server Type        → PostgreSQL Type
+-------------------------------------------------
+BIGINT IDENTITY(1,1)   → BIGINT GENERATED ALWAYS AS IDENTITY
+INT IDENTITY(1,1)      → INT GENERATED ALWAYS AS IDENTITY
+NVARCHAR(n)            → VARCHAR(n)  [keep same size]
+NVARCHAR(MAX)          → TEXT
+NCHAR(n)               → CHAR(n)
+BIT                    → BOOLEAN
+MONEY                  → NUMERIC(19,4)
+DATETIME               → TIMESTAMP
+DATETIME2              → TIMESTAMP
+SMALLDATETIME          → TIMESTAMP
+UNIQUEIDENTIFIER       → UUID
+VARBINARY(MAX)         → BYTEA
+IMAGE                  → BYTEA
+XML                    → XML  (or TEXT if not querying as XML)
+TINYINT                → SMALLINT
+INT                    → INTEGER
+
+For JSON storage columns (nvarchar(max) used for JSON):
+→ JSONB  (better performance, indexable)
+
+===========================================================
+RULE 2 — Default Value Conversions
+===========================================================
+
+SQL Server Default        → PostgreSQL Default
+-------------------------------------------------
+DEFAULT (GETDATE())       → DEFAULT NOW()
+DEFAULT (NEWID())         → DEFAULT gen_random_uuid()
+DEFAULT (1)  [on BIT]     → DEFAULT TRUE
+DEFAULT (0)  [on BIT]     → DEFAULT FALSE
+DEFAULT (0)  [on INT]     → DEFAULT 0
+DEFAULT ('Admin')         → DEFAULT 'Admin'
+DEFAULT ('127.0.0.1')     → DEFAULT '127.0.0.1'
+
+===========================================================
+RULE 3 — Constraint Syntax Conversions
+===========================================================
+
+SQL Server:
+CONSTRAINT DF_tblCustomer_IsDeleted DEFAULT (0)
+
+PostgreSQL (inline default — named constraints on defaults 
+are not standard in PostgreSQL):
+DEFAULT FALSE
+
+For CHECK constraints — syntax stays the same, supported in PostgreSQL.
+For PK, FK, UNIQUE — syntax stays the same, supported in PostgreSQL.
+
+Named default constraints are NOT supported in PostgreSQL.
+Convert all CONSTRAINT DF_... DEFAULT (...) to just DEFAULT (...) inline.
+
+===========================================================
+RULE 4 — Table Creation Template for PostgreSQL
+===========================================================
+
+Use this exact template for every table:
+
+CREATE TABLE IF NOT EXISTS tbl<entityname>
+(
+    <entityname>id      BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    companyid           INTEGER NOT NULL,
+    siteid              INTEGER NOT NULL,
+    departmentid        INTEGER NULL,
+
+    <businesscolumn1>   VARCHAR(128) NOT NULL,
+    <businesscolumn2>   VARCHAR(64) NULL,
+    <businesscolumn3>   NUMERIC(19,4) NULL,
+
+    tag                 VARCHAR(64) NULL,
+    comments            VARCHAR(256) NULL,
+    displayonweb        BOOLEAN NOT NULL DEFAULT TRUE,
+    ispublished         BOOLEAN NOT NULL DEFAULT TRUE,
+    datepublished       TIMESTAMP NULL,
+    publishedby         VARCHAR(128) NULL,
+    sortorder           INTEGER NOT NULL DEFAULT 0,
+    ipaddress           VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby           VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated         TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby           VARCHAR(128) NULL,
+    lastupdated         TIMESTAMP NULL,
+    deletedby           VARCHAR(128) NULL,
+    datedeleted         TIMESTAMP NULL,
+    isdeleted           BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tbl<entityname>_<entityname>id PRIMARY KEY (<entityname>id)
+);
+
+-- Foreign keys (after table creation)
+ALTER TABLE tbl<entityname>
+    ADD CONSTRAINT fk_tbl<child>_<childcol>_tbl<parent>_<parentcol>
+    FOREIGN KEY (<childcol>) REFERENCES tbl<parent>(<parentcol>);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_tbl<entityname>_<col1> 
+    ON tbl<entityname>(<col1>);
+
+-- Unique constraints
+ALTER TABLE tbl<entityname>
+    ADD CONSTRAINT uk_tbl<entityname>_<col1> UNIQUE (<col1>);
+
+===========================================================
+RULE 5 — Stored Procedures → PostgreSQL Functions
+===========================================================
+
+SQL Server Stored Procedures MUST be rewritten as PostgreSQL functions.
+PostgreSQL uses PL/pgSQL, not T-SQL.
+
+MANDATORY conversions inside every function:
+
+SQL Server T-SQL              → PostgreSQL PL/pgSQL
+----------------------------------------------------
+CREATE OR ALTER PROCEDURE     → CREATE OR REPLACE FUNCTION
+AS BEGIN ... END              → AS $$ BEGIN ... END; $$ LANGUAGE plpgsql;
+SET NOCOUNT ON                → REMOVE (not applicable)
+SET XACT_ABORT ON             → REMOVE (PostgreSQL handles this differently)
+DECLARE @variable TYPE        → variable TYPE;  (inside DECLARE block)
+SET @variable = value         → variable := value;
+SELECT @variable = col FROM   → SELECT col INTO variable FROM
+EXEC usp<Name> @param         → SELECT usp<name>(param)  or CALL usp<name>(param)
+@@ROWCOUNT                    → GET DIAGNOSTICS row_count = ROW_COUNT;
+RAISERROR('msg', 16, 1)       → RAISE EXCEPTION 'msg';
+THROW                         → RAISE;
+ISNULL(x, y)                  → COALESCE(x, y)
+GETDATE()                     → NOW()
+NEWID()                       → gen_random_uuid()
+TOP n                         → LIMIT n  (at end of query)
+WITH (NOLOCK)                 → REMOVE entirely
+PRINT 'message'               → RAISE NOTICE 'message';
+BEGIN TRAN                    → (transaction handled by caller or wrap in BEGIN/EXCEPTION/END)
+COMMIT TRAN                   → COMMIT;
+ROLLBACK TRAN                 → ROLLBACK;
+IF @@TRANCOUNT > 0 ROLLBACK   → REMOVE (PostgreSQL auto-rolls back on exception in function)
++ (string concat)             → ||
+CONVERT(type, value)          → CAST(value AS type)  or value::type
+CAST same syntax              → same
+DATEADD(day, n, date)         → date + INTERVAL 'n days'
+DATEDIFF(day, d1, d2)         → EXTRACT(DAY FROM (d2 - d1))  or (d2::date - d1::date)
+YEAR(date)                    → EXTRACT(YEAR FROM date)
+MONTH(date)                   → EXTRACT(MONTH FROM date)
+CHARINDEX(s, col)             → POSITION(s IN col)
+LEN(col)                      → LENGTH(col)
+SUBSTRING(col, s, l)          → SUBSTRING(col FROM s FOR l)
+ISNUMERIC(x)                  → col ~ '^[0-9]+$'
+OFFSET x ROWS FETCH NEXT y    → LIMIT y OFFSET x
+ROWS ONLY
+
+===========================================================
+RULE 6 — PostgreSQL Function Template (replaces SP template)
+===========================================================
+
+Use this template for every converted function:
+
+-------------------------------------------------------------------------------------------------------------
+-- Created By      : <Developer Name>
+-- Date Created    : <DD Mon YYYY>
+-- Description     : <What this function does>
+-- Usage           : SELECT usp_<action>_<entityname>(<params>);
+-- Input Parameters: <List or NA>
+-- Output Parameters: <List or NA>
+-------------------------------------------------------------------------------------------------------------
+-- Version   Author         Date         Remarks
+-------------------------------------------------------------------------------------------------------------
+-- 1.0       <Name>         <Date>       PostgreSQL conversion from SQL Server SP
+-------------------------------------------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION usp_<action>_<entityname>(
+    p_companyid     INTEGER DEFAULT 0,
+    p_siteid        INTEGER DEFAULT 0,
+    p_createdby     VARCHAR(128) DEFAULT NULL,
+    p_ipaddress     VARCHAR(64) DEFAULT NULL
+)
+RETURNS <return_type>   -- TABLE(...) for result sets, VOID for DML, INTEGER for counts
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_rowcount INTEGER;
+BEGIN
+
+    -- logic here
+
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE;
+
+END;
+$$;
+
+For functions returning result sets use:
+RETURNS TABLE (col1 type, col2 type, ...)
+
+For simple DML (insert/update/delete) use:
+RETURNS VOID  or  RETURNS INTEGER (returning affected row count)
+
+===========================================================
+RULE 7 — Transaction Handling in PostgreSQL Functions
+===========================================================
+
+PostgreSQL functions run inside an implicit transaction.
+If the function raises an exception, the entire function rolls back automatically.
+
+For explicit transaction control use EXCEPTION block:
+
+BEGIN
+    -- DML statements
+    
+    EXCEPTION
+        WHEN OTHERS THEN
+            -- log if needed
+            RAISE;  -- re-raise to caller
+END;
+
+Do NOT use BEGIN TRAN / COMMIT / ROLLBACK inside functions.
+For procedures needing explicit transaction control, use PostgreSQL PROCEDURE 
+(not FUNCTION) with CALL syntax — only when absolutely required.
+
+===========================================================
+RULE 8 — LIKE / ILIKE for String Search
+===========================================================
+
+SQL Server LIKE is case-insensitive by default.
+PostgreSQL LIKE is case-sensitive.
+
+In all search stored procedures / functions:
+- Replace LIKE '%' + @searchTerm + '%' 
+  with    ILIKE '%' || p_searchterm || '%'
+
+ILIKE is PostgreSQL's case-insensitive LIKE equivalent.
+Use ILIKE everywhere a user-facing search is performed.
+
+===========================================================
+RULE 9 — Pagination Pattern
+===========================================================
+
+SQL Server:
+ORDER BY col
+OFFSET @PageSize * (@PageNumber - 1) ROWS
+FETCH NEXT @PageSize ROWS ONLY
+
+PostgreSQL equivalent:
+ORDER BY col
+LIMIT p_pagesize
+OFFSET p_pagesize * (p_pagenumber - 1)
+
+Keep parameter names consistent: p_pagenumber, p_pagesize, p_sortby, p_sortorder
+Return totalcount alongside results using COUNT(*) OVER() window function:
+
+SELECT 
+    col1,
+    col2,
+    COUNT(*) OVER() AS totalcount
+FROM tbl<entityname>
+WHERE isdeleted = FALSE
+ORDER BY col1
+LIMIT p_pagesize
+OFFSET p_pagesize * (p_pagenumber - 1);
+
+===========================================================
+RULE 10 — Soft Delete Pattern
+===========================================================
+
+SQL Server:
+WHERE IsDeleted = 0
+
+PostgreSQL:
+WHERE isdeleted = FALSE
+
+All soft delete filters must use FALSE not 0.
+All soft delete SET must use:
+    isdeleted = TRUE,
+    deletedby = p_deletedby,
+    datedeleted = NOW()
+
+===========================================================
+RULE 11 — Schema Reference
+===========================================================
+
+SQL Server uses dbo. prefix:
+dbo.tblCustomer
+
+PostgreSQL uses public. schema by default:
+public.tblcustomer  (or just tblcustomer without schema prefix)
+
+In function bodies, no schema prefix needed if search_path is set to public.
+Add at top of migration script:
+SET search_path TO public;
+
+===========================================================
+RULE 12 — Index Creation Differences
+===========================================================
+
+SQL Server:
+CREATE NONCLUSTERED INDEX IDX_tblCustomer_CompanyId
+ON dbo.tblCustomer (CompanyId)
+WHERE IsDeleted = 0;
+
+PostgreSQL:
+CREATE INDEX IF NOT EXISTS idx_tblcustomer_companyid
+ON tblcustomer (companyid)
+WHERE isdeleted = FALSE;
+
+PostgreSQL supports partial indexes natively — use WHERE isdeleted = FALSE 
+on all major indexes for performance.
+
+===========================================================
+RULE 13 — UUID / GUID Columns
+===========================================================
+
+If any table has a UUID/GUID column as business key (not PK):
+
+SQL Server:  UNIQUEIDENTIFIER DEFAULT NEWID()
+PostgreSQL:  UUID DEFAULT gen_random_uuid()
+
+Ensure the pgcrypto or uuid-ossp extension is enabled:
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- or
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+===========================================================
+RULE 14 — Boolean Filter Parameters
+===========================================================
+
+SQL Server SP parameters for bit filters:
+@IsActive BIT = 1
+
+PostgreSQL function parameters:
+p_isactive BOOLEAN DEFAULT TRUE
+
+In WHERE clause:
+SQL Server: WHERE IsActive = @IsActive
+PostgreSQL: WHERE isactive = p_isactive
+
+===========================================================
+RULE 15 — Output Parameters
+===========================================================
+
+SQL Server OUTPUT parameters:
+@NewId BIGINT OUTPUT
+SELECT @NewId = SCOPE_IDENTITY()
+
+PostgreSQL equivalent — use RETURNING clause:
+INSERT INTO tblcustomer (...) VALUES (...) RETURNING customerid INTO v_newid;
+RETURN v_newid;
+
+Or use RETURNS TABLE with the new ID as one of the returned columns.
+Avoid OUT parameters unless the calling application specifically expects them.
+
+===========================================================
+
+WHAT TO DELIVER FOR EACH OBJECT:
+
+For every TABLE:
+1. Full PostgreSQL CREATE TABLE script using the template in Rule 4
+2. All FK constraints as separate ALTER TABLE statements
+3. All indexes as separate CREATE INDEX statements
+4. All unique constraints
+
+For every STORED PROCEDURE:
+1. Full PostgreSQL CREATE OR REPLACE FUNCTION with complete header comment
+2. All T-SQL syntax converted per Rules 5-15
+3. Note any logic that needed significant restructuring and explain why
+
+For the full schema migration:
+1. A single ordered migration script:
+   - Extensions first (pgcrypto, uuid-ossp)
+   - SET search_path
+   - Tables in FK dependency order (parent tables before child tables)
+   - All FK constraints after all tables
+   - All indexes after all constraints
+   - All functions last
+
+===========================================================
+
+STANDARDS TO PRESERVE:
+- All tbl / usp naming prefixes kept exactly
+- All audit columns present on every table (converted types)
+- All SP header comments preserved and updated with PostgreSQL conversion note
+- Soft delete pattern preserved (isdeleted = FALSE filter everywhere)
+- Pagination pattern preserved with LIMIT/OFFSET
+- COUNT(1) stays as COUNT(1) — valid in PostgreSQL
+- No SELECT * anywhere
+- Explicit column lists on all INSERT statements
+- All search uses ILIKE not LIKE
+- isdeleted = FALSE on every SELECT filter (never return soft-deleted rows)
+
+===========================================================
+
+PROCESS — follow this order:
+1. List all tables found — confirm dependency order before writing DDL
+2. Convert tables one by one in dependency order
+3. List all stored procedures found
+4. Convert SPs to functions one by one
+5. Produce final ordered migration script
+6. Flag any SQL Server feature that has NO direct PostgreSQL equivalent 
+   and propose the best alternative
+
+Start by reading all existing SQL Server table scripts and SP scripts 
+from the project, then proceed with conversion.
