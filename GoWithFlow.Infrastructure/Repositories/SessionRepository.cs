@@ -118,44 +118,55 @@ public sealed class SessionRepository : ISessionRepository
 		var connection = _dbContext.Database.GetDbConnection();
 		await EnsureConnectionOpenAsync(connection, cancellationToken);
 
+		string? resolvedStatus = null;
 		await using var command = CreateCommand(connection, "dbo.uspGetSessionBySessionId", null);
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
+		LobbyStateResponseDto? response;
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-		if (await reader.ReadAsync(cancellationToken) == false)
+		await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
 		{
-			return null;
-		}
-
-		var response = new LobbyStateResponseDto
-		{
-			SessionId = GetInt64(reader, "SessionId"),
-			SessionName = GetString(reader, "SessionName"),
-			JoinCode = GetString(reader, "JoinCode"),
-			SessionMode = GetString(reader, "SessionMode"),
-			ScriptTitle = GetString(reader, "ScriptTitle"),
-			MaxMembers = GetByte(reader, "MaxMembers"),
-			SessionDuration = GetInt32(reader, "SessionDuration"),
-			CanStart = false
-		};
-
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
+			if (await reader.ReadAsync(cancellationToken) == false)
 			{
-				response.Members.Add(new LobbyMemberDto
+				return null;
+			}
+
+			response = new LobbyStateResponseDto
+			{
+				SessionId = GetInt64(reader, "SessionId"),
+				SessionName = GetString(reader, "SessionName"),
+				JoinCode = GetString(reader, "JoinCode"),
+				SessionMode = GetString(reader, "SessionMode"),
+				ScriptTitle = GetString(reader, "ScriptTitle"),
+				MaxMembers = GetByte(reader, "MaxMembers"),
+				SessionDuration = GetInt32(reader, "SessionDuration"),
+				Status = string.Empty,
+				CanStart = false
+			};
+
+			if (TryGetString(reader, "Status", out var status))
+			{
+				resolvedStatus = status;
+			}
+
+			if (await reader.NextResultAsync(cancellationToken))
+			{
+				while (await reader.ReadAsync(cancellationToken))
 				{
-					UserId = GetInt64(reader, "UserId"),
-					FullName = GetString(reader, "FullName"),
-					AvatarUrl = GetNullableString(reader, "AvatarUrl"),
-					SlotIndex = GetByte(reader, "SlotIndex"),
-					SlotName = GetString(reader, "SlotName"),
-					IsReady = GetBoolean(reader, "IsReady"),
-					IsHost = GetBoolean(reader, "IsHost")
-				});
+					response.Members.Add(new LobbyMemberDto
+					{
+						UserId = GetInt64(reader, "UserId"),
+						FullName = GetString(reader, "FullName"),
+						AvatarUrl = GetNullableString(reader, "AvatarUrl"),
+						SlotIndex = GetByte(reader, "SlotIndex"),
+						SlotName = GetString(reader, "SlotName"),
+						IsReady = GetBoolean(reader, "IsReady"),
+						IsHost = GetBoolean(reader, "IsHost")
+					});
+				}
 			}
 		}
+
+		response.Status = await ResolveLobbyStatusAsync(resolvedStatus, sessionId, cancellationToken);
 
 		return response;
 	}
@@ -367,6 +378,21 @@ public sealed class SessionRepository : ISessionRepository
 		return (sessionId, joinCode);
 	}
 
+	private async Task<string> ResolveLobbyStatusAsync(string? status, long sessionId, CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(status) == false)
+		{
+			return status;
+		}
+
+		return await _dbContext.Sessions
+			.AsNoTracking()
+			.Where(session => session.SessionId == sessionId && session.IsDeleted == false)
+			.Select(session => session.Status)
+			.FirstOrDefaultAsync(cancellationToken)
+			?? "LOBBY";
+	}
+
 	private async Task InsertSessionMemberInternalAsync(SessionMember sessionMember, DbTransaction transaction, CancellationToken cancellationToken)
 	{
 		await using var command = CreateCommand(transaction.Connection!, "dbo.uspInsertSessionMember", transaction);
@@ -439,6 +465,19 @@ public sealed class SessionRepository : ISessionRepository
 		return reader.IsDBNull(ordinal) ? string.Empty : reader.GetString(ordinal);
 	}
 
+	private static bool TryGetString(DbDataReader reader, string columnName, out string value)
+	{
+		value = string.Empty;
+
+		if (TryGetOrdinal(reader, columnName, out var ordinal) == false || reader.IsDBNull(ordinal))
+		{
+			return false;
+		}
+
+		value = Convert.ToString(reader.GetValue(ordinal)) ?? string.Empty;
+		return true;
+	}
+
 	private static string? GetNullableString(DbDataReader reader, string columnName)
 	{
 		var ordinal = reader.GetOrdinal(columnName);
@@ -447,32 +486,52 @@ public sealed class SessionRepository : ISessionRepository
 
 	private static long GetInt64(DbDataReader reader, string columnName)
 	{
-		return reader.GetInt64(reader.GetOrdinal(columnName));
+		var ordinal = reader.GetOrdinal(columnName);
+		return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt64(reader.GetValue(ordinal));
 	}
 
 	private static int GetInt32(DbDataReader reader, string columnName)
 	{
-		return reader.GetInt32(reader.GetOrdinal(columnName));
+		var ordinal = reader.GetOrdinal(columnName);
+		return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt32(reader.GetValue(ordinal));
 	}
 
 	private static byte GetByte(DbDataReader reader, string columnName)
 	{
-		return reader.GetByte(reader.GetOrdinal(columnName));
+		var ordinal = reader.GetOrdinal(columnName);
+		return reader.IsDBNull(ordinal) ? (byte)0 : Convert.ToByte(reader.GetValue(ordinal));
 	}
 
 	private static bool GetBoolean(DbDataReader reader, string columnName)
 	{
-		return reader.GetBoolean(reader.GetOrdinal(columnName));
+		var ordinal = reader.GetOrdinal(columnName);
+		return reader.IsDBNull(ordinal) == false && Convert.ToBoolean(reader.GetValue(ordinal));
 	}
 
 	private static DateTime GetDateTime(DbDataReader reader, string columnName)
 	{
-		return reader.GetDateTime(reader.GetOrdinal(columnName));
+		var ordinal = reader.GetOrdinal(columnName);
+		return reader.IsDBNull(ordinal) ? DateTime.MinValue : Convert.ToDateTime(reader.GetValue(ordinal));
 	}
 
 	private static decimal? GetNullableDecimal(DbDataReader reader, string columnName)
 	{
 		var ordinal = reader.GetOrdinal(columnName);
-		return reader.IsDBNull(ordinal) ? null : reader.GetDecimal(ordinal);
+		return reader.IsDBNull(ordinal) ? null : Convert.ToDecimal(reader.GetValue(ordinal));
+	}
+
+	private static bool TryGetOrdinal(DbDataReader reader, string columnName, out int ordinal)
+	{
+		for (var index = 0; index < reader.FieldCount; index++)
+		{
+			if (string.Equals(reader.GetName(index), columnName, StringComparison.OrdinalIgnoreCase))
+			{
+				ordinal = index;
+				return true;
+			}
+		}
+
+		ordinal = -1;
+		return false;
 	}
 }

@@ -11,15 +11,18 @@ namespace GoWithFlow.API.Hubs;
 public sealed class SessionHub : Hub
 {
 	private readonly ISessionService _sessionService;
+	private readonly ILiveSessionService _liveSessionService;
 	private readonly IHubConnectionTracker _connectionTracker;
 	private readonly ILogger<SessionHub> _logger;
 
 	public SessionHub(
 		ISessionService sessionService,
+		ILiveSessionService liveSessionService,
 		IHubConnectionTracker connectionTracker,
 		ILogger<SessionHub> logger)
 	{
 		_sessionService = sessionService;
+		_liveSessionService = liveSessionService;
 		_connectionTracker = connectionTracker;
 		_logger = logger;
 	}
@@ -56,18 +59,25 @@ public sealed class SessionHub : Hub
 				await Groups.RemoveFromGroupAsync(Context.ConnectionId, connectionInfo.GroupName);
 
 				var lobbyStateResponse = await _sessionService.GetLobbyStateAsync(connectionInfo.SessionId, CancellationToken.None);
-				var leavingMember = lobbyStateResponse.Data?.Members.FirstOrDefault(member => member.UserId == connectionInfo.UserId);
-				var leaveResponse = await _sessionService.LeaveSessionAsync(connectionInfo.SessionId, connectionInfo.UserId, CancellationToken.None);
 
-				if (leaveResponse.Success && leavingMember is not null)
+				// Only deactivate the member when the session is still in LOBBY status.
+				// When the session is ACTIVE, disconnecting from the session hub is expected
+				// (the user navigated to the live session room) and must not mark them as left.
+				if (string.Equals(lobbyStateResponse.Data?.Status, "LOBBY", StringComparison.OrdinalIgnoreCase))
 				{
-					await Clients.Group(connectionInfo.GroupName).SendAsync(
-						"MEMBER_LEFT",
-						new
-						{
-							userId = connectionInfo.UserId,
-							slotIndex = leavingMember.SlotIndex
-						});
+					var leavingMember = lobbyStateResponse.Data.Members.FirstOrDefault(member => member.UserId == connectionInfo.UserId);
+					var leaveResponse = await _sessionService.LeaveSessionAsync(connectionInfo.SessionId, connectionInfo.UserId, CancellationToken.None);
+
+					if (leaveResponse.Success && leavingMember is not null)
+					{
+						await Clients.Group(connectionInfo.GroupName).SendAsync(
+							"MEMBER_LEFT",
+							new
+							{
+								userId = connectionInfo.UserId,
+								slotIndex = leavingMember.SlotIndex
+							});
+					}
 				}
 			}
 			catch (Exception disconnectException)
@@ -155,20 +165,19 @@ public sealed class SessionHub : Hub
 
 		if (startResponse.Success == false)
 		{
-			throw new HubException(startResponse.Message);
+			throw new HubException(GetHubErrorMessage(startResponse.Message, startResponse.Errors));
 		}
 
-		var lobbyStateResponse = await _sessionService.GetLobbyStateAsync(parsedSessionId, Context.ConnectionAborted);
+		var currentTurnResponse = await _liveSessionService.GetCurrentTurnAsync(parsedSessionId, Context.ConnectionAborted);
 
-		if (lobbyStateResponse.Success == false || lobbyStateResponse.Data is null)
+		if (currentTurnResponse.Success == false || currentTurnResponse.Data is null)
 		{
-			throw new HubException("Lobby state could not be loaded after session start.");
+			throw new HubException(GetHubErrorMessage(
+				"Current turn could not be loaded after session start.",
+				currentTurnResponse.Errors));
 		}
 
-		var firstSpeakerId = lobbyStateResponse.Data.Members
-			.OrderBy(member => member.SlotIndex)
-			.Select(member => member.UserId)
-			.FirstOrDefault();
+		var firstSpeakerId = currentTurnResponse.Data.ActiveMemberId;
 
 		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
 			"SESSION_STARTED",
@@ -178,6 +187,16 @@ public sealed class SessionHub : Hub
 				firstSpeakerId
 			},
 			Context.ConnectionAborted);
+	}
+
+	private static string GetHubErrorMessage(string fallbackMessage, IReadOnlyCollection<string>? errors)
+	{
+		if (errors is null || errors.Count == 0)
+		{
+			return fallbackMessage;
+		}
+
+		return string.Join(" ", errors.Where(error => string.IsNullOrWhiteSpace(error) == false));
 	}
 
 	public async Task LeaveLobby(string sessionId, string userId)

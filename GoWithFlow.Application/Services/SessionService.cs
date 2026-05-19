@@ -22,15 +22,18 @@ public sealed class SessionService : ISessionService
 	private readonly IUserRepository _userRepository;
 	private readonly IScriptRepository _scriptRepository;
 	private readonly ISessionRepository _sessionRepository;
+	private readonly ILiveSessionService _liveSessionService;
 
 	public SessionService(
 		IUserRepository userRepository,
 		IScriptRepository scriptRepository,
-		ISessionRepository sessionRepository)
+		ISessionRepository sessionRepository,
+		ILiveSessionService liveSessionService)
 	{
 		_userRepository = userRepository;
 		_scriptRepository = scriptRepository;
 		_sessionRepository = sessionRepository;
+		_liveSessionService = liveSessionService;
 	}
 
 	public async Task<ApiResponse<CreateSessionResponseDto>> CreateSessionAsync(CreateSessionRequestDto dto, long hostUserId, CancellationToken cancellationToken = default)
@@ -282,6 +285,16 @@ public sealed class SessionService : ISessionService
 		}
 
 		await _sessionRepository.UpdateSessionStatusAsync(sessionId, SessionStatusType.ACTIVE.ToString(), hostUser.FullName, "127.0.0.1", cancellationToken);
+		var currentTurnResponse = await _liveSessionService.GetCurrentTurnAsync(sessionId, cancellationToken);
+
+		if (currentTurnResponse.Success == false || currentTurnResponse.Data is null)
+		{
+			await _sessionRepository.UpdateSessionStatusAsync(sessionId, SessionStatusType.LOBBY.ToString(), hostUser.FullName, "127.0.0.1", cancellationToken);
+
+				return ApiResponse<bool>.FailureResult(
+					currentTurnResponse.Errors ?? new List<string> { "The session started, but the first turn could not be initialized." },
+					"Session start failed.");
+			}
 
 		return ApiResponse<bool>.SuccessResult(true, "Session started successfully.");
 	}

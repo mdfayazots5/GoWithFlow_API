@@ -16,6 +16,8 @@ public sealed class LobbyStateResponseDto
 
 	public int SessionDuration { get; set; }
 
+	public string Status { get; set; } = string.Empty;
+
 	public List<LobbyMemberDto> Members { get; set; } = new();
 
 	public bool CanStart { get; set; }

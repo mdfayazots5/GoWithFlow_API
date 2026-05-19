@@ -43,44 +43,42 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 
 	public async Task<TurnStateResponseDto?> GetCurrentTurnAsync(long sessionId, CancellationToken cancellationToken = default)
 	{
-		var connection = _dbContext.Database.GetDbConnection();
-		await EnsureConnectionOpenAsync(connection, cancellationToken);
-
-		await using var command = CreateCommand(connection, "dbo.uspGetCurrentTurnBySessionId");
-		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
-
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-		if (await reader.ReadAsync(cancellationToken) == false)
-		{
-			return null;
-		}
-
-		return new TurnStateResponseDto
-		{
-			SessionId = GetInt64(reader, "SessionId"),
-			TurnIndex = GetInt32(reader, "TurnIndex"),
-			TotalTurns = GetInt32(reader, "TotalTurns"),
-			ActiveMemberId = GetInt64(reader, "ActiveMemberId"),
-			ActiveMemberName = GetString(reader, "ActiveMemberName"),
-			ActiveSlotIndex = GetByte(reader, "ActiveSlotIndex"),
-			Utterance = new UtteranceResponseDto
+		return await (
+			from turnState in _dbContext.TurnStates.AsNoTracking()
+			join activeMember in _dbContext.Users.AsNoTracking() on turnState.ActiveMemberId equals activeMember.UserId
+			join utterance in _dbContext.Utterances.AsNoTracking() on turnState.UtteranceId equals utterance.UtteranceId
+			where turnState.SessionId == sessionId
+				&& turnState.TurnStatus == "ACTIVE"
+				&& turnState.IsDeleted == false
+				&& activeMember.IsDeleted == false
+				&& utterance.IsDeleted == false
+			orderby turnState.TurnIndex, turnState.TurnStateId
+			select new TurnStateResponseDto
 			{
-				UtteranceId = GetInt64(reader, "UtteranceId"),
-				ScriptId = GetInt64(reader, "ScriptId"),
-				SequenceId = GetInt32(reader, "SequenceId"),
-				SpeakerLabel = GetString(reader, "SpeakerLabel"),
-				EnglishText = GetString(reader, "EnglishText"),
-				HintText = GetNullableString(reader, "HintText"),
-				GrammarTag = GetNullableString(reader, "GrammarTag"),
-				ContextTag = GetNullableString(reader, "ContextTag"),
-				FocusWord = GetNullableString(reader, "FocusWord"),
-				PronunciationNote = GetNullableString(reader, "PronunciationNote")
-			},
-			ReReadAllowed = GetBoolean(reader, "ReReadAllowed"),
-			ReReadCount = GetInt32(reader, "ReReadCount"),
-			MaxReReads = GetInt32(reader, "MaxReReads")
-		};
+				SessionId = turnState.SessionId,
+				TurnIndex = turnState.TurnIndex,
+				TotalTurns = turnState.TotalTurns,
+				ActiveMemberId = turnState.ActiveMemberId,
+				ActiveMemberName = activeMember.FullName,
+				ActiveSlotIndex = turnState.ActiveSlotIndex,
+				Utterance = new UtteranceResponseDto
+				{
+					UtteranceId = utterance.UtteranceId,
+					ScriptId = utterance.ScriptId,
+					SequenceId = utterance.SequenceId,
+					SpeakerLabel = utterance.SpeakerLabel,
+					EnglishText = utterance.EnglishText,
+					HintText = utterance.HintText,
+					GrammarTag = utterance.GrammarTag,
+					ContextTag = utterance.ContextTag,
+					FocusWord = utterance.FocusWord,
+					PronunciationNote = utterance.PronunciationNote
+				},
+				ReReadAllowed = turnState.ReReadAllowed,
+				ReReadCount = turnState.ReReadCount,
+				MaxReReads = turnState.MaxReReads
+			})
+			.FirstOrDefaultAsync(cancellationToken);
 	}
 
 	public async Task<TurnState?> GetCurrentTurnEntityAsync(long sessionId, CancellationToken cancellationToken = default)

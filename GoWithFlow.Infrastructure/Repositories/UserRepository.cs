@@ -136,82 +136,116 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetUserDashboardSummaryByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		UserDashboardResponseDto dashboard;
 
-		if (await reader.ReadAsync(cancellationToken) == false)
+		await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
 		{
-			return null;
-		}
-
-		var dashboard = new UserDashboardResponseDto
-		{
-			UserName = GetString(reader, "UserName"),
-			CurrentStreak = GetInt32(reader, "CurrentStreak"),
-			TodayDate = GetDateTime(reader, "TodayDate"),
-			PendingRepracticeCount = GetInt32(reader, "PendingRepracticeCount")
-		};
-
-		var activeSessionId = GetNullableInt64(reader, "ActiveSessionId");
-
-		if (activeSessionId.HasValue && activeSessionId.Value > 0)
-		{
-			dashboard.ActiveSession = new ActiveSessionBannerDto
+			if (await reader.ReadAsync(cancellationToken) == false)
 			{
-				SessionId = activeSessionId.Value,
-				SessionName = GetString(reader, "ActiveSessionName"),
-				Status = GetString(reader, "ActiveSessionStatus"),
-				JoinCode = GetString(reader, "JoinCode")
+				return null;
+			}
+
+			dashboard = new UserDashboardResponseDto
+			{
+				UserName = GetString(reader, "UserName"),
+				CurrentStreak = GetInt32(reader, "CurrentStreak"),
+				TodayDate = GetDateTime(reader, "TodayDate"),
+				PendingRepracticeCount = GetInt32(reader, "PendingRepracticeCount")
 			};
-		}
 
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
+			var activeSessionId = GetNullableInt64(reader, "ActiveSessionId");
+
+			if (activeSessionId.HasValue && activeSessionId.Value > 0)
 			{
-				dashboard.RecentSessions.Add(new SessionListItemResponseDto
+				dashboard.ActiveSession = new ActiveSessionBannerDto
 				{
-					SessionId = GetInt64(reader, "SessionId"),
-					SessionName = GetString(reader, "SessionName"),
-					SessionMode = GetString(reader, "SessionMode"),
-					SessionDate = GetDateTime(reader, "SessionDate"),
-					Duration = GetInt32(reader, "Duration"),
-					FluencyScore = GetNullableDecimal(reader, "FluencyScore"),
-					MistakeCount = GetInt32(reader, "MistakeCount"),
-					Status = GetString(reader, "Status"),
-					ScriptTitle = GetString(reader, "ScriptTitle")
-				});
+					SessionId = activeSessionId.Value,
+					SessionName = GetString(reader, "ActiveSessionName"),
+					Status = GetString(reader, "ActiveSessionStatus"),
+					JoinCode = GetString(reader, "JoinCode")
+				};
+			}
+
+			if (await reader.NextResultAsync(cancellationToken))
+			{
+				while (await reader.ReadAsync(cancellationToken))
+				{
+					dashboard.RecentSessions.Add(new SessionListItemResponseDto
+					{
+						SessionId = GetInt64(reader, "SessionId"),
+						SessionName = GetString(reader, "SessionName"),
+						SessionMode = GetString(reader, "SessionMode"),
+						SessionDate = GetDateTime(reader, "SessionDate"),
+						Duration = GetInt32(reader, "Duration"),
+						FluencyScore = GetNullableDecimal(reader, "FluencyScore"),
+						MistakeCount = GetInt32(reader, "MistakeCount"),
+						Status = GetString(reader, "Status"),
+						ScriptTitle = GetString(reader, "ScriptTitle")
+					});
+				}
+			}
+
+			if (await reader.NextResultAsync(cancellationToken))
+			{
+				while (await reader.ReadAsync(cancellationToken))
+				{
+					dashboard.PendingMistakes.Add(new MistakeResponseDto
+					{
+						MistakeId = GetInt64(reader, "MistakeId"),
+						UserId = userId,
+						SessionId = GetInt64(reader, "SessionId"),
+						UtteranceId = GetInt64(reader, "UtteranceId"),
+						ScriptId = GetInt64(reader, "ScriptId"),
+						UtteranceText = GetString(reader, "UtteranceText"),
+						SpokenText = GetNullableString(reader, "SpokenText"),
+						MistakeType = GetString(reader, "MistakeType"),
+						MistakeDetail = GetNullableString(reader, "MistakeDetail"),
+						GrammarTag = GetNullableString(reader, "GrammarTag"),
+						ContextTag = GetNullableString(reader, "ContextTag"),
+						CorrectionText = GetNullableString(reader, "CorrectionText"),
+						PracticeCount = GetInt32(reader, "PracticeCount"),
+						IsResolved = GetBoolean(reader, "IsResolved"),
+						FirstOccurrence = GetDateTime(reader, "FirstOccurrence"),
+						LastAttempt = GetNullableDateTime(reader, "LastAttempt"),
+						SessionName = GetString(reader, "SessionName"),
+						ScriptTitle = GetString(reader, "ScriptTitle")
+					});
+				}
 			}
 		}
 
-		if (await reader.NextResultAsync(cancellationToken))
+		if (dashboard.ActiveSession is null)
 		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				dashboard.PendingMistakes.Add(new MistakeResponseDto
-				{
-					MistakeId = GetInt64(reader, "MistakeId"),
-					UserId = userId,
-					SessionId = GetInt64(reader, "SessionId"),
-					UtteranceId = GetInt64(reader, "UtteranceId"),
-					ScriptId = GetInt64(reader, "ScriptId"),
-					UtteranceText = GetString(reader, "UtteranceText"),
-					SpokenText = GetNullableString(reader, "SpokenText"),
-					MistakeType = GetString(reader, "MistakeType"),
-					MistakeDetail = GetNullableString(reader, "MistakeDetail"),
-					GrammarTag = GetNullableString(reader, "GrammarTag"),
-					ContextTag = GetNullableString(reader, "ContextTag"),
-					CorrectionText = GetNullableString(reader, "CorrectionText"),
-					PracticeCount = GetInt32(reader, "PracticeCount"),
-					IsResolved = GetBoolean(reader, "IsResolved"),
-					FirstOccurrence = GetDateTime(reader, "FirstOccurrence"),
-					LastAttempt = GetNullableDateTime(reader, "LastAttempt"),
-					SessionName = GetString(reader, "SessionName"),
-					ScriptTitle = GetString(reader, "ScriptTitle")
-				});
-			}
+			dashboard.ActiveSession = await GetUnexpiredDashboardSessionAsync(userId, cancellationToken);
 		}
 
 		return dashboard;
+	}
+
+	private async Task<ActiveSessionBannerDto?> GetUnexpiredDashboardSessionAsync(long userId, CancellationToken cancellationToken)
+	{
+		var now = DateTime.Now;
+
+		return await (
+			from sessionMember in DbContext.SessionMembers.AsNoTracking()
+			join session in DbContext.Sessions.AsNoTracking() on sessionMember.SessionId equals session.SessionId
+			where sessionMember.UserId == userId
+				&& sessionMember.IsDeleted == false
+				&& session.IsDeleted == false
+				&& (session.Status == "LOBBY" || session.Status == "ACTIVE")
+				&& (session.RoomExpiresAt == null || session.RoomExpiresAt > now)
+			orderby session.Status == "ACTIVE" descending,
+				session.RoomExpiresAt descending,
+				session.SessionId descending,
+				sessionMember.SessionMemberId descending
+			select new ActiveSessionBannerDto
+			{
+				SessionId = session.SessionId,
+				SessionName = session.SessionName,
+				Status = session.Status,
+				JoinCode = session.JoinCode
+			})
+			.FirstOrDefaultAsync(cancellationToken);
 	}
 
 	public async Task UpdateUserProfileAsync(
