@@ -29,7 +29,12 @@ using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Events;
 
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
 var builder = WebApplication.CreateBuilder(args);
+var databaseProvider = DatabaseProviderNames.Normalize(builder.Configuration["DatabaseProvider"]);
+var connectionString = builder.Configuration.GetConnectionString(databaseProvider)
+	?? throw new InvalidOperationException($"ConnectionStrings:{databaseProvider} is missing.");
 
 builder.Host.UseSerilog((context, services, configuration) =>
 {
@@ -56,12 +61,24 @@ builder.Host.UseSerilog((context, services, configuration) =>
 
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("JwtSettings"));
 builder.Services.Configure<FileStorageSettings>(builder.Configuration.GetSection("FileStorage"));
+builder.Services.AddSingleton(new DatabaseProviderSettings(databaseProvider));
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddMemoryCache();
 
 builder.Services.AddDbContext<GoWithFlowDbContext>(options =>
 {
-	options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+	if (DatabaseProviderNames.IsPostgreSql(databaseProvider))
+	{
+		options.UseNpgsql(
+			connectionString,
+			postgresOptions => postgresOptions.MigrationsHistoryTable("__EFMigrationsHistory", "public"));
+	}
+	else
+	{
+		options.UseSqlServer(
+			connectionString,
+			sqlServerOptions => sqlServerOptions.MigrationsHistoryTable("__EFMigrationsHistory", "dbo"));
+	}
 });
 
 builder.Services
@@ -236,7 +253,9 @@ builder.Services.AddRateLimiter(options =>
 
 builder.Services
 	.AddHealthChecks()
-	.AddDbContextCheck<GoWithFlowDbContext>("sqlserver", tags: new[] { "db" });
+	.AddDbContextCheck<GoWithFlowDbContext>(databaseProvider.ToLowerInvariant(), tags: new[] { "db" });
+
+builder.Services.AddHostedService<DatabaseStartupValidationHostedService>();
 
 builder.Services.AddSingleton<IUserIdProvider, JwtUserIdProvider>();
 builder.Services.AddSingleton<IHubConnectionTracker, HubConnectionTracker>();

@@ -5,7 +5,6 @@ using GoWithFlow.Application.DTOs.Responses.User;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Domain.Entities;
 using GoWithFlow.Infrastructure.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace GoWithFlow.Infrastructure.Repositories;
@@ -199,14 +198,14 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		await EnsureConnectionOpenAsync(connection, cancellationToken);
 
 		var command = connection.CreateCommand();
-		command.CommandText = storedProcedureName;
+		command.CommandText = DbCommandHelper.QualifyRoutineName(_dbContext.DatabaseProvider, storedProcedureName);
 		command.CommandType = CommandType.StoredProcedure;
 		return command;
 	}
 
-	private static SqlParameter CreateParameter(string parameterName, object? value)
+	private DbParameter CreateParameter(string parameterName, object? value)
 	{
-		return new SqlParameter(parameterName, value ?? DBNull.Value);
+		return DbCommandHelper.CreateParameter(_dbContext.DatabaseProvider, parameterName, value);
 	}
 
 	private static async Task EnsureConnectionOpenAsync(DbConnection connection, CancellationToken cancellationToken)

@@ -5,10 +5,15 @@ namespace GoWithFlow.Infrastructure.Data;
 
 public sealed class GoWithFlowDbContext : DbContext
 {
-	public GoWithFlowDbContext(DbContextOptions<GoWithFlowDbContext> options)
+	public GoWithFlowDbContext(
+		DbContextOptions<GoWithFlowDbContext> options,
+		DatabaseProviderSettings providerSettings)
 		: base(options)
 	{
+		DatabaseProvider = DatabaseProviderNames.Normalize(providerSettings.Provider);
 	}
+
+	public string DatabaseProvider { get; set; } = DatabaseProviderNames.SqlServer;
 
 	public DbSet<User> Users => Set<User>();
 
@@ -47,6 +52,7 @@ public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 	protected override void OnModelCreating(ModelBuilder modelBuilder)
 	{
 		modelBuilder.ApplyConfigurationsFromAssembly(typeof(GoWithFlowDbContext).Assembly);
+		modelBuilder.ApplyProviderConventions(DatabaseProvider);
 
 		base.OnModelCreating(modelBuilder);
 	}

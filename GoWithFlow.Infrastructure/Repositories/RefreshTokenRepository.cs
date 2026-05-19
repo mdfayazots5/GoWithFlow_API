@@ -1,8 +1,8 @@
 using System.Data;
+using System.Data.Common;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Domain.Entities;
 using GoWithFlow.Infrastructure.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace GoWithFlow.Infrastructure.Repositories;
@@ -20,7 +20,7 @@ public sealed class RefreshTokenRepository : GenericRepository<RefreshToken>, IR
 		await EnsureConnectionOpenAsync(connection, cancellationToken);
 
 		await using var command = connection.CreateCommand();
-		command.CommandText = "dbo.uspInsertRefreshToken";
+		command.CommandText = DbCommandHelper.QualifyRoutineName(DbContext.DatabaseProvider, "dbo.uspInsertRefreshToken");
 		command.CommandType = CommandType.StoredProcedure;
 
 		command.Parameters.Add(CreateParameter("@UserId", refreshToken.UserId));
@@ -38,9 +38,10 @@ public sealed class RefreshTokenRepository : GenericRepository<RefreshToken>, IR
 	public async Task<RefreshToken?> GetByTokenAsync(string token, CancellationToken cancellationToken = default)
 	{
 		return await DbContext.RefreshTokens
-			.FromSqlInterpolated($"EXEC dbo.uspGetRefreshTokenByToken @Token = {token}")
 			.AsNoTracking()
-			.FirstOrDefaultAsync(cancellationToken);
+			.FirstOrDefaultAsync(
+				refreshToken => refreshToken.Token == token && refreshToken.IsDeleted == false,
+				cancellationToken);
 	}
 
 	public async Task RevokeRefreshTokenAsync(string token, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -49,7 +50,7 @@ public sealed class RefreshTokenRepository : GenericRepository<RefreshToken>, IR
 		await EnsureConnectionOpenAsync(connection, cancellationToken);
 
 		await using var command = connection.CreateCommand();
-		command.CommandText = "dbo.uspRevokeRefreshToken";
+		command.CommandText = DbCommandHelper.QualifyRoutineName(DbContext.DatabaseProvider, "dbo.uspRevokeRefreshToken");
 		command.CommandType = CommandType.StoredProcedure;
 
 		command.Parameters.Add(CreateParameter("@Token", token));
@@ -59,9 +60,9 @@ public sealed class RefreshTokenRepository : GenericRepository<RefreshToken>, IR
 		await command.ExecuteNonQueryAsync(cancellationToken);
 	}
 
-	private static SqlParameter CreateParameter(string parameterName, object? value)
+	private DbParameter CreateParameter(string parameterName, object? value)
 	{
-		return new SqlParameter(parameterName, value ?? DBNull.Value);
+		return DbCommandHelper.CreateParameter(DbContext.DatabaseProvider, parameterName, value);
 	}
 
 	private static async Task EnsureConnectionOpenAsync(System.Data.Common.DbConnection connection, CancellationToken cancellationToken)

@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Text.Json;
 using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.Script;
 using GoWithFlow.Application.DTOs.Responses.Script;
@@ -266,13 +267,33 @@ public sealed class ScriptRepository : IScriptRepository
 		}
 
 		var command = connection.CreateCommand()!;
-		command.CommandText = storedProcedureName;
+		command.CommandText = DbCommandHelper.QualifyRoutineName(_dbContext.DatabaseProvider, storedProcedureName);
 		command.CommandType = CommandType.StoredProcedure;
 		return command;
 	}
 
-	private static SqlParameter CreateUtteranceTableParameter(IEnumerable<UtteranceParseDto> utterances)
+	private DbParameter CreateUtteranceTableParameter(IEnumerable<UtteranceParseDto> utterances)
 	{
+		if (DatabaseProviderNames.IsPostgreSql(_dbContext.DatabaseProvider))
+		{
+			var payload = utterances.Select(utterance => new
+			{
+				utterance.SequenceId,
+				utterance.SpeakerLabel,
+				utterance.EnglishText,
+				utterance.HintText,
+				utterance.GrammarTag,
+				utterance.ContextTag,
+				utterance.FocusWord,
+				utterance.PronunciationNote
+			});
+
+			return DbCommandHelper.CreateJsonParameter(
+				_dbContext.DatabaseProvider,
+				"@Utterances",
+				JsonSerializer.Serialize(payload));
+		}
+
 		var dataTable = new DataTable();
 		dataTable.Columns.Add("SequenceId", typeof(int));
 		dataTable.Columns.Add("SpeakerLabel", typeof(string));
@@ -303,9 +324,9 @@ public sealed class ScriptRepository : IScriptRepository
 		};
 	}
 
-	private static SqlParameter CreateParameter(string parameterName, object? value)
+	private DbParameter CreateParameter(string parameterName, object? value)
 	{
-		return new SqlParameter(parameterName, value ?? DBNull.Value);
+		return DbCommandHelper.CreateParameter(_dbContext.DatabaseProvider, parameterName, value);
 	}
 
 	private static async Task<int> ReadTotalCountAsync(DbDataReader reader, CancellationToken cancellationToken)

@@ -7,7 +7,6 @@ using GoWithFlow.Application.DTOs.Responses.Script;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Domain.Entities;
 using GoWithFlow.Infrastructure.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace GoWithFlow.Infrastructure.Repositories;
@@ -305,17 +304,17 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				cancellationToken);
 	}
 
-	private static DbCommand CreateCommand(DbConnection connection, string storedProcedureName)
+	private DbCommand CreateCommand(DbConnection connection, string storedProcedureName)
 	{
 		var command = connection.CreateCommand();
-		command.CommandText = storedProcedureName;
+		command.CommandText = DbCommandHelper.QualifyRoutineName(_dbContext.DatabaseProvider, storedProcedureName);
 		command.CommandType = CommandType.StoredProcedure;
 		return command;
 	}
 
-	private static SqlParameter CreateParameter(string parameterName, object? value)
+	private DbParameter CreateParameter(string parameterName, object? value)
 	{
-		return new SqlParameter(parameterName, value ?? DBNull.Value);
+		return DbCommandHelper.CreateParameter(_dbContext.DatabaseProvider, parameterName, value);
 	}
 
 	private static async Task EnsureConnectionOpenAsync(DbConnection connection, CancellationToken cancellationToken)

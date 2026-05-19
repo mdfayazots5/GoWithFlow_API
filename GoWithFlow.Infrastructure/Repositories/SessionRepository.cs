@@ -5,7 +5,6 @@ using GoWithFlow.Application.DTOs.Responses.Session;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Domain.Entities;
 using GoWithFlow.Infrastructure.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace GoWithFlow.Infrastructure.Repositories;
@@ -274,11 +273,11 @@ public sealed class SessionRepository : ISessionRepository
 
 		await using var command = CreateCommand(connection, "dbo.uspValidateJoinCode", null);
 		command.Parameters.Add(CreateParameter("@JoinCode", joinCode));
-		var isValidParameter = CreateOutputParameter("@IsValid", SqlDbType.Bit);
-		var sessionIdParameter = CreateOutputParameter("@SessionId", SqlDbType.BigInt);
-		var sessionNameParameter = CreateOutputParameter("@SessionName", SqlDbType.NVarChar, 128);
-		var statusParameter = CreateOutputParameter("@Status", SqlDbType.NVarChar, 16);
-		var currentMemberCountParameter = CreateOutputParameter("@CurrentMemberCount", SqlDbType.Int);
+		var isValidParameter = CreateOutputParameter("@IsValid", DbType.Boolean);
+		var sessionIdParameter = CreateOutputParameter("@SessionId", DbType.Int64);
+		var sessionNameParameter = CreateOutputParameter("@SessionName", DbType.String, 128);
+		var statusParameter = CreateOutputParameter("@Status", DbType.String, 16);
+		var currentMemberCountParameter = CreateOutputParameter("@CurrentMemberCount", DbType.Int32);
 		command.Parameters.Add(isValidParameter);
 		command.Parameters.Add(sessionIdParameter);
 		command.Parameters.Add(sessionNameParameter);
@@ -311,37 +310,26 @@ public sealed class SessionRepository : ISessionRepository
 
 	public async Task<(bool Exists, string Status, bool IsExpired, int CurrentMemberCount, int MaxMembers)?> CheckJoinCodeStatusAsync(string joinCode, CancellationToken cancellationToken = default)
 	{
-		var connection = _dbContext.Database.GetDbConnection();
-		await EnsureConnectionOpenAsync(connection, cancellationToken);
+		var now = DateTime.UtcNow;
 
-		await using var command = connection.CreateCommand();
-		command.CommandType = CommandType.Text;
-		command.CommandText = """
-			SELECT TOP (1)
-			    ses.Status,
-			    CAST(CASE WHEN ses.RoomExpiresAt IS NOT NULL AND ses.RoomExpiresAt <= GETDATE() THEN 1 ELSE 0 END AS BIT) AS IsExpired,
-			    ses.MaxMembers,
-			    COUNT(sem.SessionMemberId) AS CurrentMemberCount
-			FROM dbo.tblSession AS ses
-			LEFT JOIN dbo.tblSessionMember AS sem
-			    ON sem.SessionId = ses.SessionId AND sem.IsDeleted = 0 AND sem.IsActive = 1
-			WHERE ses.JoinCode  = @JoinCode
-			  AND ses.IsDeleted = 0
-			GROUP BY ses.Status, ses.RoomExpiresAt, ses.MaxMembers
-			""";
-		command.Parameters.Add(CreateParameter("@JoinCode", joinCode));
+		var result = await _dbContext.Sessions
+			.AsNoTracking()
+			.Where(session => session.JoinCode == joinCode && session.IsDeleted == false)
+			.Select(session => new
+			{
+				session.Status,
+				IsExpired = session.RoomExpiresAt != null && session.RoomExpiresAt <= now,
+				MaxMembers = (int)session.MaxMembers,
+				CurrentMemberCount = _dbContext.SessionMembers.Count(sessionMember =>
+					sessionMember.SessionId == session.SessionId &&
+					sessionMember.IsDeleted == false &&
+					sessionMember.IsActive)
+			})
+			.FirstOrDefaultAsync(cancellationToken);
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-
-		if (!await reader.ReadAsync(cancellationToken))
-			return null;
-
-		return (
-			Exists: true,
-			Status: GetString(reader, "Status"),
-			IsExpired: GetBoolean(reader, "IsExpired"),
-			CurrentMemberCount: GetInt32(reader, "CurrentMemberCount"),
-			MaxMembers: reader["MaxMembers"] == DBNull.Value ? 0 : Convert.ToInt32(reader["MaxMembers"]));
+		return result is null
+			? null
+			: (true, result.Status, result.IsExpired, result.CurrentMemberCount, result.MaxMembers);
 	}
 
 	private async Task<(long SessionId, string JoinCode)> InsertSessionInternalAsync(Session session, DbTransaction transaction, CancellationToken cancellationToken)
@@ -356,8 +344,8 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@RoomExpiryMinutes", session.RoomExpiryMinutes));
 		command.Parameters.Add(CreateParameter("@CreatedBy", session.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", session.IPAddress));
-		var sessionIdParameter = CreateOutputParameter("@SessionId", SqlDbType.BigInt);
-		var joinCodeParameter = CreateOutputParameter("@JoinCode", SqlDbType.NVarChar, 8);
+		var sessionIdParameter = CreateOutputParameter("@SessionId", DbType.Int64);
+		var joinCodeParameter = CreateOutputParameter("@JoinCode", DbType.String, 8);
 		command.Parameters.Add(sessionIdParameter);
 		command.Parameters.Add(joinCodeParameter);
 
@@ -407,33 +395,29 @@ public sealed class SessionRepository : ISessionRepository
 		await command.ExecuteNonQueryAsync(cancellationToken);
 	}
 
-	private static DbCommand CreateCommand(DbConnection connection, string storedProcedureName, DbTransaction? transaction)
+	private DbCommand CreateCommand(DbConnection connection, string storedProcedureName, DbTransaction? transaction)
 	{
 		var command = connection.CreateCommand();
-		command.CommandText = storedProcedureName;
+		command.CommandText = DbCommandHelper.QualifyRoutineName(_dbContext.DatabaseProvider, storedProcedureName);
 		command.CommandType = CommandType.StoredProcedure;
 		command.Transaction = transaction;
 		return command;
 	}
 
-	private static SqlParameter CreateParameter(string parameterName, object? value)
+	private DbParameter CreateParameter(string parameterName, object? value)
 	{
-		return new SqlParameter(parameterName, value ?? DBNull.Value);
+		return DbCommandHelper.CreateParameter(_dbContext.DatabaseProvider, parameterName, value);
 	}
 
-	private static SqlParameter CreateOutputParameter(string parameterName, SqlDbType sqlDbType, int size = 0)
+	private DbParameter CreateOutputParameter(string parameterName, DbType dbType, int size = 0)
 	{
-		var parameter = new SqlParameter(parameterName, sqlDbType)
-		{
-			Direction = ParameterDirection.Output
-		};
-
-		if (size > 0)
-		{
-			parameter.Size = size;
-		}
-
-		return parameter;
+		return DbCommandHelper.CreateParameter(
+			_dbContext.DatabaseProvider,
+			parameterName,
+			null,
+			dbType,
+			ParameterDirection.Output,
+			size);
 	}
 
 	private static async Task EnsureConnectionOpenAsync(DbConnection connection, CancellationToken cancellationToken)
