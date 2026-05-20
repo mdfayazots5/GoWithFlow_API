@@ -1,6 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Text;
 using Microsoft.Data.SqlClient;
 using Npgsql;
 using NpgsqlTypes;
@@ -65,48 +64,13 @@ public static class DbCommandHelper
 		}
 
 		var baseName = sqlServerRoutineName.Split('.', StringSplitOptions.RemoveEmptyEntries).Last();
-		return $"public.{ToSnakeCase(baseName)}";
+		return $"public.{baseName.ToLowerInvariant()}";
 	}
 
 	private static string NormalizeParameterName(string provider, string parameterName)
 	{
 		return DatabaseProviderNames.IsPostgreSql(provider)
-			? parameterName.TrimStart('@')
+			? "p_" + parameterName.TrimStart('@').ToLowerInvariant()
 			: parameterName;
-	}
-
-	private static string ToSnakeCase(string value)
-	{
-		if (string.IsNullOrWhiteSpace(value))
-		{
-			return value;
-		}
-
-		var builder = new StringBuilder(value.Length + 8);
-
-		for (var index = 0; index < value.Length; index++)
-		{
-			var character = value[index];
-
-			if (char.IsUpper(character))
-			{
-				var hasPrevious = index > 0;
-				var nextIsLower = index + 1 < value.Length && char.IsLower(value[index + 1]);
-				var previousIsLowerOrDigit = hasPrevious && (char.IsLower(value[index - 1]) || char.IsDigit(value[index - 1]));
-
-				if (hasPrevious && (previousIsLowerOrDigit || nextIsLower))
-				{
-					builder.Append('_');
-				}
-
-				builder.Append(char.ToLowerInvariant(character));
-			}
-			else
-			{
-				builder.Append(character);
-			}
-		}
-
-		return builder.ToString();
 	}
 }
