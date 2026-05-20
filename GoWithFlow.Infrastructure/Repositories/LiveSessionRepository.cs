@@ -36,7 +36,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", turnState.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", turnState.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 		return Convert.ToInt64(result);
 	}
 
@@ -113,7 +113,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task IncrementReReadCountAsync(long turnStateId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -126,7 +126,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<long> InsertVoiceAnalysisAsync(VoiceAnalysis voiceAnalysis, CancellationToken cancellationToken = default)
@@ -153,7 +153,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", voiceAnalysis.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", voiceAnalysis.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 		return Convert.ToInt64(result);
 	}
 
@@ -165,7 +165,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		await using var command = CreateCommand(connection, "dbo.uspGetVoiceAnalysisBySessionId");
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		return await ReadVoiceAnalysisAsync(reader, cancellationToken);
 	}
 
@@ -178,7 +178,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		return await ReadVoiceAnalysisAsync(reader, cancellationToken);
 	}
 
@@ -196,7 +196,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", listenerFeedback.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", listenerFeedback.IPAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<SessionSummaryResponseDto?> GetSessionCompletionSummaryAsync(long sessionId, CancellationToken cancellationToken = default)
@@ -207,7 +207,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		await using var command = CreateCommand(connection, "dbo.uspGetSessionCompletionSummary");
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var response = new SessionSummaryResponseDto();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -223,15 +223,31 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 			});
 		}
 
-		if (await reader.NextResultAsync(cancellationToken) == false || await reader.ReadAsync(cancellationToken) == false)
+		var sessionSummary = await (
+			from session in _dbContext.Sessions.AsNoTracking()
+			join script in _dbContext.Scripts.AsNoTracking() on session.ScriptId equals script.ScriptId
+			where session.SessionId == sessionId
+				&& session.IsDeleted == false
+				&& script.IsDeleted == false
+			select new
+			{
+				TotalTurns = script.UtteranceCount,
+				script.ScriptTitle,
+				script.GrammarFocusTag
+			}
+		).FirstOrDefaultAsync(cancellationToken);
+
+		if (sessionSummary is null)
 		{
 			return response.MemberScores.Count == 0 ? null : response;
 		}
 
-		response.TotalTurns = GetInt32(reader, "TotalTurns");
-		response.ScriptTitle = GetString(reader, "ScriptTitle");
-		response.GrammarFocusTag = GetString(reader, "GrammarFocusTag");
-		response.TotalMistakesAllMembers = GetInt32(reader, "TotalMistakesAllMembers");
+		response.TotalTurns = sessionSummary.TotalTurns;
+		response.ScriptTitle = sessionSummary.ScriptTitle;
+		response.GrammarFocusTag = sessionSummary.GrammarFocusTag;
+		response.TotalMistakesAllMembers = await _dbContext.Mistakes
+			.AsNoTracking()
+			.CountAsync(mistake => mistake.SessionId == sessionId && mistake.IsDeleted == false, cancellationToken);
 
 		return response;
 	}

@@ -21,7 +21,7 @@ public sealed class AdminRepository : IAdminRepository
 	public async Task<AdminDashboardResponseDto> GetDashboardSummaryAsync(CancellationToken cancellationToken = default)
 	{
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetAdminDashboardSummary", cancellationToken);
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -42,7 +42,7 @@ public sealed class AdminRepository : IAdminRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetRecentActivityList", cancellationToken);
 		command.Parameters.Add(CreateParameter("@TopN", topN));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		var items = new List<RecentActivityDto>();
 
@@ -67,7 +67,7 @@ public sealed class AdminRepository : IAdminRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetTopGrammarMistakeType", cancellationToken);
 		command.Parameters.Add(CreateParameter("@TopN", topN));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		var items = new List<GrammarMistakeSummaryDto>();
 
@@ -93,7 +93,7 @@ public sealed class AdminRepository : IAdminRepository
 		command.Parameters.Add(CreateParameter("@PageNumber", dto.PageNumber));
 		command.Parameters.Add(CreateParameter("@PageSize", dto.PageSize));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		var items = new List<AdminUserListResponseDto>();
 
@@ -112,7 +112,7 @@ public sealed class AdminRepository : IAdminRepository
 			});
 		}
 
-		var totalCount = await ReadTotalCountAsync(reader, cancellationToken);
+		var totalCount = await CountUsersAsync(dto, cancellationToken);
 
 		return new PagedResult<AdminUserListResponseDto>
 		{
@@ -128,7 +128,7 @@ public sealed class AdminRepository : IAdminRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetUserDetailByUserId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -167,13 +167,7 @@ public sealed class AdminRepository : IAdminRepository
 			MostCommonMistakeType = GetString(reader, "MostCommonMistakeType")
 		};
 
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				result.RecentSessions.Add(ReadSessionSummary(reader));
-			}
-		}
+		result.RecentSessions = await GetRecentUserSessionsAsync(userId, 5, cancellationToken);
 
 		return result;
 	}
@@ -186,7 +180,7 @@ public sealed class AdminRepository : IAdminRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<AdminNoteResponseDto> AddAdminNoteAsync(long adminUserId, AdminNoteRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -198,7 +192,7 @@ public sealed class AdminRepository : IAdminRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", createdBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -213,7 +207,7 @@ public sealed class AdminRepository : IAdminRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetAdminNoteByTargetUserId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@TargetUserId", targetUserId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		var items = new List<AdminNoteResponseDto>();
 
@@ -234,7 +228,7 @@ public sealed class AdminRepository : IAdminRepository
 		command.Parameters.Add(CreateParameter("@PageNumber", dto.PageNumber));
 		command.Parameters.Add(CreateParameter("@PageSize", dto.PageSize));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		var items = new List<AdminReportSummaryDto>();
 
@@ -252,7 +246,9 @@ public sealed class AdminRepository : IAdminRepository
 			});
 		}
 
-		var totalCount = await ReadTotalCountAsync(reader, cancellationToken);
+		var totalCount = await _dbContext.Users
+			.AsNoTracking()
+			.CountAsync(user => user.IsDeleted == false && (dto.UserId.HasValue == false || dto.UserId == 0 || user.UserId == dto.UserId.Value), cancellationToken);
 
 		return new PagedResult<AdminReportSummaryDto>
 		{
@@ -268,7 +264,7 @@ public sealed class AdminRepository : IAdminRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetUserFullReportByUserId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -288,37 +284,20 @@ public sealed class AdminRepository : IAdminRepository
 			}
 		};
 
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
+		result.SessionHistoryList = await GetRecentUserSessionsAsync(userId, null, cancellationToken);
+		result.MistakeBreakdownList = await _dbContext.Mistakes
+			.AsNoTracking()
+			.Where(mistake => mistake.UserId == userId && mistake.IsDeleted == false && mistake.GrammarTag != null)
+			.GroupBy(mistake => mistake.GrammarTag!)
+			.OrderByDescending(group => group.Count())
+			.ThenBy(group => group.Key)
+			.Select(group => new AdminMistakeBreakdownDto
 			{
-				result.SessionHistoryList.Add(ReadSessionSummary(reader));
-			}
-		}
-
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				result.MistakeBreakdownList.Add(new AdminMistakeBreakdownDto
-				{
-					GrammarTag = GetString(reader, "GrammarTag"),
-					MistakeCount = GetInt32(reader, "MistakeCount")
-				});
-			}
-		}
-
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				result.WeeklyScoreList.Add(new WeeklyScoreDto
-				{
-					WeekLabel = GetString(reader, "WeekLabel"),
-					AvgFluencyScore = GetDecimal(reader, "AvgFluencyScore")
-				});
-			}
-		}
+				GrammarTag = group.Key,
+				MistakeCount = group.Count()
+			})
+			.ToListAsync(cancellationToken);
+		result.WeeklyScoreList = await GetWeeklyScoresAsync(userId, cancellationToken);
 
 		return result;
 	}
@@ -369,19 +348,121 @@ public sealed class AdminRepository : IAdminRepository
 		};
 	}
 
-	private static async Task<int> ReadTotalCountAsync(DbDataReader reader, CancellationToken cancellationToken)
+	private async Task<int> CountUsersAsync(AdminUserSearchRequestDto dto, CancellationToken cancellationToken)
 	{
-		if (await reader.NextResultAsync(cancellationToken) == false)
+		var query = _dbContext.Users.AsNoTracking().Where(user => user.IsDeleted == false);
+
+		if (string.IsNullOrWhiteSpace(dto.SearchTerm) == false)
 		{
-			return 0;
+			var searchTerm = dto.SearchTerm.Trim();
+			query = query.Where(user =>
+				user.FullName.Contains(searchTerm) ||
+				user.MobileNumber.Contains(searchTerm));
 		}
 
-		if (await reader.ReadAsync(cancellationToken) == false)
+		if (string.IsNullOrWhiteSpace(dto.AgeGroup) == false)
 		{
-			return 0;
+			query = query.Where(user => user.AgeGroup == dto.AgeGroup);
 		}
 
-		return GetInt32(reader, "TotalCount");
+		if (dto.IsActive.HasValue)
+		{
+			query = query.Where(user => user.IsActive == dto.IsActive.Value);
+		}
+
+		return await query.CountAsync(cancellationToken);
+	}
+
+	private async Task<List<SessionSummaryDto>> GetRecentUserSessionsAsync(long userId, int? take, CancellationToken cancellationToken)
+	{
+		var sessions = await (
+			from session in _dbContext.Sessions.AsNoTracking()
+			where session.IsDeleted == false
+				&& _dbContext.SessionMembers.Any(sessionMember =>
+					sessionMember.SessionId == session.SessionId &&
+					sessionMember.UserId == userId &&
+					sessionMember.IsDeleted == false)
+			select new
+			{
+				session.SessionId,
+				session.SessionName,
+				Date = session.EndedDate ?? session.StartedDate ?? session.DateCreated,
+				Duration = session.ActualDurationSec.HasValue && session.ActualDurationSec.Value > 0
+					? (int)Math.Ceiling(session.ActualDurationSec.Value / 60.0)
+					: session.SessionDuration
+			})
+			.OrderByDescending(item => item.Date)
+			.ThenByDescending(item => item.SessionId)
+			.ToListAsync(cancellationToken);
+
+		if (take.HasValue)
+		{
+			sessions = sessions.Take(take.Value).ToList();
+		}
+
+		var sessionIds = sessions.Select(item => item.SessionId).ToList();
+
+		var voiceAverages = await _dbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(voiceAnalysis => voiceAnalysis.UserId == userId && sessionIds.Contains(voiceAnalysis.SessionId) && voiceAnalysis.IsDeleted == false)
+			.GroupBy(voiceAnalysis => voiceAnalysis.SessionId)
+			.Select(group => new
+			{
+				SessionId = group.Key,
+				FluencyScore = group.Average(voiceAnalysis => voiceAnalysis.FluencyScore)
+			})
+			.ToDictionaryAsync(item => item.SessionId, item => item.FluencyScore, cancellationToken);
+
+		var mistakeCounts = await _dbContext.Mistakes
+			.AsNoTracking()
+			.Where(mistake => mistake.UserId == userId && sessionIds.Contains(mistake.SessionId) && mistake.IsDeleted == false)
+			.GroupBy(mistake => mistake.SessionId)
+			.Select(group => new
+			{
+				SessionId = group.Key,
+				MistakeCount = group.Count()
+			})
+			.ToDictionaryAsync(item => item.SessionId, item => item.MistakeCount, cancellationToken);
+
+		return sessions.Select(item => new SessionSummaryDto
+		{
+			SessionId = item.SessionId,
+			SessionName = item.SessionName,
+			Date = item.Date,
+			Duration = item.Duration,
+			FluencyScore = voiceAverages.TryGetValue(item.SessionId, out var fluencyScore) ? fluencyScore : 0m,
+			MistakeCount = mistakeCounts.TryGetValue(item.SessionId, out var mistakeCount) ? mistakeCount : 0
+		}).ToList();
+	}
+
+	private async Task<List<WeeklyScoreDto>> GetWeeklyScoresAsync(long userId, CancellationToken cancellationToken)
+	{
+		var weeklyScores = await _dbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(voiceAnalysis => voiceAnalysis.UserId == userId && voiceAnalysis.IsDeleted == false)
+			.GroupBy(voiceAnalysis => new
+			{
+				voiceAnalysis.RecordedAt.Year,
+				voiceAnalysis.RecordedAt.Month,
+				Week = ((voiceAnalysis.RecordedAt.Day - 1) / 7) + 1
+			})
+			.Select(group => new
+			{
+				group.Key.Year,
+				group.Key.Month,
+				group.Key.Week,
+				AvgFluencyScore = group.Average(voiceAnalysis => voiceAnalysis.FluencyScore)
+			})
+			.OrderBy(item => item.Year)
+			.ThenBy(item => item.Month)
+			.ThenBy(item => item.Week)
+			.ToListAsync(cancellationToken);
+
+		return weeklyScores.Select(item => new WeeklyScoreDto
+		{
+			WeekLabel = $"{item.Year:D4}-{item.Month:D2}-W{item.Week}",
+			AvgFluencyScore = item.AvgFluencyScore
+		}).ToList();
 	}
 
 	private static string GetString(DbDataReader reader, string columnName)

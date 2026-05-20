@@ -30,7 +30,7 @@ public sealed class RefreshTokenRepository : GenericRepository<RefreshToken>, IR
 		command.Parameters.Add(CreateParameter("@CreatedBy", refreshToken.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", refreshToken.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 
 		return Convert.ToInt64(result);
 	}
@@ -57,7 +57,7 @@ public sealed class RefreshTokenRepository : GenericRepository<RefreshToken>, IR
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	private DbParameter CreateParameter(string parameterName, object? value)

@@ -27,7 +27,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", repracticeSession.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", repracticeSession.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 		return Convert.ToInt64(result);
 	}
 
@@ -45,7 +45,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", repracticeUtterance.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", repracticeUtterance.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 		return Convert.ToInt64(result);
 	}
 
@@ -54,7 +54,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetRepracticeSessionByRepracticeSessionId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@RepracticeSessionId", repracticeSessionId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -72,27 +72,27 @@ public sealed class RepracticeRepository : IRepracticeRepository
 			GeneratedDate = GetDateTime(reader, "GeneratedDate")
 		};
 
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
+		response.Utterances = await _dbContext.RepracticeUtterances
+			.AsNoTracking()
+			.Where(utterance => utterance.RepracticeSessionId == repracticeSessionId && utterance.IsDeleted == false)
+			.OrderBy(utterance => utterance.SortOrder)
+			.ThenBy(utterance => utterance.RepracticeUtteranceId)
+			.Select(utterance => new RepracticeUtteranceResponseDto
 			{
-				response.Utterances.Add(new RepracticeUtteranceResponseDto
-				{
-					RepracticeUtteranceId = GetInt64(reader, "RepracticeUtteranceId"),
-					MistakeId = GetInt64(reader, "MistakeId"),
-					OriginalUtteranceId = GetInt64(reader, "OriginalUtteranceId"),
-					EnglishText = GetString(reader, "EnglishText"),
-					HintText = GetNullableString(reader, "HintText"),
-					MistakeType = GetString(reader, "MistakeType"),
-					MistakeDetail = GetNullableString(reader, "MistakeDetail"),
-					CorrectionNote = GetNullableString(reader, "CorrectionNote"),
-					AttemptCount = GetInt32(reader, "AttemptCount"),
-					BestScore = GetDecimal(reader, "BestScore"),
-					LastScore = GetDecimal(reader, "LastScore"),
-					IsResolved = GetBoolean(reader, "IsResolved")
-				});
-			}
-		}
+				RepracticeUtteranceId = utterance.RepracticeUtteranceId,
+				MistakeId = utterance.MistakeId,
+				OriginalUtteranceId = utterance.OriginalUtteranceId,
+				EnglishText = utterance.EnglishText,
+				HintText = utterance.HintText,
+				MistakeType = utterance.MistakeType,
+				MistakeDetail = utterance.MistakeDetail,
+				CorrectionNote = utterance.CorrectionNote,
+				AttemptCount = utterance.AttemptCount,
+				BestScore = utterance.BestScore,
+				LastScore = utterance.LastScore,
+				IsResolved = utterance.IsResolved
+			})
+			.ToListAsync(cancellationToken);
 
 		return response;
 	}
@@ -105,7 +105,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		command.Parameters.Add(CreateParameter("@PageNumber", pageNumber));
 		command.Parameters.Add(CreateParameter("@PageSize", pageSize));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<RepracticeSessionResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -122,7 +122,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 			});
 		}
 
-		var totalCount = await ReadTotalCountAsync(reader, cancellationToken);
+		var totalCount = await CountRepracticeHistoryAsync(userId, cancellationToken);
 
 		return new PagedResult<RepracticeSessionResponseDto>
 		{
@@ -162,7 +162,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<decimal> CalculateImprovementPercentageAsync(long userId, CancellationToken cancellationToken = default)
@@ -170,7 +170,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspCalculateImprovementPercentByUserId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 
 		if (result is null || result == DBNull.Value)
 		{
@@ -189,7 +189,7 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	private async Task<DbCommand> CreateStoredProcedureCommandAsync(string storedProcedureName, CancellationToken cancellationToken)
@@ -216,14 +216,11 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		}
 	}
 
-	private static async Task<int> ReadTotalCountAsync(DbDataReader reader, CancellationToken cancellationToken)
+	private async Task<int> CountRepracticeHistoryAsync(long userId, CancellationToken cancellationToken)
 	{
-		if (await reader.NextResultAsync(cancellationToken) == false || await reader.ReadAsync(cancellationToken) == false)
-		{
-			return 0;
-		}
-
-		return GetInt32(reader, "TotalCount");
+		return await _dbContext.RepracticeSessions
+			.AsNoTracking()
+			.CountAsync(session => session.UserId == userId && session.IsDeleted == false, cancellationToken);
 	}
 
 	private static string GetString(DbDataReader reader, string columnName)

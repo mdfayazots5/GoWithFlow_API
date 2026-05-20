@@ -37,7 +37,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", script.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", script.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 		return Convert.ToInt64(result);
 	}
 
@@ -56,7 +56,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", utterance.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", utterance.IPAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task BulkInsertUtterancesAsync(long scriptId, IEnumerable<UtteranceParseDto> utterances, string createdBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -67,7 +67,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", createdBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task UpdateScriptUtteranceCountAsync(long scriptId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -77,7 +77,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<PagedResult<ScriptListItemResponseDto>> GetScriptsAsync(ScriptSearchRequestDto dto, CancellationToken cancellationToken = default)
@@ -91,7 +91,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@PageNumber", dto.PageNumber));
 		command.Parameters.Add(CreateParameter("@PageSize", dto.PageSize));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<ScriptListItemResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -112,7 +112,7 @@ public sealed class ScriptRepository : IScriptRepository
 			});
 		}
 
-		var totalCount = await ReadTotalCountAsync(reader, cancellationToken);
+		var totalCount = await CountScriptsAsync(dto, cancellationToken);
 
 		return new PagedResult<ScriptListItemResponseDto>
 		{
@@ -128,7 +128,7 @@ public sealed class ScriptRepository : IScriptRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetScriptDetailByScriptId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@ScriptId", scriptId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -152,25 +152,25 @@ public sealed class ScriptRepository : IScriptRepository
 			UtteranceCount = GetInt32(reader, "UtteranceCount")
 		};
 
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
+		result.Utterances = await _dbContext.Utterances
+			.AsNoTracking()
+			.Where(utterance => utterance.ScriptId == scriptId && utterance.IsDeleted == false)
+			.OrderBy(utterance => utterance.SequenceId)
+			.ThenBy(utterance => utterance.UtteranceId)
+			.Select(utterance => new UtteranceResponseDto
 			{
-				result.Utterances.Add(new UtteranceResponseDto
-				{
-					UtteranceId = GetInt64(reader, "UtteranceId"),
-					ScriptId = GetInt64(reader, "ScriptId"),
-					SequenceId = GetInt32(reader, "SequenceId"),
-					SpeakerLabel = GetString(reader, "SpeakerLabel"),
-					EnglishText = GetString(reader, "EnglishText"),
-					HintText = GetNullableString(reader, "HintText"),
-					GrammarTag = GetNullableString(reader, "GrammarTag"),
-					ContextTag = GetNullableString(reader, "ContextTag"),
-					FocusWord = GetNullableString(reader, "FocusWord"),
-					PronunciationNote = GetNullableString(reader, "PronunciationNote")
-				});
-			}
-		}
+				UtteranceId = utterance.UtteranceId,
+				ScriptId = utterance.ScriptId,
+				SequenceId = utterance.SequenceId,
+				SpeakerLabel = utterance.SpeakerLabel,
+				EnglishText = utterance.EnglishText,
+				HintText = utterance.HintText,
+				GrammarTag = utterance.GrammarTag,
+				ContextTag = utterance.ContextTag,
+				FocusWord = utterance.FocusWord,
+				PronunciationNote = utterance.PronunciationNote
+			})
+			.ToListAsync(cancellationToken);
 
 		return result;
 	}
@@ -180,7 +180,7 @@ public sealed class ScriptRepository : IScriptRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetScriptVersionHistoryByScriptId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@ScriptId", scriptId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<ScriptVersionResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -207,7 +207,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<long?> CheckScriptTitleExistsAsync(string scriptTitle, CancellationToken cancellationToken = default)
@@ -215,7 +215,7 @@ public sealed class ScriptRepository : IScriptRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspCheckScriptTitleExists", cancellationToken);
 		command.Parameters.Add(CreateParameter("@ScriptTitle", scriptTitle));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 
 		if (result is null || result == DBNull.Value)
 		{
@@ -243,7 +243,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", scriptVersion.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", scriptVersion.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 		return Convert.ToInt64(result);
 	}
 
@@ -254,7 +254,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@DeletedBy", deletedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	private async Task<DbCommand> CreateStoredProcedureCommandAsync(string storedProcedureName, CancellationToken cancellationToken)
@@ -329,19 +329,40 @@ public sealed class ScriptRepository : IScriptRepository
 		return DbCommandHelper.CreateParameter(_dbContext.DatabaseProvider, parameterName, value);
 	}
 
-	private static async Task<int> ReadTotalCountAsync(DbDataReader reader, CancellationToken cancellationToken)
+	private async Task<int> CountScriptsAsync(ScriptSearchRequestDto dto, CancellationToken cancellationToken)
 	{
-		if (await reader.NextResultAsync(cancellationToken) == false)
+		var query = _dbContext.Scripts.AsNoTracking().Where(script => script.IsDeleted == false);
+
+		if (string.IsNullOrWhiteSpace(dto.SearchTerm) == false)
 		{
-			return 0;
+			var searchTerm = dto.SearchTerm.Trim();
+			query = query.Where(script =>
+				script.ScriptTitle.Contains(searchTerm) ||
+				script.Category.Contains(searchTerm) ||
+				script.ContextTag.Contains(searchTerm));
 		}
 
-		if (await reader.ReadAsync(cancellationToken) == false)
+		if (string.IsNullOrWhiteSpace(dto.Category) == false)
 		{
-			return 0;
+			query = query.Where(script => script.Category == dto.Category);
 		}
 
-		return GetInt32(reader, "TotalCount");
+		if (string.IsNullOrWhiteSpace(dto.GrammarFocusTag) == false)
+		{
+			query = query.Where(script => script.GrammarFocusTag == dto.GrammarFocusTag);
+		}
+
+		if (string.IsNullOrWhiteSpace(dto.TargetAgeGroup) == false)
+		{
+			query = query.Where(script => script.TargetAgeGroup == dto.TargetAgeGroup);
+		}
+
+		if (dto.IsActive.HasValue)
+		{
+			query = query.Where(script => script.IsActive == dto.IsActive.Value);
+		}
+
+		return await query.CountAsync(cancellationToken);
 	}
 
 	private static string GetString(DbDataReader reader, string columnName)

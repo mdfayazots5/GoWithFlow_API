@@ -39,9 +39,9 @@
   - Application: DTOs, validators, interfaces, mappings, services
   - Infrastructure: EF Core DbContext, entity configurations, repositories, external services
   - API: controllers, middleware, startup configuration
-- API base route: `/api/v1`
+- API base route: `/api`
 - Current controller implemented:
-  - `api/v1/auth`
+  - `api/auth`
 
 ### Runtime Configuration
 
@@ -119,6 +119,167 @@
   - `Backend/GoWithFlow.Infrastructure/Data/Configurations`
   - `Backend/GoWithFlow.Infrastructure/Data/Migrations`
   - generated PostgreSQL output: `Docs/PostgreSQLMigration`
+  - dual-provider validation script: `scripts/validate_dual_provider_contract.py`
+
+## Backend Authentication Foundation — Dual-Provider Development Contract
+
+### Entry Points
+- `Backend/GoWithFlow.Infrastructure/Data/DbCommandHelper.cs`
+- `Backend/Docs/PostgreSQLMigration/*.sql`
+- `scripts/validate_dual_provider_contract.py`
+
+### UI Trigger
+- Backend/API development, repository changes, SQL routine changes, and PostgreSQL migration preparation
+
+### Request Contract
+Endpoint: `[VERIFY]` repository development contract, not an HTTP endpoint
+Inputs:
+  - provider-aware repository changes
+  - SQL Server routine additions or edits
+  - PostgreSQL migration or compatibility patch files
+
+### Response Contract
+Success:
+  - SQL Server runtime remains callable through `dbo.usp*`
+  - PostgreSQL runtime remains callable through `public.<lowercased-sql-server-name>`
+  - PostgreSQL row-returning routines consumed by repositories expose provider-safe tabular contracts through `13_provider_safe_tabular_routines.sql`
+  - PostgreSQL output-parameter nonquery routines remain callable through `DbCommandHelper.ExecuteNonQueryAsync` without repository branching
+  - no runtime `NextResultAsync()` dependency remains in API, application, or infrastructure code
+  - `python3 scripts/validate_dual_provider_contract.py` exits `0`
+  - `dotnet build Backend/GoWithFlow.API/GoWithFlow.API.csproj` succeeds
+Failure:
+  - missing PostgreSQL function alias, provider-unsafe return contract, or reintroduced multi-result reader pattern breaks runtime validation before provider switch or deployment
+
+### Validation
+- Every repository command using `CommandType.StoredProcedure` must execute through `DbCommandHelper.ExecuteReaderAsync`, `ExecuteScalarAsync`, or `ExecuteNonQueryAsync`
+- Every SQL Server routine name referenced in infrastructure code must resolve to a latest active PostgreSQL function present in `Backend/Docs/PostgreSQLMigration/*.sql`
+- The latest active PostgreSQL definition for every code-called routine must not return `REFCURSOR` or `SETOF REFCURSOR`
+- Provider-safe rowset routines consumed by repositories must return `TABLE(...)`
+- `NextResultAsync()` is not allowed in runtime code under `Backend/GoWithFlow.API`, `Backend/GoWithFlow.Application`, or `Backend/GoWithFlow.Infrastructure`
+- PostgreSQL compatibility deltas must be added as new ordered SQL files instead of silently mutating historical migration files after drift is detected
+
+### Database / Stored Procedures
+Tables read: `[VERIFY]` validator inspects source and PostgreSQL migration files only
+Tables written: `[VERIFY]` validator inspects source and PostgreSQL migration files only
+Stored procedures:
+  - SQL Server runtime keeps canonical names such as `dbo.uspGetUserByMobileNumber`
+  - PostgreSQL runtime must expose matching function entry points for the lowercased SQL Server base names, even when the original generated file used pluralization or typo variants
+  - PostgreSQL rowset routines previously emitted as cursor contracts in `06_stored_procedures.sql` and `12_dual_provider_routine_aliases.sql` are superseded by later `RETURNS TABLE(...)` definitions in `13_provider_safe_tabular_routines.sql`
+  - PostgreSQL output-parameter routines such as `uspvalidatejoincode` and `uspinsertsession` are executed as `SELECT public.function(...)` and have output values hydrated back into `DbParameter` instances by `DbCommandHelper`
+Key queries:
+  - `scripts/validate_dual_provider_contract.py` compares code-called `dbo.usp*` names against the latest PostgreSQL `CREATE OR REPLACE FUNCTION` declarations and rejects active `REFCURSOR` contracts
+
+### Business Rules
+- Local SQL Server objects can be updated in the local database when needed; PostgreSQL compatibility changes must be prepared as new SQL files under `Backend/Docs/PostgreSQLMigration`
+- The API and UI must remain provider-agnostic; provider-specific behavior belongs only in `DbCommandHelper`, migration files, or provider-aware EF configuration
+- PostgreSQL routine-name compatibility wrappers are acceptable when SQL Server names and generated PostgreSQL names drift, but active runtime contracts must remain standard tabular functions rather than cursor wrappers
+- Any SQL Server routine that originally returned multiple result sets must be redesigned for PostgreSQL as a tabular first query plus separate provider-safe follow-up queries; cursor emulation is not part of the supported runtime contract
+
+### State Transitions
+- New backend routine introduced in code → matching PostgreSQL function or alias must exist before PostgreSQL is considered runnable
+- PostgreSQL drift detected by validator → create next ordered SQL patch file, update `ProjectOverview.md`, and keep the latest active function definition provider-safe
+- Repository flow needs secondary datasets beyond the primary routine rowset → move those reads to separate provider-safe queries instead of `NextResultAsync()`
+
+### Realtime Events
+- Not applicable
+
+### Failure Cases
+- Repository command bypasses `DbCommandHelper` execution helpers → PostgreSQL provider can regress at runtime
+- PostgreSQL migration file omits a code-called routine alias → runtime function lookup failure
+- Historical PostgreSQL generated routine uses typo/pluralization drift → later compatibility file required before provider validation passes
+- Latest active PostgreSQL routine still returns `REFCURSOR`/`SETOF REFCURSOR` → provider-safe validator failure
+- Runtime code reintroduces `NextResultAsync()` → provider-safe validator failure
+
+### Recovery / Fallback Logic
+- Keep SQL Server as canonical backend contract when local DB logic is already validated
+- Add PostgreSQL-only compatibility or tabular replacement functions in a new numbered migration file when generated function names or rowset contracts drift from the code-called SQL Server names
+- Run `python3 scripts/validate_dual_provider_contract.py` and `dotnet build Backend/GoWithFlow.API/GoWithFlow.API.csproj` after every provider-sensitive change
+
+### Notes on Known Drift Prevented
+- PostgreSQL auth/runtime drift is no longer handled as one-off debugging; the validator now blocks missing routine aliases before provider rollout
+- Future PostgreSQL fixes must be appended as new numbered files instead of editing already-applied local SQL Server artifacts
+- Checked-in PostgreSQL migration SQL files plus `scripts/validate_dual_provider_contract.py` are the validated runtime contract; `scripts/generate_postgresql_migration.py` must be revalidated before it is used to regenerate routine files
+- Cursor-based PostgreSQL routines originally generated from SQL Server multi-result procedures are no longer treated as a supported runtime contract; the stable contract is now latest-definition `RETURNS TABLE(...)` plus repository split queries
+
+## Backend Authentication Foundation — PostgreSQL Provider-Safe Routine Contract
+
+### Entry Points
+- Any API/UI flow that reaches infrastructure routines through `CommandType.StoredProcedure`
+- `Backend/GoWithFlow.Infrastructure/Data/DbCommandHelper.cs`
+- `Backend/Docs/PostgreSQLMigration/13_provider_safe_tabular_routines.sql`
+
+### UI Trigger
+- Indirect trigger from authentication, users, admin, repractice, reports, dashboard, session-history, script-library, and live-session flows
+
+### Request Contract
+Endpoint: `[VERIFY]` internal repository/runtime contract, not an HTTP endpoint
+Headers: Not applicable
+Body:
+  - `DatabaseProvider` (`string`, required): `PostgreSQL` selects function-style execution through `DbCommandHelper`
+  - routine name (`string`, required): SQL Server canonical `dbo.usp*`; PostgreSQL runtime resolves to `public.<lowercased-name>`
+  - input parameters (`DbParameter[]`, required): normalized to PostgreSQL `p_*` names
+  - output parameters (`DbParameter[]`, optional): allowed only for nonquery-style functions that return a single row with matching normalized output column names
+
+### Response Contract
+Success:
+  - reader/scalar rowset contract: `SELECT * FROM public.function(...)` returns a single tabular dataset consumable through `DbDataReader`
+  - nonquery no-output contract: `SELECT public.function(...)`
+  - nonquery output-parameter contract: `DbCommandHelper.ExecuteNonQueryAsync` reads the single returned row and copies normalized columns back into output `DbParameter` values
+  - repository flows that previously depended on `NextResultAsync()` now load secondary datasets through separate EF/repository queries
+Error responses:
+  - runtime validator failure: latest active PostgreSQL definition missing or provider-unsafe
+  - runtime execution failure: output column names do not match normalized parameter names
+
+### Validation
+- `scripts/validate_dual_provider_contract.py` must pass
+- `dotnet build Backend/GoWithFlow.API/GoWithFlow.API.csproj` must pass
+- no `NextResultAsync()` usage may remain in runtime code
+- latest active definitions for these code-called PostgreSQL rowset routines must return `TABLE(...)`:
+  - `uspgetalluserbysearch`, `uspexportuserreportdata`, `uspgetmistakebyuseridwithfilter`, `uspgetrepracticesessionbyrepracticesessionid`, `uspgetrepracticesessionlistbyuserid`, `uspgetscriptbysearch`, `uspgetscriptdetailbyscriptid`, `uspgetsessionbyjoincode`, `uspgetsessionbysessionid`, `uspgetsessioncompletionsummary`, `uspgetsessiondetailbysessionid`, `uspgetsessionlistbyuserid`, `uspgetstreakdatabyuserid`, `uspgetuserdashboardsummarybyuserid`, `uspgetuserdetailbyuserid`, `uspgetuserfullreportbyuserid`, `uspgetuserreportsummarylist`
+- latest active definitions for all code-called PostgreSQL routines must not return `REFCURSOR` or `SETOF REFCURSOR`
+
+### Database / Stored Procedures
+Tables read:
+  - Primary rowset routines still read application tables such as `tblUser`, `tblSession`, `tblSessionMember`, `tblScript`, `tblMistake`, `tblRepracticeSession`, `tblVoiceAnalysis`, `tblListenerFeedback`, and `tblUserStreak`
+Tables written:
+  - nonquery auth/session routines may still write through PostgreSQL functions; provider-safe change in this contract is execution shape, not table ownership
+Stored procedures:
+  - SQL Server canonical names remain unchanged in repository code
+  - PostgreSQL active tabular overrides are defined in `13_provider_safe_tabular_routines.sql`
+  - legacy cursor-era definitions in `06_stored_procedures.sql` and `12_dual_provider_routine_aliases.sql` remain historical migration artifacts only; once a later-numbered file recreates the same function name, the latest definition becomes the runtime contract
+Key queries:
+  - session/dashboard/report secondary datasets now come from separate EF/repository queries instead of a second `DbDataReader` result set
+
+### Business Rules
+- Repository logic must stay provider-neutral; provider branching remains centralized in `DbCommandHelper`
+- PostgreSQL support is based on standard tabular consumption only
+- Future SQL Server multi-result procedures must be redesigned for PostgreSQL as one tabular routine plus separate follow-up queries or structured payloads before they are considered dual-provider safe
+- PostgreSQL migration changes are append-only and must use a new ordered file
+
+### State Transitions
+- Historical cursor-based routine detected in active runtime path → add a new PostgreSQL patch file with a later tabular definition
+- Repository introduces a second result-set dependency → refactor to separate provider-safe queries before release
+- Output-parameter routine added or changed → `DbCommandHelper` output hydration contract must remain aligned with normalized `p_*` column names
+
+### Realtime Events
+- Not applicable
+
+### Failure Cases
+- Code-called routine name missing in latest PostgreSQL migration set → runtime/validator failure
+- Latest active PostgreSQL routine returns `REFCURSOR` or `SETOF REFCURSOR` → validator failure
+- Runtime code uses `NextResultAsync()` → validator failure
+- Output-parameter PostgreSQL function returns columns that do not match normalized output parameter names → runtime failure
+
+### Recovery / Fallback Logic
+- Keep SQL Server canonical procedure names in repositories
+- Add the next numbered PostgreSQL patch file with `RETURNS TABLE(...)` replacements when a cursor-era routine is still active
+- Load secondary datasets through separate provider-safe queries rather than cursor emulation
+- Re-run provider validation and build before claiming PostgreSQL support
+
+### Notes on Known Drift Prevented
+- Login/runtime drift was initially caused by invoking PostgreSQL functions with SQL Server procedure semantics; `DbCommandHelper` now rewrites those calls
+- Name-alias fixes in `12_dual_provider_routine_aliases.sql` solved lookup drift but did not solve cursor-based rowset drift
+- `13_provider_safe_tabular_routines.sql` is the stable provider-safe contract for the affected rowset routines, while repository code now avoids `NextResultAsync()`
 
 ### Database Schema
 
@@ -190,30 +351,23 @@
 
 ### API Surface
 
-#### POST /api/v1/auth/send-otp
+#### POST /api/auth/login
 
-- Request DTO: `SendOtpRequestDto` — fields: `MobileNumber`
-- Generates a 6-digit OTP
-- database persistence contract: `[VERIFY]` `ProjectOverview` previously pointed to `uspInsertOtpVerification`, but live SQL Server no longer contains `tblOtpVerification`
-- returns OTP in development mode
+- Request DTO: `LoginRequestDto` — fields: `MobileNumber`, `Password`
+- Authenticates the user via `uspGetUserByMobileNumber`
+- returns access token, refresh token, expiry, and cached profile shell fields
 
-#### POST /api/v1/auth/verify-otp
-
-- Request DTO: `VerifyOtpRequestDto` — fields: `MobileNumber`, `OtpCode`
-- database verification contract: `[VERIFY]` `ProjectOverview` previously pointed to `uspVerifyOtp`, but live SQL Server no longer contains `tblOtpVerification`
-- if verification succeeds and user exists returns tokens; if not returns registration-required response
-
-#### POST /api/v1/auth/register
+#### POST /api/auth/register
 
 - Request DTO: `RegisterRequestDto` — fields: `FullName`, `MobileNumber`, `Email`, `AgeGroup`, `PreferredHintLanguage`, `AvatarUrl`
 - Inserts user via `uspInsertUser`
 
-#### POST /api/v1/auth/refresh-token
+#### POST /api/auth/refresh-token
 
 - Request DTO: `RefreshTokenRequestDto` — fields: `RefreshToken`
 - Revokes old token, issues new access and refresh tokens
 
-#### POST /api/v1/auth/logout
+#### POST /api/auth/logout
 
 - Authorization: required. Request: `RefreshToken`. Revokes refresh token.
 
@@ -221,25 +375,23 @@
 
 ### Request and Response Contracts
 
-- Request DTOs: `RegisterRequestDto`, `SendOtpRequestDto`, `VerifyOtpRequestDto`, `RefreshTokenRequestDto`
-- Response DTOs: `AuthResponseDto`, `UserProfileResponseDto`, `OtpResponseDto`
+- Request DTOs: `LoginRequestDto`, `RegisterRequestDto`, `RefreshTokenRequestDto`
+- Response DTOs: `AuthResponseDto`, `UserProfileResponseDto`
 - Standard response wrapper: `ApiResponse<T>` — fields: `Success`, `Message`, `Data`, `Errors`
 
 ### Validation Rules
 
+- `LoginRequestDto`: `MobileNumber` required exactly 10 digits; `Password` required minimum 6 characters
 - `RegisterRequestDto`: `FullName` required len 2-60; `MobileNumber` required exactly 10 digits; `Email` optional email format; `AgeGroup` enum only; `PreferredHintLanguage` enum only; `AvatarUrl` optional max 256
-- `SendOtpRequestDto`: `MobileNumber` required exactly 10 digits
-- `VerifyOtpRequestDto`: `MobileNumber` required exactly 10 digits; `OtpCode` required exactly 6 digits
 
 ### Authentication Business Logic
 
 - JWT claims: `UserId`, `FullName`, `Role`, `MobileNumber`; 15-minute expiry
 - Frontend post-login: `ADMIN` → `/admin/dashboard`; `USER` → `/user/dashboard`; dashboard greeting falls back to `Member` if cache not ready
 - Refresh token: secure random, 7-day expiry, persisted in `tblRefreshToken`
-- OTP: secure random 6-digit numeric string
-- OTP persistence drift: live SQL Server schema removed `tblOtpVerification`, so OTP storage/verification procedures require reconciliation before PostgreSQL cutover
 - Role defaults to `USER` on registration
 - `uspUpdateUserLastLogin` updates `LastLoginDate`, `UpdatedBy`, `LastUpdated` only — streak is managed separately by `uspUpsertUserStreak`
+- OTP persistence remains `[VERIFY]` only; no live `AuthController` endpoint currently exposes OTP send/verify flows
 
 ### Infrastructure Wiring
 
@@ -249,7 +401,8 @@
   - `ColumnTypeHelper` centralizes SQL Server vs PostgreSQL store types for money/decimal, large text, JSON, dates, timestamps, and filtered indexes
   - `ModelBuilderExtensions.ApplyProviderConventions` remaps EF model metadata after `ApplyConfigurationsFromAssembly`
 - provider-aware command wiring:
-  - `DbCommandHelper` builds provider-specific `DbParameter` instances and maps SQL Server procedure names such as `dbo.uspGetUserByUserId` to PostgreSQL routine names such as `public.usp_get_user_by_user_id`
+  - `DbCommandHelper` builds provider-specific `DbParameter` instances and maps SQL Server procedure names such as `dbo.uspGetUserByUserId` to PostgreSQL function names such as `public.uspgetuserbyuserid`
+  - PostgreSQL migration output exposes auth routines as `CREATE OR REPLACE FUNCTION`, so `DbCommandHelper.ExecuteReaderAsync`, `ExecuteScalarAsync`, and `ExecuteNonQueryAsync` rewrite `CommandType.StoredProcedure` calls into explicit PostgreSQL `SELECT` statements at execution time
 - startup connectivity guard:
   - `DatabaseStartupValidationHostedService` fails app boot if the selected provider cannot connect
 - Repositories and services touching OTP persistence should be treated as `[VERIFY]` until the removed table contract is reconciled
@@ -257,6 +410,82 @@
 - Middleware: `ExceptionMiddleware`
 - Authorization policies: `AdminOnly`, `UserOrAdmin`, `ActiveUser`
 - Real-time identity: `JwtUserIdProvider`, `HubConnectionTracker`
+
+## Backend Authentication Foundation — Login Flow
+
+### Entry Points
+- Frontend login screen route: `[VERIFY]`
+- API endpoint: `POST /api/auth/login`
+
+### UI Trigger
+- Login form submit button: `[VERIFY]`
+
+### Request Contract
+Endpoint: `POST /api/auth/login`
+Headers: `Content-Type: application/json`
+Body:
+  - `mobileNumber` (string, required): exactly 10 digits
+  - `password` (string, required): minimum 6 characters
+
+### Response Contract
+Success (`200 OK`):
+  - `success` (boolean): `true`
+  - `message` (string): `Login successful.`
+  - `data.accessToken` (string): JWT access token
+  - `data.refreshToken` (string): server-issued refresh token
+  - `data.expiresIn` (int): access-token lifetime in seconds
+  - `data.userId` (long): authenticated user id
+  - `data.fullName` (string): authenticated user display name
+  - `data.role` (string): `ADMIN` or `USER`
+  - `data.avatarUrl` (string|null): cached avatar URL
+Error responses:
+  - `401`: invalid mobile/password, inactive account, or refresh/authentication failure body wrapped in `ApiResponse<AuthResponseDto>`
+  - `400`: request validation failure body wrapped in `ApiResponse<AuthResponseDto>`
+  - `500`: provider/routine execution failure when PostgreSQL functions are invoked with procedure semantics
+
+### Validation
+- `mobileNumber` must match `^\d{10}$`
+- `password` must be present and at least 6 characters
+- Authentication fails if the resolved user has no `PasswordHash`
+
+### Database / Stored Procedures
+Tables read: `tblUser`
+Tables written: `tblUser`, `tblRefreshToken`
+Stored procedures: `uspGetUserByMobileNumber` — load active user by mobile number; `uspUpdateUserLastLogin` — stamp `LastLoginDate`, `UpdatedBy`, `LastUpdated`, `IPAddress`; `uspInsertRefreshToken` — persist newly issued refresh token row
+Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserbymobilenumber`, `public.uspupdateuserlastlogin`, and `public.uspinsertrefreshtoken` functions
+
+### Business Rules
+- Lookup user by `MobileNumber`
+- Reject login when the user record is missing, `PasswordHash` is blank, or PBKDF2 password verification fails
+- Reject login when `IsActive = false`
+- On success, update `LastLoginDate`
+- Generate a JWT access token and a new refresh token
+- Persist the refresh token with `DeviceInfo = Web`
+- Return token payload and profile shell fields for frontend session caching
+
+### State Transitions
+- `tblUser.LastLoginDate` → previous timestamp or `NULL` → `NOW()` after successful login
+- `tblRefreshToken.IsRevoked` → new row inserted with `false`
+
+### Realtime Events
+- Not applicable for login flow
+
+### Failure Cases
+- User not found → `401` → `ApiResponse` with `Authentication failed.` / `Invalid mobile number or password.`
+- Password hash missing → `401` → `ApiResponse` with `Authentication failed.` / `Invalid mobile number or password.`
+- Password verification mismatch → `401` → `ApiResponse` with `Authentication failed.` / `Invalid mobile number or password.`
+- Inactive account → `401` → `ApiResponse` with `Authentication failed.` / `Account is inactive.`
+- PostgreSQL routine invoked as a procedure instead of a function → `500` → `Npgsql.PostgresException` (`42883`)
+
+### Recovery / Fallback Logic
+- SQL Server path can continue using `CommandType.StoredProcedure`
+- PostgreSQL path must execute migrated routines as functions via `SELECT * FROM public.routine(...)` for result sets and `SELECT public.routine(...)` for void routines
+- Frontend should treat `401` responses as credential/account failures and avoid retry loops
+
+### Notes on Known Drift Prevented
+- `ProjectOverview` previously omitted the `/api/auth/login` flow contract even though the controller and validator are live
+- `ProjectOverview` previously documented PostgreSQL routine names with underscores; the generated migration actually emits lowercase function names without underscores
+- Live PostgreSQL auth failures occurred because application code used stored-procedure invocation semantics against function-based migration output; provider-aware execution now rewrites those calls before execution
 
 ## Backend Authentication Foundation — Database Provider Selection and Startup Validation
 
@@ -297,7 +526,7 @@
   - `GoWithFlowDbContextFactory` supports `--provider SqlServer` and `--provider PostgreSQL`
 - Routine naming contract:
   - SQL Server repositories call `dbo.usp*`
-  - PostgreSQL repositories map those names to `public.usp_*`
+  - PostgreSQL repositories map those names to `public.usp*` using the lowercased SQL Server base name, e.g. `dbo.uspGetUserByMobileNumber` → `public.uspgetuserbymobilenumber`
 - Raw SQL removed from active repository paths:
   - `RefreshTokenRepository.GetByTokenAsync` now uses EF LINQ
   - `SessionRepository.CheckJoinCodeStatusAsync` now uses EF LINQ
@@ -322,7 +551,7 @@
 - unsupported `DatabaseProvider` value → startup exception
 - missing `ConnectionStrings:{Provider}` entry → startup exception
 - selected provider cannot connect → startup exception naming the failed provider
-- PostgreSQL database missing the mapped `public.usp_*` routines or equivalent logic → repository execution failure at runtime `[VERIFY]`
+- PostgreSQL database missing the mapped lowercase `public.usp*` functions or equivalent logic → repository execution failure at runtime `[VERIFY]`
 
 ### Recovery / Fallback Logic
 - switch `DatabaseProvider` back to `SqlServer` to retain current production behavior
@@ -332,14 +561,14 @@
 ### Notes on Known Drift Prevented
 - runtime config previously documented only `ConnectionStrings:DefaultConnection`; docs now reflect separate SQL Server and PostgreSQL connection keys
 - startup previously described SQL Server-only `UseSqlServer` wiring; docs now capture the configuration-driven provider switch and live connectivity validation
-- repository helpers previously assumed SQL Server `SqlParameter` and `dbo.` routine naming; docs now record the provider-aware parameter factory and routine-name mapping
+- repository helpers previously assumed SQL Server `SqlParameter` and `dbo.` routine naming; docs now record the provider-aware parameter factory, lowercase PostgreSQL routine-name mapping, and function-style execution path
 - `RefreshTokenRepository.GetByTokenAsync` and `SessionRepository.CheckJoinCodeStatusAsync` no longer depend on SQL Server-only raw SQL
 
 ## Backend Authentication Foundation — Supabase PostgreSQL Migration Contract
 
 ### Entry Points
 - Local SQL Server source database: `GoWithFlowDB` on `(localdb)\MSSQLLocalDB`
-- Generated PostgreSQL migration files: `Docs/PostgreSQLMigration/01_extensions.sql` through `Docs/PostgreSQLMigration/10_rls_policies.sql`
+- Generated PostgreSQL migration files: `Docs/PostgreSQLMigration/01_extensions.sql` through `Docs/PostgreSQLMigration/13_provider_safe_tabular_routines.sql`
 
 ### UI Trigger
 - Operator-run migration flow; no frontend trigger
@@ -362,8 +591,11 @@
   - `08_seed_data.sql`
   - `09_sequences_reset.sql`
   - `10_rls_policies.sql`
+  - `11_auth_routine_fixes.sql`
+  - `12_dual_provider_routine_aliases.sql`
+  - `13_provider_safe_tabular_routines.sql`
 - Error state:
-  - stored procedure bodies are emitted as executable PostgreSQL stubs that raise manual-review exceptions until each T-SQL procedure is rewritten and validated
+  - application code calling migrated PostgreSQL functions with stored-procedure semantics triggers runtime `42883` errors because PostgreSQL expects function `SELECT` invocation, not `CALL`
 
 ### Validation
 - Live SQL Server object inventory validated:
@@ -374,7 +606,8 @@
   - triggers: `0`
   - non-PK / non-unique-constraint indexes: `33`
 - PostgreSQL identifier normalization:
-  - all generated table, column, constraint, and index names use lowercase snake case
+  - generated schema objects are lowercase
+  - generated routine names lower-case the SQL Server base name without underscore insertion, e.g. `dbo.uspGetUserByMobileNumber` → `public.uspgetuserbymobilenumber`
 
 ### Database / Stored Procedures
 - Tables read from live SQL Server:
@@ -383,14 +616,18 @@
   - `__EFMigrationsHistory`
 - Stored procedure handling:
   - live SQL Server inventory captured in `06_stored_procedures.sql`
-  - every procedure is represented in PostgreSQL with matching parameters
-  - each PostgreSQL body currently raises a manual-review exception because safe automated T-SQL to PL/pgSQL conversion is not validated for this catalog
+  - SQL Server procedures are rewritten as `CREATE OR REPLACE FUNCTION` definitions under `public`
+  - parameter names are normalized to PostgreSQL-style `p_...`
+  - application callers must invoke migrated routines as PostgreSQL functions
+  - auth compatibility correction: `11_auth_routine_fixes.sql` adds the correctly named `usprevokerefreshtoken(...)` function because `06_stored_procedures.sql` emitted `usprovkerefreshtoken(...)`
+  - routine alias correction: `12_dual_provider_routine_aliases.sql` adds PostgreSQL wrappers for code-called names that drifted in pluralization, abbreviation, or typos inside `06_stored_procedures.sql`
+  - provider-safe rowset correction: `13_provider_safe_tabular_routines.sql` recreates code-called cursor-era entry points as `RETURNS TABLE(...)` functions so the existing `DbDataReader` execution path remains provider-neutral
 - User-defined SQL Server table type:
-  - `dbo.UtteranceTVP` detected; PostgreSQL procedure stubs mark it for JSONB or composite-type redesign
+  - `dbo.UtteranceTVP` detected; PostgreSQL routine definitions mark it for JSONB or composite-type redesign
 
 ### Business Rules
 - Schema migration is ready for PostgreSQL for tables, keys, filtered indexes, sequence resets, and Supabase RLS bridge setup
-- Procedural logic is not validated for production until each stubbed procedure is rewritten from T-SQL to PL/pgSQL and tested against Supabase/PostgreSQL semantics
+- Auth and application routines in `06_stored_procedures.sql` are executable PL/pgSQL functions, but rowset routines originally emitted as cursor contracts are not treated as provider-safe until a later migration file replaces them with tabular definitions
 - Supabase role mapping uses `public.user_auth_map(auth_user_id uuid, user_id bigint)` so `auth.uid()` can resolve legacy bigint `tblUser.UserId`
 
 ### State Transitions
@@ -399,7 +636,7 @@
   - SQL catalog still retains `uspInsertOtpVerification` and `uspVerifyOtp`
 - PostgreSQL target state:
   - schema, FK, index, sequence, and RLS artifacts can be applied in ordered files
-  - stored procedure layer remains blocked behind manual rewrite exceptions
+  - migrated routines are callable only as PostgreSQL functions, not SQL Server-style stored procedures
 
 ### Failure Cases
 - `tblOtpVerification` contract drift → OTP procedures cannot be trusted as live database logic
@@ -408,7 +645,10 @@
 
 ### Recovery / Fallback Logic
 - Use generated schema/index/sequence/RLS files as the structural migration baseline
-- Rewrite each stubbed procedure in PostgreSQL before exposing RPC or server-side database calls
+- Invoke migrated routines with PostgreSQL function syntax from application code or compatibility helpers before exposing live API traffic
+- Apply `11_auth_routine_fixes.sql` after `10_rls_policies.sql` so refresh-token revoke/logout paths have the correctly named PostgreSQL auth function
+- Apply `12_dual_provider_routine_aliases.sql` after `11_auth_routine_fixes.sql` so PostgreSQL exposes the exact routine names used by the API repositories
+- Apply `13_provider_safe_tabular_routines.sql` after `12_dual_provider_routine_aliases.sql` so cursor-era code-called rowset routines are replaced by provider-safe tabular contracts
 - Backfill `public.user_auth_map` immediately after importing users so RLS policies can resolve ownership
 
 ### Notes on Known Drift Prevented
@@ -416,6 +656,10 @@
 - `ProjectOverview` previously documented `tblOtpVerification` as live; EF migration `20260517000000_RemoveOtpVerification` removed the table
 - SQL Server catalog still contains OTP stored procedures after the table drop; this is documented as catalog drift instead of a valid live contract
 - `Migration State` previously stopped at `InitialCreate_Phase1`; live repo now includes migrations through `20260523000001_RelaxImprovementSP_IncludeAbandoned`
+- `ProjectOverview` previously documented PostgreSQL stored-procedure stubs and underscore-delimited routine names; live migration file contains executable lowercase `CREATE OR REPLACE FUNCTION` entries such as `public.uspgetuserbymobilenumber`
+- `06_stored_procedures.sql` currently misspells `uspRevokeRefreshToken` as `usprovkerefreshtoken`; `11_auth_routine_fixes.sql` adds the correctly named function expected by app code
+- `06_stored_procedures.sql` also drifted on `uspGetAllUserBySearch`, `uspGetMistakeByUserIdWithFilter`, `uspGetRepracticeSessionByRepracticeSessionId`, `uspGetTopGrammarMistakeType`, and `uspGetUserFullReportByUserId`; `12_dual_provider_routine_aliases.sql` restores the exact provider-facing function names expected by infrastructure code
+- `scripts/generate_postgresql_migration.py` is not the validated provider contract for routine naming/output; use the checked-in SQL files and validator as the runtime source of truth until the generator is aligned
 
 ### Migration State
 

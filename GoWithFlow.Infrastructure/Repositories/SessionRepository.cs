@@ -56,7 +56,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", sessionMember.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", sessionMember.IPAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<Session?> GetSessionBySessionIdAsync(long sessionId, CancellationToken cancellationToken = default)
@@ -74,7 +74,7 @@ public sealed class SessionRepository : ISessionRepository
 		await using var command = CreateCommand(connection, "dbo.uspGetSessionByJoinCode", null);
 		command.Parameters.Add(CreateParameter("@JoinCode", joinCode));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -94,20 +94,7 @@ public sealed class SessionRepository : ISessionRepository
 			Status = GetString(reader, "Status")
 		};
 
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				response.Slots.Add(new SlotInfoDto
-				{
-					SlotIndex = GetByte(reader, "SlotIndex"),
-					SlotName = GetString(reader, "SlotName"),
-					IsOccupied = GetBoolean(reader, "IsOccupied"),
-					UserFullName = GetNullableString(reader, "UserFullName"),
-					IsReady = GetBoolean(reader, "IsReady")
-				});
-			}
-		}
+		response.Slots = await GetAvailableSlotsBySessionIdAsync(response.SessionId, cancellationToken);
 
 		return response;
 	}
@@ -122,7 +109,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
 		LobbyStateResponseDto? response;
 
-		await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+		await using (var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken))
 		{
 			if (await reader.ReadAsync(cancellationToken) == false)
 			{
@@ -147,23 +134,26 @@ public sealed class SessionRepository : ISessionRepository
 				resolvedStatus = status;
 			}
 
-			if (await reader.NextResultAsync(cancellationToken))
-			{
-				while (await reader.ReadAsync(cancellationToken))
-				{
-					response.Members.Add(new LobbyMemberDto
-					{
-						UserId = GetInt64(reader, "UserId"),
-						FullName = GetString(reader, "FullName"),
-						AvatarUrl = GetNullableString(reader, "AvatarUrl"),
-						SlotIndex = GetByte(reader, "SlotIndex"),
-						SlotName = GetString(reader, "SlotName"),
-						IsReady = GetBoolean(reader, "IsReady"),
-						IsHost = GetBoolean(reader, "IsHost")
-					});
-				}
-			}
 		}
+
+		response.Members = await (
+			from sessionMember in _dbContext.SessionMembers.AsNoTracking()
+			join user in _dbContext.Users.AsNoTracking() on sessionMember.UserId equals user.UserId
+			where sessionMember.SessionId == sessionId
+				&& sessionMember.IsDeleted == false
+				&& user.IsDeleted == false
+			orderby sessionMember.SlotIndex, sessionMember.SessionMemberId
+			select new LobbyMemberDto
+			{
+				UserId = user.UserId,
+				FullName = user.FullName,
+				AvatarUrl = user.AvatarUrl,
+				SlotIndex = sessionMember.SlotIndex,
+				SlotName = sessionMember.SlotName,
+				IsReady = sessionMember.IsReady,
+				IsHost = sessionMember.IsHost
+			})
+			.ToListAsync(cancellationToken);
 
 		response.Status = await ResolveLobbyStatusAsync(resolvedStatus, sessionId, cancellationToken);
 
@@ -178,7 +168,7 @@ public sealed class SessionRepository : ISessionRepository
 		await using var command = CreateCommand(connection, "dbo.uspGetAvailableSlotsBySessionId", null);
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var slots = new List<SlotInfoDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -208,7 +198,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task UpdateSessionStatusAsync(long sessionId, string status, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -222,7 +212,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<PagedResult<SessionListItemResponseDto>> GetSessionHistoryAsync(long userId, string? statusFilter, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
@@ -236,7 +226,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@PageNumber", pageNumber));
 		command.Parameters.Add(CreateParameter("@PageSize", pageSize));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<SessionListItemResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -255,7 +245,11 @@ public sealed class SessionRepository : ISessionRepository
 			});
 		}
 
-		var totalCount = await ReadTotalCountAsync(reader, cancellationToken);
+		var totalCount = await _dbContext.SessionMembers
+			.AsNoTracking()
+			.Where(sessionMember => sessionMember.UserId == userId && sessionMember.IsDeleted == false)
+			.Where(sessionMember => string.IsNullOrWhiteSpace(statusFilter) || sessionMember.Session!.Status == statusFilter)
+			.CountAsync(cancellationToken);
 
 		return new PagedResult<SessionListItemResponseDto>
 		{
@@ -284,7 +278,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(statusParameter);
 		command.Parameters.Add(currentMemberCountParameter);
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 
 		return (
 			isValidParameter.Value is bool isValid && isValid,
@@ -305,7 +299,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<(bool Exists, string Status, bool IsExpired, int CurrentMemberCount, int MaxMembers)?> CheckJoinCodeStatusAsync(string joinCode, CancellationToken cancellationToken = default)
@@ -349,7 +343,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(sessionIdParameter);
 		command.Parameters.Add(joinCodeParameter);
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 
 		var sessionId = sessionIdParameter.Value == DBNull.Value
 			? 0
@@ -392,7 +386,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", sessionMember.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", sessionMember.IPAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	private DbCommand CreateCommand(DbConnection connection, string storedProcedureName, DbTransaction? transaction)
@@ -426,21 +420,6 @@ public sealed class SessionRepository : ISessionRepository
 		{
 			await connection.OpenAsync(cancellationToken);
 		}
-	}
-
-	private static async Task<int> ReadTotalCountAsync(DbDataReader reader, CancellationToken cancellationToken)
-	{
-		if (await reader.NextResultAsync(cancellationToken) == false)
-		{
-			return 0;
-		}
-
-		if (await reader.ReadAsync(cancellationToken) == false)
-		{
-			return 0;
-		}
-
-		return GetInt32(reader, "TotalCount");
 	}
 
 	private static string GetString(DbDataReader reader, string columnName)

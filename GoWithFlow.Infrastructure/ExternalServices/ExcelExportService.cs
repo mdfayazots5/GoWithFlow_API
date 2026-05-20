@@ -28,7 +28,7 @@ public sealed class ExcelExportService : IExcelExportService
 		command.Parameters.Add(CreateParameter("@ToDate", filter.ToDate));
 		command.Parameters.Add(CreateParameter("@UserId", filter.UserId));
 
-		await using var reader = await command.ExecuteReaderAsync();
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command);
 
 		while (await reader.ReadAsync())
 		{
@@ -43,23 +43,32 @@ public sealed class ExcelExportService : IExcelExportService
 			});
 		}
 
-		if (await reader.NextResultAsync())
-		{
-			while (await reader.ReadAsync())
+		sessionDetailRows = await (
+			from sessionMember in _dbContext.SessionMembers.AsNoTracking()
+			join user in _dbContext.Users.AsNoTracking() on sessionMember.UserId equals user.UserId
+			join session in _dbContext.Sessions.AsNoTracking() on sessionMember.SessionId equals session.SessionId
+			where sessionMember.IsDeleted == false
+				&& user.IsDeleted == false
+				&& session.IsDeleted == false
+				&& (filter.UserId.HasValue == false || filter.UserId.Value == 0 || user.UserId == filter.UserId.Value)
+				&& (filter.FromDate.HasValue == false || (session.StartedDate ?? session.DateCreated) >= filter.FromDate.Value)
+				&& (filter.ToDate.HasValue == false || (session.StartedDate ?? session.DateCreated) < filter.ToDate.Value.Date.AddDays(1))
+			orderby user.UserId, session.SessionId
+			select new UserReportExportSessionDetailDto
 			{
-				sessionDetailRows.Add(new UserReportExportSessionDetailDto
-				{
-					UserId = GetInt64(reader, "UserId"),
-					FullName = GetString(reader, "FullName"),
-					SessionId = GetInt64(reader, "SessionId"),
-					SessionName = GetString(reader, "SessionName"),
-					SessionDate = GetDateTime(reader, "SessionDate"),
-					FluencyScore = GetDecimal(reader, "FluencyScore"),
-					MistakeCount = GetInt32(reader, "MistakeCount"),
-					Status = GetString(reader, "Status")
-				});
-			}
-		}
+				UserId = user.UserId,
+				FullName = user.FullName,
+				SessionId = session.SessionId,
+				SessionName = session.SessionName,
+				SessionDate = session.StartedDate ?? session.DateCreated,
+				FluencyScore = _dbContext.VoiceAnalyses
+					.Where(voiceAnalysis => voiceAnalysis.SessionId == session.SessionId && voiceAnalysis.UserId == user.UserId && voiceAnalysis.IsDeleted == false)
+					.Average(voiceAnalysis => (decimal?)voiceAnalysis.FluencyScore) ?? 0m,
+				MistakeCount = _dbContext.Mistakes
+					.Count(mistake => mistake.SessionId == session.SessionId && mistake.UserId == user.UserId && mistake.IsDeleted == false),
+				Status = session.Status
+			})
+			.ToListAsync();
 
 		using var workbook = new XLWorkbook();
 		WriteUserSummarySheet(workbook, summaryRows);

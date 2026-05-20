@@ -26,7 +26,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetUserByMobileNumber");
 		command.Parameters.Add(CreateParameter("@MobileNumber", mobileNumber));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		return await reader.ReadAsync(cancellationToken) ? MapUserFromReader(reader) : null;
 	}
@@ -39,7 +39,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetUserByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		return await reader.ReadAsync(cancellationToken) ? MapUserFromReader(reader) : null;
 	}
@@ -61,7 +61,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", user.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", user.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 
 		return Convert.ToInt64(result);
 	}
@@ -76,7 +76,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task SoftDeleteUserAsync(long userId, string deletedBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -89,7 +89,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@DeletedBy", deletedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<UserProfileResponseDto?> GetUserProfileAsync(long userId, CancellationToken cancellationToken = default)
@@ -100,7 +100,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetUserProfileByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -137,7 +137,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 
 		UserDashboardResponseDto dashboard;
 
-		await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+		await using (var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken))
 		{
 			if (await reader.ReadAsync(cancellationToken) == false)
 			{
@@ -165,53 +165,10 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 				};
 			}
 
-			if (await reader.NextResultAsync(cancellationToken))
-			{
-				while (await reader.ReadAsync(cancellationToken))
-				{
-					dashboard.RecentSessions.Add(new SessionListItemResponseDto
-					{
-						SessionId = GetInt64(reader, "SessionId"),
-						SessionName = GetString(reader, "SessionName"),
-						SessionMode = GetString(reader, "SessionMode"),
-						SessionDate = GetDateTime(reader, "SessionDate"),
-						Duration = GetInt32(reader, "Duration"),
-						FluencyScore = GetNullableDecimal(reader, "FluencyScore"),
-						MistakeCount = GetInt32(reader, "MistakeCount"),
-						Status = GetString(reader, "Status"),
-						ScriptTitle = GetString(reader, "ScriptTitle")
-					});
-				}
-			}
-
-			if (await reader.NextResultAsync(cancellationToken))
-			{
-				while (await reader.ReadAsync(cancellationToken))
-				{
-					dashboard.PendingMistakes.Add(new MistakeResponseDto
-					{
-						MistakeId = GetInt64(reader, "MistakeId"),
-						UserId = userId,
-						SessionId = GetInt64(reader, "SessionId"),
-						UtteranceId = GetInt64(reader, "UtteranceId"),
-						ScriptId = GetInt64(reader, "ScriptId"),
-						UtteranceText = GetString(reader, "UtteranceText"),
-						SpokenText = GetNullableString(reader, "SpokenText"),
-						MistakeType = GetString(reader, "MistakeType"),
-						MistakeDetail = GetNullableString(reader, "MistakeDetail"),
-						GrammarTag = GetNullableString(reader, "GrammarTag"),
-						ContextTag = GetNullableString(reader, "ContextTag"),
-						CorrectionText = GetNullableString(reader, "CorrectionText"),
-						PracticeCount = GetInt32(reader, "PracticeCount"),
-						IsResolved = GetBoolean(reader, "IsResolved"),
-						FirstOccurrence = GetDateTime(reader, "FirstOccurrence"),
-						LastAttempt = GetNullableDateTime(reader, "LastAttempt"),
-						SessionName = GetString(reader, "SessionName"),
-						ScriptTitle = GetString(reader, "ScriptTitle")
-					});
-				}
-			}
 		}
+
+		dashboard.RecentSessions = await GetRecentDashboardSessionsAsync(userId, cancellationToken);
+		dashboard.PendingMistakes = await GetPendingDashboardMistakesAsync(userId, cancellationToken);
 
 		if (dashboard.ActiveSession is null)
 		{
@@ -271,7 +228,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task UpsertUserStreakAsync(long userId, int practiceMinutes, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -285,7 +242,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<StreakDataResponseDto> GetStreakDataAsync(long userId, CancellationToken cancellationToken = default)
@@ -296,7 +253,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetStreakDataByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var response = new StreakDataResponseDto();
 
 		if (await reader.ReadAsync(cancellationToken))
@@ -305,18 +262,18 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 			response.LongestStreak = GetInt32(reader, "LongestStreak");
 		}
 
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
+		response.Last30Days = await DbContext.UserStreaks
+			.AsNoTracking()
+			.Where(userStreak => userStreak.UserId == userId && userStreak.IsDeleted == false)
+			.OrderByDescending(userStreak => userStreak.StreakDate)
+			.Take(30)
+			.Select(userStreak => new DailyStreakDto
 			{
-				response.Last30Days.Add(new DailyStreakDto
-				{
-					StreakDate = GetDateTime(reader, "StreakDate"),
-					SessionCount = GetInt32(reader, "SessionCount"),
-					PracticeMinutes = GetInt32(reader, "PracticeMinutes")
-				});
-			}
-		}
+				StreakDate = userStreak.StreakDate,
+				SessionCount = userStreak.SessionCount,
+				PracticeMinutes = userStreak.PracticeMinutes
+			})
+			.ToListAsync(cancellationToken);
 
 		return response;
 	}
@@ -329,7 +286,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetUserBadgeByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var badges = new List<UserBadgeDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -356,7 +313,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", createdBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
 
-		await command.ExecuteNonQueryAsync(cancellationToken);
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
 	public async Task<SessionDetailResponseDto?> GetSessionDetailAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
@@ -368,7 +325,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -388,74 +345,240 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 			}
 		};
 
-		if (await reader.NextResultAsync(cancellationToken) && await reader.ReadAsync(cancellationToken))
-		{
-			response.MyPerformance = new PerformanceSummaryDto
-			{
-				FluencyScore = GetDecimal(reader, "FluencyScore"),
-				ConfidenceScore = GetDecimal(reader, "ConfidenceScore"),
-				SpeakingSpeedWpm = GetInt32(reader, "SpeakingSpeedWpm"),
-				PauseCount = GetInt32(reader, "PauseCount")
-			};
-		}
-
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				response.MyMistakes.Add(new MistakeResponseDto
-				{
-					MistakeId = GetInt64(reader, "MistakeId"),
-					UserId = userId,
-					SessionId = sessionId,
-					UtteranceId = GetInt64(reader, "UtteranceId"),
-					ScriptId = GetInt64(reader, "ScriptId"),
-					UtteranceText = GetString(reader, "UtteranceText"),
-					SpokenText = GetNullableString(reader, "SpokenText"),
-					MistakeType = GetString(reader, "MistakeType"),
-					MistakeDetail = GetNullableString(reader, "MistakeDetail"),
-					GrammarTag = GetNullableString(reader, "GrammarTag"),
-					ContextTag = GetNullableString(reader, "ContextTag"),
-					CorrectionText = GetNullableString(reader, "CorrectionText"),
-					PracticeCount = GetInt32(reader, "PracticeCount"),
-					IsResolved = GetBoolean(reader, "IsResolved"),
-					FirstOccurrence = GetDateTime(reader, "FirstOccurrence"),
-					LastAttempt = GetNullableDateTime(reader, "LastAttempt"),
-					SessionName = response.SessionHeader.SessionName,
-					ScriptTitle = response.SessionHeader.ScriptTitle
-				});
-			}
-		}
-
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				response.ListenerFeedbackReceived.Add(new FeedbackCountDto
-				{
-					FeedbackTag = GetString(reader, "FeedbackTag"),
-					Count = GetInt32(reader, "Count")
-				});
-			}
-		}
-
-		if (await reader.NextResultAsync(cancellationToken))
-		{
-			while (await reader.ReadAsync(cancellationToken))
-			{
-				response.AllMemberScores.Add(new MemberScoreDto
-				{
-					UserId = GetInt64(reader, "UserId"),
-					FullName = GetString(reader, "FullName"),
-					FluencyScore = GetDecimal(reader, "FluencyScore"),
-					ConfidenceScore = GetDecimal(reader, "ConfidenceScore"),
-					MistakeCount = GetInt32(reader, "MistakeCount"),
-					ListenerRating = GetDecimal(reader, "ListenerRating")
-				});
-			}
-		}
+		response.MyPerformance = await GetSessionPerformanceSummaryAsync(sessionId, userId, cancellationToken);
+		response.MyMistakes = await GetSessionMistakesAsync(sessionId, userId, response.SessionHeader.SessionName, response.SessionHeader.ScriptTitle, cancellationToken);
+		response.ListenerFeedbackReceived = await GetSessionFeedbackCountsAsync(sessionId, userId, cancellationToken);
+		response.AllMemberScores = await GetSessionMemberScoresAsync(sessionId, cancellationToken);
 
 		return response;
+	}
+
+	private async Task<List<SessionListItemResponseDto>> GetRecentDashboardSessionsAsync(long userId, CancellationToken cancellationToken)
+	{
+		var sessions = await (
+			from sessionMember in DbContext.SessionMembers.AsNoTracking()
+			join session in DbContext.Sessions.AsNoTracking() on sessionMember.SessionId equals session.SessionId
+			join script in DbContext.Scripts.AsNoTracking() on session.ScriptId equals script.ScriptId
+			where sessionMember.UserId == userId
+				&& sessionMember.IsDeleted == false
+				&& session.IsDeleted == false
+				&& script.IsDeleted == false
+			select new
+			{
+				session.SessionId,
+				session.SessionName,
+				session.SessionMode,
+				SessionDate = session.EndedDate ?? session.StartedDate ?? session.DateCreated,
+				Duration = session.ActualDurationSec.HasValue && session.ActualDurationSec.Value > 0
+					? (int)Math.Ceiling(session.ActualDurationSec.Value / 60.0)
+					: session.SessionDuration,
+				session.Status,
+				script.ScriptTitle
+			})
+			.OrderByDescending(item => item.SessionDate)
+			.ThenByDescending(item => item.SessionId)
+			.Take(3)
+			.ToListAsync(cancellationToken);
+
+		var sessionIds = sessions.Select(item => item.SessionId).ToList();
+
+		var voiceAverages = await DbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(voiceAnalysis => voiceAnalysis.UserId == userId && sessionIds.Contains(voiceAnalysis.SessionId) && voiceAnalysis.IsDeleted == false)
+			.GroupBy(voiceAnalysis => voiceAnalysis.SessionId)
+			.Select(group => new
+			{
+				SessionId = group.Key,
+				FluencyScore = (decimal?)group.Average(voiceAnalysis => voiceAnalysis.FluencyScore)
+			})
+			.ToDictionaryAsync(item => item.SessionId, item => item.FluencyScore, cancellationToken);
+
+		var mistakeCounts = await DbContext.Mistakes
+			.AsNoTracking()
+			.Where(mistake => mistake.UserId == userId && sessionIds.Contains(mistake.SessionId) && mistake.IsDeleted == false)
+			.GroupBy(mistake => mistake.SessionId)
+			.Select(group => new
+			{
+				SessionId = group.Key,
+				MistakeCount = group.Count()
+			})
+			.ToDictionaryAsync(item => item.SessionId, item => item.MistakeCount, cancellationToken);
+
+		return sessions.Select(item => new SessionListItemResponseDto
+		{
+			SessionId = item.SessionId,
+			SessionName = item.SessionName,
+			SessionMode = item.SessionMode,
+			SessionDate = item.SessionDate,
+			Duration = item.Duration,
+			FluencyScore = voiceAverages.TryGetValue(item.SessionId, out var fluencyScore) ? fluencyScore : null,
+			MistakeCount = mistakeCounts.TryGetValue(item.SessionId, out var mistakeCount) ? mistakeCount : 0,
+			Status = item.Status,
+			ScriptTitle = item.ScriptTitle
+		}).ToList();
+	}
+
+	private async Task<List<MistakeResponseDto>> GetPendingDashboardMistakesAsync(long userId, CancellationToken cancellationToken)
+	{
+		return await (
+			from mistake in DbContext.Mistakes.AsNoTracking()
+			join session in DbContext.Sessions.AsNoTracking() on mistake.SessionId equals session.SessionId into sessionJoin
+			from session in sessionJoin.Where(item => item.IsDeleted == false).DefaultIfEmpty()
+			join script in DbContext.Scripts.AsNoTracking() on mistake.ScriptId equals script.ScriptId into scriptJoin
+			from script in scriptJoin.Where(item => item.IsDeleted == false).DefaultIfEmpty()
+			where mistake.UserId == userId
+				&& mistake.IsResolved == false
+				&& mistake.IsDeleted == false
+			orderby mistake.FirstOccurrence descending, mistake.MistakeId descending
+			select new MistakeResponseDto
+			{
+				MistakeId = mistake.MistakeId,
+				UserId = mistake.UserId,
+				SessionId = mistake.SessionId,
+				UtteranceId = mistake.UtteranceId,
+				ScriptId = mistake.ScriptId,
+				UtteranceText = mistake.UtteranceText,
+				SpokenText = mistake.SpokenText,
+				MistakeType = mistake.MistakeType,
+				MistakeDetail = mistake.MistakeDetail,
+				GrammarTag = mistake.GrammarTag,
+				ContextTag = mistake.ContextTag,
+				CorrectionText = mistake.CorrectionText,
+				PracticeCount = mistake.PracticeCount,
+				IsResolved = mistake.IsResolved,
+				FirstOccurrence = mistake.FirstOccurrence,
+				LastAttempt = mistake.LastAttempt,
+				SessionName = session == null ? string.Empty : session.SessionName,
+				ScriptTitle = script == null ? string.Empty : script.ScriptTitle
+			})
+			.Take(3)
+			.ToListAsync(cancellationToken);
+	}
+
+	private async Task<PerformanceSummaryDto> GetSessionPerformanceSummaryAsync(long sessionId, long userId, CancellationToken cancellationToken)
+	{
+		var aggregate = await DbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(voiceAnalysis => voiceAnalysis.SessionId == sessionId && voiceAnalysis.UserId == userId && voiceAnalysis.IsDeleted == false)
+			.GroupBy(_ => 1)
+			.Select(group => new PerformanceSummaryDto
+			{
+				FluencyScore = group.Average(voiceAnalysis => voiceAnalysis.FluencyScore),
+				ConfidenceScore = group.Average(voiceAnalysis => voiceAnalysis.ConfidenceScore),
+				SpeakingSpeedWpm = (int)group.Average(voiceAnalysis => voiceAnalysis.SpeakingSpeedWpm),
+				PauseCount = group.Sum(voiceAnalysis => voiceAnalysis.PauseCount)
+			})
+			.FirstOrDefaultAsync(cancellationToken);
+
+		return aggregate ?? new PerformanceSummaryDto();
+	}
+
+	private async Task<List<MistakeResponseDto>> GetSessionMistakesAsync(long sessionId, long userId, string sessionName, string scriptTitle, CancellationToken cancellationToken)
+	{
+		return await DbContext.Mistakes
+			.AsNoTracking()
+			.Where(mistake => mistake.SessionId == sessionId && mistake.UserId == userId && mistake.IsDeleted == false)
+			.OrderBy(mistake => mistake.MistakeId)
+			.Select(mistake => new MistakeResponseDto
+			{
+				MistakeId = mistake.MistakeId,
+				UserId = userId,
+				SessionId = sessionId,
+				UtteranceId = mistake.UtteranceId,
+				ScriptId = mistake.ScriptId,
+				UtteranceText = mistake.UtteranceText,
+				SpokenText = mistake.SpokenText,
+				MistakeType = mistake.MistakeType,
+				MistakeDetail = mistake.MistakeDetail,
+				GrammarTag = mistake.GrammarTag,
+				ContextTag = mistake.ContextTag,
+				CorrectionText = mistake.CorrectionText,
+				PracticeCount = mistake.PracticeCount,
+				IsResolved = mistake.IsResolved,
+				FirstOccurrence = mistake.FirstOccurrence,
+				LastAttempt = mistake.LastAttempt,
+				SessionName = sessionName,
+				ScriptTitle = scriptTitle
+			})
+			.ToListAsync(cancellationToken);
+	}
+
+	private async Task<List<FeedbackCountDto>> GetSessionFeedbackCountsAsync(long sessionId, long userId, CancellationToken cancellationToken)
+	{
+		return await DbContext.ListenerFeedbacks
+			.AsNoTracking()
+			.Where(feedback => feedback.SessionId == sessionId && feedback.TargetUserId == userId && feedback.IsDeleted == false)
+			.GroupBy(feedback => feedback.FeedbackTag)
+			.OrderByDescending(group => group.Count())
+			.Select(group => new FeedbackCountDto
+			{
+				FeedbackTag = group.Key,
+				Count = group.Count()
+			})
+			.ToListAsync(cancellationToken);
+	}
+
+	private async Task<List<MemberScoreDto>> GetSessionMemberScoresAsync(long sessionId, CancellationToken cancellationToken)
+	{
+		var members = await (
+			from sessionMember in DbContext.SessionMembers.AsNoTracking()
+			join user in DbContext.Users.AsNoTracking() on sessionMember.UserId equals user.UserId
+			where sessionMember.SessionId == sessionId
+				&& sessionMember.IsDeleted == false
+				&& user.IsDeleted == false
+			orderby sessionMember.SlotIndex, sessionMember.SessionMemberId
+			select new
+			{
+				user.UserId,
+				user.FullName
+			})
+			.ToListAsync(cancellationToken);
+
+		var userIds = members.Select(member => member.UserId).ToList();
+
+		var voiceAggregates = await DbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(voiceAnalysis => voiceAnalysis.SessionId == sessionId && userIds.Contains(voiceAnalysis.UserId) && voiceAnalysis.IsDeleted == false)
+			.GroupBy(voiceAnalysis => voiceAnalysis.UserId)
+			.Select(group => new
+			{
+				UserId = group.Key,
+				FluencyScore = group.Average(voiceAnalysis => voiceAnalysis.FluencyScore),
+				ConfidenceScore = group.Average(voiceAnalysis => voiceAnalysis.ConfidenceScore)
+			})
+			.ToDictionaryAsync(item => item.UserId, cancellationToken);
+
+		var mistakeCounts = await DbContext.Mistakes
+			.AsNoTracking()
+			.Where(mistake => mistake.SessionId == sessionId && userIds.Contains(mistake.UserId) && mistake.IsDeleted == false)
+			.GroupBy(mistake => mistake.UserId)
+			.Select(group => new
+			{
+				UserId = group.Key,
+				MistakeCount = group.Count()
+			})
+			.ToDictionaryAsync(item => item.UserId, item => item.MistakeCount, cancellationToken);
+
+		var listenerRatings = await DbContext.ListenerFeedbacks
+			.AsNoTracking()
+			.Where(feedback => feedback.SessionId == sessionId && userIds.Contains(feedback.TargetUserId) && feedback.IsDeleted == false)
+			.GroupBy(feedback => feedback.TargetUserId)
+			.Select(group => new
+			{
+				UserId = group.Key,
+				ListenerRating = group.Count()
+			})
+			.ToDictionaryAsync(item => item.UserId, item => item.ListenerRating, cancellationToken);
+
+		return members.Select(member => new MemberScoreDto
+		{
+			UserId = member.UserId,
+			FullName = member.FullName,
+			FluencyScore = voiceAggregates.TryGetValue(member.UserId, out var voiceAggregate) ? voiceAggregate.FluencyScore : 0m,
+			ConfidenceScore = voiceAggregates.TryGetValue(member.UserId, out voiceAggregate) ? voiceAggregate.ConfidenceScore : 0m,
+			MistakeCount = mistakeCounts.TryGetValue(member.UserId, out var mistakeCount) ? mistakeCount : 0,
+			ListenerRating = listenerRatings.TryGetValue(member.UserId, out var listenerRating) ? listenerRating : 0m
+		}).ToList();
 	}
 
 	public async Task<List<SessionScoreDto>> GetImprovementSessionsAsync(long userId, CancellationToken cancellationToken = default)
@@ -466,7 +589,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetImprovementDataByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var sessions = new List<SessionScoreDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -492,7 +615,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetWeeklyFluencyScoreByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var weeklyScores = new List<WeeklyScoreDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -515,7 +638,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspGetGrammarProgressByUserId");
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<GrammarProgressResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -544,7 +667,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@PageNumber", pageNumber));
 		command.Parameters.Add(CreateParameter("@PageSize", pageSize));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<RepracticeSessionResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))

@@ -65,7 +65,7 @@ public sealed class MistakeRepository : IMistakeRepository
 		command.Parameters.Add(CreateParameter("@CreatedBy", mistake.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", mistake.IPAddress));
 
-		var result = await command.ExecuteScalarAsync(cancellationToken);
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
 		return Convert.ToInt64(result);
 	}
 
@@ -78,7 +78,7 @@ public sealed class MistakeRepository : IMistakeRepository
 		command.Parameters.Add(CreateParameter("@PageNumber", dto.PageNumber));
 		command.Parameters.Add(CreateParameter("@PageSize", dto.PageSize));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<MistakeResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -106,7 +106,7 @@ public sealed class MistakeRepository : IMistakeRepository
 			});
 		}
 
-		var totalCount = await ReadTotalCountAsync(reader, cancellationToken);
+		var totalCount = await CountMistakesAsync(dto, userId, cancellationToken);
 
 		return new PagedResult<MistakeResponseDto>
 		{
@@ -122,7 +122,7 @@ public sealed class MistakeRepository : IMistakeRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetMistakeSummaryByUserId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 
 		if (await reader.ReadAsync(cancellationToken) == false)
 		{
@@ -143,7 +143,7 @@ public sealed class MistakeRepository : IMistakeRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetGrammarProgressByUserId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<GrammarProgressResponseDto>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -167,7 +167,7 @@ public sealed class MistakeRepository : IMistakeRepository
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 		command.Parameters.Add(CreateParameter("@SourceSessionId", sourceSessionId));
 
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var items = new List<Mistake>();
 
 		while (await reader.ReadAsync(cancellationToken))
@@ -220,14 +220,23 @@ public sealed class MistakeRepository : IMistakeRepository
 		}
 	}
 
-	private static async Task<int> ReadTotalCountAsync(DbDataReader reader, CancellationToken cancellationToken)
+	private async Task<int> CountMistakesAsync(MistakeFilterRequestDto dto, long userId, CancellationToken cancellationToken)
 	{
-		if (await reader.NextResultAsync(cancellationToken) == false || await reader.ReadAsync(cancellationToken) == false)
+		var query = _dbContext.Mistakes
+			.AsNoTracking()
+			.Where(mistake => mistake.UserId == userId && mistake.IsDeleted == false);
+
+		if (string.IsNullOrWhiteSpace(dto.MistakeType) == false)
 		{
-			return 0;
+			query = query.Where(mistake => mistake.MistakeType == dto.MistakeType);
 		}
 
-		return GetInt32(reader, "TotalCount");
+		if (dto.IsResolved.HasValue)
+		{
+			query = query.Where(mistake => mistake.IsResolved == dto.IsResolved.Value);
+		}
+
+		return await query.CountAsync(cancellationToken);
 	}
 
 	private static string GetString(DbDataReader reader, string columnName)
