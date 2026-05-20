@@ -1,20 +1,34 @@
 -- ============================================
 -- File: 01_extensions.sql
--- Description: Enable PostgreSQL extensions required by the migrated schema and Supabase integration layer.
+-- Description: Enable required PostgreSQL extensions for GoWithFlow migration
 -- Run order: 1 of 10
--- Dependencies: NONE
+-- Dependencies: None
 -- ============================================
--- Tables migrated: 17
--- Views migrated: 0
--- Functions migrated: 0
--- Stored Procedures migrated: 79
--- Triggers migrated: 0
--- Indexes migrated: 33
+-- Tables migrated: N/A
+-- Views migrated: N/A
+-- Functions migrated: N/A
+-- Stored Procedures migrated: N/A
+-- Triggers migrated: N/A
+-- Indexes migrated: N/A
 -- Known incompatibilities: NONE
 -- Manual review required: NONE
+-- ============================================
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- Required for gen_random_uuid() used as default for UUID columns
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- Alternative UUID extension (uuid-ossp provides uuid_generate_v4())
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Trigram indexes for ILIKE full-text search performance on VARCHAR columns
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+
+-- Case-insensitive text type (available if needed for email columns)
+CREATE EXTENSION IF NOT EXISTS "citext";
+
+-- Set default search path to public schema
+SET search_path TO public;
 
 COMMIT;

@@ -1,20 +1,25 @@
 -- ============================================
 -- File: 05_functions.sql
--- Description: Create PostgreSQL functions converted from SQL Server scalar and table-valued functions.
+-- Description: Scalar and table-valued functions converted from SQL Server GoWithFlowDB
+--              Also includes the UtteranceTVP type equivalent for PostgreSQL
 -- Run order: 5 of 10
--- Dependencies: 01_extensions.sql, 02_schema.sql, 03_constraints_indexes.sql, 04_views.sql
+-- Dependencies: 01_extensions.sql, 02_schema.sql
 -- ============================================
--- Tables migrated: 17
--- Views migrated: 0
+-- Tables migrated: N/A
+-- Views migrated: N/A
 -- Functions migrated: 0
--- Stored Procedures migrated: 79
--- Triggers migrated: 0
--- Indexes migrated: 33
--- Known incompatibilities: SQL Server user-defined table type dbo.UtteranceTVP has no direct PostgreSQL equivalent and is consumed as JSONB by the migrated bulk-load procedure.
--- Manual review required: Validate JSON payload contract used in public.usp_bulk_insert_utterance against the original dbo.UtteranceTVP column order.
+-- Stored Procedures migrated: N/A
+-- Triggers migrated: N/A
+-- Indexes migrated: N/A
+-- Known incompatibilities:
+--   - SQL Server TABLE-VALUED PARAMETER (UtteranceTVP) has no direct equivalent in PostgreSQL
+--     The uspBulkInsertUtterance SP in PostgreSQL accepts a JSON array parameter instead.
+--     See 06_stored_procedures.sql for the implementation.
+-- Manual review required:
+--   - Application code calling uspBulkInsertUtterance must be updated to pass
+--     a JSON array instead of a TVP. See SP notes in 06_stored_procedures.sql.
+-- ============================================
 
-BEGIN;
-
--- No user-defined SQL Server scalar or table-valued functions exist in GoWithFlowDB.
-
-COMMIT;
+-- No scalar or table-valued functions found in source GoWithFlowDB database.
+-- The UtteranceTVP table-valued parameter has been handled in 06_stored_procedures.sql
+-- via a JSONB array parameter for uspbulkinsertutterance.

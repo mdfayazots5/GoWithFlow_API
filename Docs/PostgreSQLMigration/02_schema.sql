@@ -1,448 +1,594 @@
 -- ============================================
 -- File: 02_schema.sql
--- Description: Create base PostgreSQL tables converted from the live SQL Server schema without foreign keys.
+-- Description: All CREATE TABLE statements converted from SQL Server GoWithFlowDB
+--              Tables in FK dependency order (parents first)
 -- Run order: 2 of 10
 -- Dependencies: 01_extensions.sql
 -- ============================================
--- Tables migrated: 17
+-- Tables migrated: 18
+--   tblUser, tblScript, tblRefreshToken, tblUserBadge, tblUserStreak,
+--   tblDashboardMetric, tblOtpVerification, tblUtterance, tblSession,
+--   tblScriptVersion, tblAdminNote, tblSessionMember, tblListenerFeedback,
+--   tblTurnState, tblMistake, tblVoiceAnalysis, tblRepracticeSession,
+--   tblRepracticeUtterance
 -- Views migrated: 0
--- Functions migrated: 0
--- Stored Procedures migrated: 79
+-- Functions migrated: N/A
+-- Stored Procedures migrated: N/A
 -- Triggers migrated: 0
--- Indexes migrated: 33
--- Known incompatibilities: __ef_migrations_history omitted because Supabase deployment should not carry SQL Server EF bookkeeping.
--- Manual review required: Review default timezone semantics on timestamptz columns if the source application assumed SQL Server local server time.
-
+-- Indexes migrated: N/A (see 03_constraints_indexes.sql)
+-- Known incompatibilities:
+--   - UtteranceTVP (SQL Server table-valued parameter) has no direct PostgreSQL
+--     equivalent; replaced with temporary table approach in functions file
+--   - tblOtpVerification did not exist as a table in the source DB but is
+--     required by uspInsertOtpVerification and uspVerifyOtp SPs; schema inferred
+--     from stored procedure parameters
+-- Manual review required:
+--   - tblOtpVerification schema inferred from SP usage — verify column types
+-- ============================================
 
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS public.tbl_admin_note (
-    admin_note_id bigserial NOT NULL,
-    admin_user_id bigint NOT NULL,
-    target_user_id bigint NOT NULL,
-    note_text varchar(512) NOT NULL,
-    note_date timestamptz NOT NULL DEFAULT NOW(),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_admin_note_admin_note_id PRIMARY KEY (admin_note_id)
+SET search_path TO public;
+
+-- ============================================
+-- TABLE: tbluser
+-- Root entity — no FK dependencies
+-- ============================================
+CREATE TABLE IF NOT EXISTS tbluser
+(
+    userid                  BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    fullname                VARCHAR(128) NOT NULL,
+    mobilenumber            VARCHAR(16) NOT NULL,
+    email                   VARCHAR(128) NULL,
+    passwordhash            VARCHAR(512) NULL,
+    agegroup                VARCHAR(32) NOT NULL,
+    preferredhintlanguage   VARCHAR(32) NOT NULL,
+    avatarurl               VARCHAR(256) NULL,
+    groupcode               VARCHAR(32) NULL,
+    role                    VARCHAR(16) NOT NULL DEFAULT 'USER',
+    dailystreakcount        INTEGER NOT NULL DEFAULT 0,
+    totalsessionsplayed     INTEGER NOT NULL DEFAULT 0,
+    lastlogindate           TIMESTAMP NULL,
+    isactive                BOOLEAN NOT NULL DEFAULT TRUE,
+    registrationdate        TIMESTAMP NOT NULL DEFAULT NOW(),
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tbluser_userid PRIMARY KEY (userid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_dashboard_metric (
-    dashboard_metric_id bigserial NOT NULL,
-    metric_date date NOT NULL,
-    total_users integer NOT NULL DEFAULT 0,
-    active_sessions_today integer NOT NULL DEFAULT 0,
-    total_scripts_uploaded integer NOT NULL DEFAULT 0,
-    total_mistakes_recorded integer NOT NULL DEFAULT 0,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_dashboard_metric_dashboard_metric_id PRIMARY KEY (dashboard_metric_id),
-    CONSTRAINT uk_tbl_dashboard_metric_metric_date UNIQUE (metric_date)
+-- ============================================
+-- TABLE: tblscript
+-- FK dependency: tbluser (uploadedbyuserid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblscript
+(
+    scriptid                BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    scripttitle             VARCHAR(128) NOT NULL,
+    category                VARCHAR(64) NOT NULL,
+    grammarfocustag         VARCHAR(64) NOT NULL,
+    contexttag              VARCHAR(64) NOT NULL,
+    complexitylevel         SMALLINT NOT NULL,
+    targetagegroup          VARCHAR(32) NOT NULL,
+    hintlanguage            VARCHAR(32) NOT NULL,
+    isactive                BOOLEAN NOT NULL DEFAULT TRUE,
+    uploadeddate            TIMESTAMP NOT NULL DEFAULT NOW(),
+    uploadedbyuserid        BIGINT NOT NULL,
+    version                 INTEGER NOT NULL DEFAULT 1,
+    utterancecount          INTEGER NOT NULL DEFAULT 0,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblscript_scriptid PRIMARY KEY (scriptid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_listener_feedback (
-    listener_feedback_id bigserial NOT NULL,
-    session_id bigint NOT NULL,
-    turn_index integer NOT NULL,
-    from_user_id bigint NOT NULL,
-    target_user_id bigint NOT NULL,
-    feedback_tag varchar(32) NOT NULL,
-    feedback_at timestamptz NOT NULL DEFAULT NOW(),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_listener_feedback_listener_feedback_id PRIMARY KEY (listener_feedback_id)
+-- ============================================
+-- TABLE: tblrefreshtoken
+-- FK dependency: tbluser (userid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblrefreshtoken
+(
+    refreshtokenid          BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    userid                  BIGINT NOT NULL,
+    token                   VARCHAR(512) NOT NULL,
+    expiresat               TIMESTAMP NOT NULL,
+    isrevoked               BOOLEAN NOT NULL DEFAULT FALSE,
+    revokedat               TIMESTAMP NULL,
+    deviceinfo              VARCHAR(256) NULL,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblrefreshtoken_refreshtokenid PRIMARY KEY (refreshtokenid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_mistake (
-    mistake_id bigserial NOT NULL,
-    user_id bigint NOT NULL,
-    session_id bigint NOT NULL,
-    utterance_id bigint NOT NULL,
-    script_id bigint NOT NULL,
-    utterance_text varchar(512) NOT NULL,
-    spoken_text varchar(512),
-    mistake_type varchar(32) NOT NULL,
-    mistake_detail varchar(256),
-    grammar_tag varchar(64),
-    context_tag varchar(64),
-    correction_text varchar(512),
-    practice_count integer NOT NULL DEFAULT 0,
-    is_resolved boolean NOT NULL DEFAULT FALSE,
-    first_occurrence timestamptz NOT NULL DEFAULT NOW(),
-    last_attempt timestamptz,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_mistake_mistake_id PRIMARY KEY (mistake_id)
+-- ============================================
+-- TABLE: tbluserbadge
+-- FK dependency: tbluser (userid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tbluserbadge
+(
+    userbadgeid             BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    userid                  BIGINT NOT NULL,
+    badgecode               VARCHAR(64) NOT NULL,
+    badgename               VARCHAR(128) NOT NULL,
+    earneddate              TIMESTAMP NOT NULL DEFAULT NOW(),
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tbluserbadge_userbadgeid PRIMARY KEY (userbadgeid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_refresh_token (
-    refresh_token_id bigserial NOT NULL,
-    user_id bigint NOT NULL,
-    token varchar(512) NOT NULL,
-    expires_at timestamptz NOT NULL,
-    is_revoked boolean NOT NULL DEFAULT FALSE,
-    revoked_at timestamptz,
-    device_info varchar(256),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_refresh_token_refresh_token_id PRIMARY KEY (refresh_token_id)
+-- ============================================
+-- TABLE: tbluserstreak
+-- FK dependency: tbluser (userid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tbluserstreak
+(
+    userstreakid            BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    userid                  BIGINT NOT NULL,
+    streakdate              DATE NOT NULL,
+    sessioncount            INTEGER NOT NULL DEFAULT 0,
+    practiceminutes         INTEGER NOT NULL DEFAULT 0,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tbluserstreak_userstreakid PRIMARY KEY (userstreakid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_repractice_session (
-    repractice_session_id bigserial NOT NULL,
-    user_id bigint NOT NULL,
-    source_session_id bigint NOT NULL,
-    total_mistakes integer NOT NULL DEFAULT 0,
-    completed_rounds integer NOT NULL DEFAULT 0,
-    improvement_percent numeric(5,2) NOT NULL DEFAULT 0,
-    status varchar(16) NOT NULL DEFAULT 'PENDING',
-    generated_date timestamptz NOT NULL DEFAULT NOW(),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_repractice_session_repractice_session_id PRIMARY KEY (repractice_session_id)
+-- ============================================
+-- TABLE: tbldashboardmetric
+-- No FK dependencies
+-- ============================================
+CREATE TABLE IF NOT EXISTS tbldashboardmetric
+(
+    dashboardmetricid       BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    metricdate              DATE NOT NULL,
+    totalusers              INTEGER NOT NULL DEFAULT 0,
+    activesessionstoday     INTEGER NOT NULL DEFAULT 0,
+    totalscriptsuploaded    INTEGER NOT NULL DEFAULT 0,
+    totalmistakesrecorded   INTEGER NOT NULL DEFAULT 0,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tbldashboardmetric_dashboardmetricid PRIMARY KEY (dashboardmetricid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_repractice_utterance (
-    repractice_utterance_id bigserial NOT NULL,
-    repractice_session_id bigint NOT NULL,
-    mistake_id bigint NOT NULL,
-    original_utterance_id bigint NOT NULL,
-    english_text varchar(512) NOT NULL,
-    hint_text varchar(512),
-    mistake_type varchar(32) NOT NULL,
-    mistake_detail varchar(256),
-    correction_note varchar(512),
-    attempt_count integer NOT NULL DEFAULT 0,
-    best_score numeric(5,2) NOT NULL DEFAULT 0,
-    last_score numeric(5,2) NOT NULL DEFAULT 0,
-    is_resolved boolean NOT NULL DEFAULT FALSE,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_repractice_utterance_repractice_utterance_id PRIMARY KEY (repractice_utterance_id)
+-- ============================================
+-- TABLE: tblotpverification
+-- No FK dependencies
+-- Schema inferred from uspInsertOtpVerification and uspVerifyOtp
+-- [MANUAL REVIEW REQUIRED: schema inferred — verify against application requirements]
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblotpverification
+(
+    otpverificationid       BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    mobilenumber            VARCHAR(16) NOT NULL,
+    otpcode                 VARCHAR(8) NOT NULL,
+    expiresat               TIMESTAMP NOT NULL,
+    isverified              BOOLEAN NOT NULL DEFAULT FALSE,
+    verifiedat              TIMESTAMP NULL,
+    attemptcount            INTEGER NOT NULL DEFAULT 0,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblotpverification_otpverificationid PRIMARY KEY (otpverificationid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_script (
-    script_id bigserial NOT NULL,
-    script_title varchar(128) NOT NULL,
-    category varchar(64) NOT NULL,
-    grammar_focus_tag varchar(64) NOT NULL,
-    context_tag varchar(64) NOT NULL,
-    complexity_level smallint NOT NULL,
-    target_age_group varchar(32) NOT NULL,
-    hint_language varchar(32) NOT NULL,
-    is_active boolean NOT NULL DEFAULT TRUE,
-    uploaded_date timestamptz NOT NULL DEFAULT NOW(),
-    uploaded_by_user_id bigint NOT NULL,
-    version integer NOT NULL DEFAULT 1,
-    utterance_count integer NOT NULL DEFAULT 0,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_script_script_id PRIMARY KEY (script_id)
+-- ============================================
+-- TABLE: tblutterance
+-- FK dependency: tblscript (scriptid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblutterance
+(
+    utteranceid             BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    scriptid                BIGINT NOT NULL,
+    sequenceid              INTEGER NOT NULL,
+    speakerlabel            VARCHAR(64) NOT NULL,
+    englishtext             VARCHAR(512) NOT NULL,
+    hinttext                VARCHAR(512) NULL,
+    grammartag              VARCHAR(64) NULL,
+    contexttag              VARCHAR(64) NULL,
+    focusword               VARCHAR(64) NULL,
+    pronunciationnote       VARCHAR(256) NULL,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblutterance_utteranceid PRIMARY KEY (utteranceid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_script_version (
-    script_version_id bigserial NOT NULL,
-    script_id bigint NOT NULL,
-    version_number integer NOT NULL,
-    version_notes varchar(256),
-    uploaded_by_user_id bigint NOT NULL,
-    uploaded_date timestamptz NOT NULL DEFAULT NOW(),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_script_version_script_version_id PRIMARY KEY (script_version_id)
+-- ============================================
+-- TABLE: tblsession
+-- FK dependencies: tbluser (hostuserid), tblscript (scriptid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblsession
+(
+    sessionid               BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    sessionname             VARCHAR(128) NOT NULL,
+    joincode                VARCHAR(8) NOT NULL,
+    sessionmode             VARCHAR(64) NOT NULL,
+    maxmembers              SMALLINT NOT NULL DEFAULT 4,
+    sessionduration         INTEGER NOT NULL,
+    hostuserid              BIGINT NOT NULL,
+    scriptid                BIGINT NOT NULL,
+    status                  VARCHAR(16) NOT NULL DEFAULT 'LOBBY',
+    roomexpiryminutes       INTEGER NULL,
+    roomexpiresat           TIMESTAMP NULL,
+    starteddate             TIMESTAMP NULL,
+    endeddate               TIMESTAMP NULL,
+    actualdurationsec       INTEGER NULL,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblsession_sessionid PRIMARY KEY (sessionid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_session (
-    session_id bigserial NOT NULL,
-    session_name varchar(128) NOT NULL,
-    join_code varchar(8) NOT NULL,
-    session_mode varchar(64) NOT NULL,
-    max_members smallint NOT NULL DEFAULT 4,
-    session_duration integer NOT NULL,
-    host_user_id bigint NOT NULL,
-    script_id bigint NOT NULL,
-    status varchar(16) NOT NULL DEFAULT 'LOBBY',
-    room_expiry_minutes integer NOT NULL,
-    room_expires_at timestamptz,
-    started_date timestamptz,
-    ended_date timestamptz,
-    actual_duration_sec integer,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_session_session_id PRIMARY KEY (session_id)
+-- ============================================
+-- TABLE: tblscriptversion
+-- FK dependencies: tblscript (scriptid), tbluser (uploadedbyuserid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblscriptversion
+(
+    scriptversionid         BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    scriptid                BIGINT NOT NULL,
+    versionnumber           INTEGER NOT NULL,
+    versionnotes            VARCHAR(256) NULL,
+    uploadedbyuserid        BIGINT NOT NULL,
+    uploadeddate            TIMESTAMP NOT NULL DEFAULT NOW(),
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblscriptversion_scriptversionid PRIMARY KEY (scriptversionid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_session_member (
-    session_member_id bigserial NOT NULL,
-    session_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    slot_index smallint NOT NULL,
-    slot_name varchar(64) NOT NULL,
-    is_ready boolean NOT NULL DEFAULT FALSE,
-    is_host boolean NOT NULL DEFAULT FALSE,
-    joined_at timestamptz,
-    left_at timestamptz,
-    is_active boolean NOT NULL DEFAULT TRUE,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_session_member_session_member_id PRIMARY KEY (session_member_id)
+-- ============================================
+-- TABLE: tbladminnote
+-- FK dependencies: tbluser (adminuserid, targetuserid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tbladminnote
+(
+    adminnoteid             BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    adminuserid             BIGINT NOT NULL,
+    targetuserid            BIGINT NOT NULL,
+    notetext                VARCHAR(512) NOT NULL,
+    notedate                TIMESTAMP NOT NULL DEFAULT NOW(),
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tbladminnote_adminnoteid PRIMARY KEY (adminnoteid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_turn_state (
-    turn_state_id bigserial NOT NULL,
-    session_id bigint NOT NULL,
-    turn_index integer NOT NULL,
-    total_turns integer NOT NULL,
-    active_member_id bigint NOT NULL,
-    active_slot_index smallint NOT NULL,
-    utterance_id bigint NOT NULL,
-    re_read_allowed boolean NOT NULL DEFAULT TRUE,
-    re_read_count integer NOT NULL DEFAULT 0,
-    max_re_reads integer NOT NULL DEFAULT 2,
-    turn_status varchar(16) NOT NULL DEFAULT 'ACTIVE',
-    turn_started_at timestamptz,
-    turn_completed_at timestamptz,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_turn_state_turn_state_id PRIMARY KEY (turn_state_id)
+-- ============================================
+-- TABLE: tblsessionmember
+-- FK dependencies: tblsession (sessionid), tbluser (userid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblsessionmember
+(
+    sessionmemberid         BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    sessionid               BIGINT NOT NULL,
+    userid                  BIGINT NOT NULL,
+    slotindex               SMALLINT NOT NULL,
+    slotname                VARCHAR(64) NOT NULL,
+    isready                 BOOLEAN NOT NULL DEFAULT FALSE,
+    ishost                  BOOLEAN NOT NULL DEFAULT FALSE,
+    joinedat                TIMESTAMP NULL,
+    leftat                  TIMESTAMP NULL,
+    isactive                BOOLEAN NOT NULL DEFAULT TRUE,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblsessionmember_sessionmemberid PRIMARY KEY (sessionmemberid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_user (
-    user_id bigserial NOT NULL,
-    full_name varchar(128) NOT NULL,
-    mobile_number varchar(16) NOT NULL,
-    email varchar(128),
-    password_hash varchar(512),
-    age_group varchar(32) NOT NULL,
-    preferred_hint_language varchar(32) NOT NULL,
-    avatar_url varchar(256),
-    group_code varchar(32),
-    role varchar(16) NOT NULL DEFAULT 'USER',
-    daily_streak_count integer NOT NULL DEFAULT 0,
-    total_sessions_played integer NOT NULL DEFAULT 0,
-    last_login_date timestamptz,
-    is_active boolean NOT NULL DEFAULT TRUE,
-    registration_date timestamptz NOT NULL DEFAULT NOW(),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_user_user_id PRIMARY KEY (user_id),
-    CONSTRAINT uk_tbl_user_mobile_number UNIQUE (mobile_number)
+-- ============================================
+-- TABLE: tbllistenerfeedback
+-- FK dependencies: tblsession (sessionid), tbluser (fromuserid, targetuserid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tbllistenerfeedback
+(
+    listenerfeedbackid      BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    sessionid               BIGINT NOT NULL,
+    turnindex               INTEGER NOT NULL,
+    fromuserid              BIGINT NOT NULL,
+    targetuserid            BIGINT NOT NULL,
+    feedbacktag             VARCHAR(32) NOT NULL,
+    feedbackat              TIMESTAMP NOT NULL DEFAULT NOW(),
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tbllistenerfeedback_listenerfeedbackid PRIMARY KEY (listenerfeedbackid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_user_badge (
-    user_badge_id bigserial NOT NULL,
-    user_id bigint NOT NULL,
-    badge_code varchar(64) NOT NULL,
-    badge_name varchar(128) NOT NULL,
-    earned_date timestamptz NOT NULL DEFAULT NOW(),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_user_badge_user_badge_id PRIMARY KEY (user_badge_id),
-    CONSTRAINT uk_tbl_user_badge_user_id_badge_code UNIQUE (user_id, badge_code)
+-- ============================================
+-- TABLE: tblturnstate
+-- FK dependencies: tblsession (sessionid), tbluser (activememberid), tblutterance (utteranceid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblturnstate
+(
+    turnstateid             BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    sessionid               BIGINT NOT NULL,
+    turnindex               INTEGER NOT NULL,
+    totalturns              INTEGER NOT NULL,
+    activememberid          BIGINT NOT NULL,
+    activeslotindex         SMALLINT NOT NULL,
+    utteranceid             BIGINT NOT NULL,
+    rereadallowed           BOOLEAN NOT NULL DEFAULT TRUE,
+    rereadcount             INTEGER NOT NULL DEFAULT 0,
+    maxrereads              INTEGER NOT NULL DEFAULT 2,
+    turnstatus              VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    turnstartedat           TIMESTAMP NULL,
+    turncompletedat         TIMESTAMP NULL,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblturnstate_turnstateid PRIMARY KEY (turnstateid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_user_streak (
-    user_streak_id bigserial NOT NULL,
-    user_id bigint NOT NULL,
-    streak_date date NOT NULL,
-    session_count integer NOT NULL DEFAULT 0,
-    practice_minutes integer NOT NULL DEFAULT 0,
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_user_streak_user_streak_id PRIMARY KEY (user_streak_id),
-    CONSTRAINT uk_tbl_user_streak_user_id_streak_date UNIQUE (user_id, streak_date)
+-- ============================================
+-- TABLE: tblmistake
+-- FK dependencies: tbluser (userid), tblsession (sessionid),
+--                  tblutterance (utteranceid), tblscript (scriptid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblmistake
+(
+    mistakeid               BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    userid                  BIGINT NOT NULL,
+    sessionid               BIGINT NOT NULL,
+    utteranceid             BIGINT NOT NULL,
+    scriptid                BIGINT NOT NULL,
+    utterancetext           VARCHAR(512) NOT NULL,
+    spokentext              VARCHAR(512) NULL,
+    mistaketype             VARCHAR(32) NOT NULL,
+    mistakedetail           VARCHAR(256) NULL,
+    grammartag              VARCHAR(64) NULL,
+    contexttag              VARCHAR(64) NULL,
+    correctiontext          VARCHAR(512) NULL,
+    practicecount           INTEGER NOT NULL DEFAULT 0,
+    isresolved              BOOLEAN NOT NULL DEFAULT FALSE,
+    firstoccurrence         TIMESTAMP NOT NULL DEFAULT NOW(),
+    lastattempt             TIMESTAMP NULL,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblmistake_mistakeid PRIMARY KEY (mistakeid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_utterance (
-    utterance_id bigserial NOT NULL,
-    script_id bigint NOT NULL,
-    sequence_id integer NOT NULL,
-    speaker_label varchar(64) NOT NULL,
-    english_text varchar(512) NOT NULL,
-    hint_text varchar(512),
-    grammar_tag varchar(64),
-    context_tag varchar(64),
-    focus_word varchar(64),
-    pronunciation_note varchar(256),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_utterance_utterance_id PRIMARY KEY (utterance_id)
+-- ============================================
+-- TABLE: tblvoiceanalysis
+-- FK dependencies: tblsession (sessionid), tbluser (userid), tblutterance (utteranceid)
+-- Note: grammarerrorsjson and pronunciationjson stored as JSONB for indexability
+--       and OPENJSON() compatibility via jsonb_array_elements()
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblvoiceanalysis
+(
+    voiceanalysisid         BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    sessionid               BIGINT NOT NULL,
+    userid                  BIGINT NOT NULL,
+    turnindex               INTEGER NOT NULL,
+    utteranceid             BIGINT NOT NULL,
+    transcribedtext         VARCHAR(512) NULL,
+    expectedtext            VARCHAR(512) NOT NULL,
+    fluencyscore            DECIMAL(5,2) NOT NULL DEFAULT 0,
+    confidencescore         DECIMAL(5,2) NOT NULL DEFAULT 0,
+    speakingspeedwpm        INTEGER NOT NULL DEFAULT 0,
+    pausecount              INTEGER NOT NULL DEFAULT 0,
+    hesitationwords         VARCHAR(256) NULL,
+    repeatedwords           VARCHAR(256) NULL,
+    grammarerrorsjson       JSONB NULL,
+    pronunciationjson       JSONB NULL,
+    overallscore            DECIMAL(5,2) NOT NULL DEFAULT 0,
+    recordedat              TIMESTAMP NOT NULL DEFAULT NOW(),
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblvoiceanalysis_voiceanalysisid PRIMARY KEY (voiceanalysisid)
 );
 
-CREATE TABLE IF NOT EXISTS public.tbl_voice_analysis (
-    voice_analysis_id bigserial NOT NULL,
-    session_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    turn_index integer NOT NULL,
-    utterance_id bigint NOT NULL,
-    transcribed_text varchar(512),
-    expected_text varchar(512) NOT NULL,
-    fluency_score numeric(5,2) NOT NULL DEFAULT 0,
-    confidence_score numeric(5,2) NOT NULL DEFAULT 0,
-    speaking_speed_wpm integer NOT NULL DEFAULT 0,
-    pause_count integer NOT NULL DEFAULT 0,
-    hesitation_words varchar(256),
-    repeated_words varchar(256),
-    grammar_errors_json varchar(512),
-    pronunciation_json varchar(512),
-    overall_score numeric(5,2) NOT NULL DEFAULT 0,
-    recorded_at timestamptz NOT NULL DEFAULT NOW(),
-    tag varchar(64),
-    comments varchar(256),
-    sort_order integer NOT NULL DEFAULT 0,
-    ip_address varchar(64) NOT NULL DEFAULT '127.0.0.1',
-    created_by varchar(128) NOT NULL DEFAULT 'Admin',
-    date_created timestamptz NOT NULL DEFAULT NOW(),
-    updated_by varchar(128),
-    last_updated timestamptz,
-    deleted_by varchar(128),
-    date_deleted timestamptz,
-    is_deleted boolean NOT NULL DEFAULT FALSE,
-    CONSTRAINT pk_tbl_voice_analysis_voice_analysis_id PRIMARY KEY (voice_analysis_id)
+-- ============================================
+-- TABLE: tblrepracticesession
+-- FK dependencies: tbluser (userid), tblsession (sourcesessionid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblrepracticesession
+(
+    repracticesessionid     BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    userid                  BIGINT NOT NULL,
+    sourcesessionid         BIGINT NOT NULL,
+    totalmistakes           INTEGER NOT NULL DEFAULT 0,
+    completedrounds         INTEGER NOT NULL DEFAULT 0,
+    improvementpercent      DECIMAL(5,2) NOT NULL DEFAULT 0,
+    status                  VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    generateddate           TIMESTAMP NOT NULL DEFAULT NOW(),
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblrepracticesession_repracticesessionid PRIMARY KEY (repracticesessionid)
+);
+
+-- ============================================
+-- TABLE: tblrepracticeutterance
+-- FK dependencies: tblrepracticesession (repracticesessionid),
+--                  tblmistake (mistakeid), tblutterance (originalutteranceid)
+-- ============================================
+CREATE TABLE IF NOT EXISTS tblrepracticeutterance
+(
+    repracticeutteranceid   BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    repracticesessionid     BIGINT NOT NULL,
+    mistakeid               BIGINT NOT NULL,
+    originalutteranceid     BIGINT NOT NULL,
+    englishtext             VARCHAR(512) NOT NULL,
+    hinttext                VARCHAR(512) NULL,
+    mistaketype             VARCHAR(32) NOT NULL,
+    mistakedetail           VARCHAR(256) NULL,
+    correctionnote          VARCHAR(512) NULL,
+    attemptcount            INTEGER NOT NULL DEFAULT 0,
+    bestscore               DECIMAL(5,2) NOT NULL DEFAULT 0,
+    lastscore               DECIMAL(5,2) NOT NULL DEFAULT 0,
+    isresolved              BOOLEAN NOT NULL DEFAULT FALSE,
+    tag                     VARCHAR(64) NULL,
+    comments                VARCHAR(256) NULL,
+    sortorder               INTEGER NOT NULL DEFAULT 0,
+    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
+    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
+    updatedby               VARCHAR(128) NULL,
+    lastupdated             TIMESTAMP NULL,
+    deletedby               VARCHAR(128) NULL,
+    datedeleted             TIMESTAMP NULL,
+    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
+
+    CONSTRAINT pk_tblrepracticeutterance_repracticeutteranceid PRIMARY KEY (repracticeutteranceid)
 );
 
 COMMIT;

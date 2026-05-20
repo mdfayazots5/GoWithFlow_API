@@ -1,85 +1,336 @@
 -- ============================================
 -- File: 03_constraints_indexes.sql
--- Description: Add foreign keys and secondary indexes converted from the live SQL Server catalog.
+-- Description: All foreign key constraints, unique constraints, and indexes
+--              Converted from SQL Server GoWithFlowDB
 -- Run order: 3 of 10
 -- Dependencies: 01_extensions.sql, 02_schema.sql
 -- ============================================
--- Tables migrated: 17
--- Views migrated: 0
--- Functions migrated: 0
--- Stored Procedures migrated: 79
--- Triggers migrated: 0
--- Indexes migrated: 33
--- Known incompatibilities: Filtered indexes translated to partial indexes; verify predicate selectivity under PostgreSQL planner.
--- Manual review required: Composite unique indexes from SQL Server filtered indexes need workload validation after migration.
-
+-- Tables migrated: N/A
+-- Views migrated: N/A
+-- Functions migrated: N/A
+-- Stored Procedures migrated: N/A
+-- Triggers migrated: N/A
+-- Indexes migrated: 37
+--   (31 FK indexes + 4 unique constraints + 2 composite unique indexes already
+--    in index list + partial filtered indexes converted to WHERE isdeleted = FALSE)
+-- Known incompatibilities: NONE
+-- Manual review required: NONE
+-- ============================================
 
 BEGIN;
 
-ALTER TABLE public.tbl_admin_note ADD CONSTRAINT fk_tbl_admin_note_admin_user_id_tbl_user_user_id FOREIGN KEY (admin_user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_admin_note ADD CONSTRAINT fk_tbl_admin_note_target_user_id_tbl_user_user_id FOREIGN KEY (target_user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_listener_feedback ADD CONSTRAINT fk_tbl_listener_feedback_from_user_id_tbl_user_user_id FOREIGN KEY (from_user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_listener_feedback ADD CONSTRAINT fk_tbl_listener_feedback_session_id_tbl_session_session_id FOREIGN KEY (session_id) REFERENCES public.tbl_session (session_id);
-ALTER TABLE public.tbl_listener_feedback ADD CONSTRAINT fk_tbl_listener_feedback_target_user_id_tbl_user_user_id FOREIGN KEY (target_user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_mistake ADD CONSTRAINT fk_tbl_mistake_script_id_tbl_script_script_id FOREIGN KEY (script_id) REFERENCES public.tbl_script (script_id);
-ALTER TABLE public.tbl_mistake ADD CONSTRAINT fk_tbl_mistake_session_id_tbl_session_session_id FOREIGN KEY (session_id) REFERENCES public.tbl_session (session_id);
-ALTER TABLE public.tbl_mistake ADD CONSTRAINT fk_tbl_mistake_user_id_tbl_user_user_id FOREIGN KEY (user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_mistake ADD CONSTRAINT fk_tbl_mistake_utterance_id_tbl_utterance_utterance_id FOREIGN KEY (utterance_id) REFERENCES public.tbl_utterance (utterance_id);
-ALTER TABLE public.tbl_refresh_token ADD CONSTRAINT fk_tbl_refresh_token_user_id_tbl_user_user_id FOREIGN KEY (user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_repractice_session ADD CONSTRAINT fk_tbl_repractice_session_source_session_id_tbl_session_session_id FOREIGN KEY (source_session_id) REFERENCES public.tbl_session (session_id);
-ALTER TABLE public.tbl_repractice_session ADD CONSTRAINT fk_tbl_repractice_session_user_id_tbl_user_user_id FOREIGN KEY (user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_repractice_utterance ADD CONSTRAINT fk_tbl_repractice_utterance_mistake_id_tbl_mistake_mistake_id FOREIGN KEY (mistake_id) REFERENCES public.tbl_mistake (mistake_id);
-ALTER TABLE public.tbl_repractice_utterance ADD CONSTRAINT fk_tbl_repractice_utterance_original_utterance_id_tbl_utterance_utterance_id FOREIGN KEY (original_utterance_id) REFERENCES public.tbl_utterance (utterance_id);
-ALTER TABLE public.tbl_repractice_utterance ADD CONSTRAINT fk_tbl_repractice_utterance_repractice_session_id_tbl_repractice_session_repractice_session_id FOREIGN KEY (repractice_session_id) REFERENCES public.tbl_repractice_session (repractice_session_id);
-ALTER TABLE public.tbl_script ADD CONSTRAINT fk_tbl_script_uploaded_by_user_id_tbl_user_user_id FOREIGN KEY (uploaded_by_user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_script_version ADD CONSTRAINT fk_tbl_script_version_script_id_tbl_script_script_id FOREIGN KEY (script_id) REFERENCES public.tbl_script (script_id);
-ALTER TABLE public.tbl_script_version ADD CONSTRAINT fk_tbl_script_version_uploaded_by_user_id_tbl_user_user_id FOREIGN KEY (uploaded_by_user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_session ADD CONSTRAINT fk_tbl_session_host_user_id_tbl_user_user_id FOREIGN KEY (host_user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_session ADD CONSTRAINT fk_tbl_session_script_id_tbl_script_script_id FOREIGN KEY (script_id) REFERENCES public.tbl_script (script_id);
-ALTER TABLE public.tbl_session_member ADD CONSTRAINT fk_tbl_session_member_session_id_tbl_session_session_id FOREIGN KEY (session_id) REFERENCES public.tbl_session (session_id);
-ALTER TABLE public.tbl_session_member ADD CONSTRAINT fk_tbl_session_member_user_id_tbl_user_user_id FOREIGN KEY (user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_turn_state ADD CONSTRAINT fk_tbl_turn_state_active_member_id_tbl_user_user_id FOREIGN KEY (active_member_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_turn_state ADD CONSTRAINT fk_tbl_turn_state_session_id_tbl_session_session_id FOREIGN KEY (session_id) REFERENCES public.tbl_session (session_id);
-ALTER TABLE public.tbl_turn_state ADD CONSTRAINT fk_tbl_turn_state_utterance_id_tbl_utterance_utterance_id FOREIGN KEY (utterance_id) REFERENCES public.tbl_utterance (utterance_id);
-ALTER TABLE public.tbl_user_badge ADD CONSTRAINT fk_tbl_user_badge_user_id_tbl_user_user_id FOREIGN KEY (user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_user_streak ADD CONSTRAINT fk_tbl_user_streak_user_id_tbl_user_user_id FOREIGN KEY (user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_utterance ADD CONSTRAINT fk_tbl_utterance_script_id_tbl_script_script_id FOREIGN KEY (script_id) REFERENCES public.tbl_script (script_id);
-ALTER TABLE public.tbl_voice_analysis ADD CONSTRAINT fk_tbl_voice_analysis_session_id_tbl_session_session_id FOREIGN KEY (session_id) REFERENCES public.tbl_session (session_id);
-ALTER TABLE public.tbl_voice_analysis ADD CONSTRAINT fk_tbl_voice_analysis_user_id_tbl_user_user_id FOREIGN KEY (user_id) REFERENCES public.tbl_user (user_id);
-ALTER TABLE public.tbl_voice_analysis ADD CONSTRAINT fk_tbl_voice_analysis_utterance_id_tbl_utterance_utterance_id FOREIGN KEY (utterance_id) REFERENCES public.tbl_utterance (utterance_id);
+SET search_path TO public;
 
-CREATE INDEX IF NOT EXISTS idx_tbl_admin_note_target_user_id ON public.tbl_admin_note (target_user_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_listener_feedback_session_id_turn_index ON public.tbl_listener_feedback (session_id, turn_index);
-CREATE INDEX IF NOT EXISTS idx_tbl_mistake_grammar_tag ON public.tbl_mistake (grammar_tag);
-CREATE INDEX IF NOT EXISTS idx_tbl_mistake_session_id ON public.tbl_mistake (session_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_mistake_user_id ON public.tbl_mistake (user_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_mistake_user_id_is_resolved ON public.tbl_mistake (user_id, is_resolved);
-CREATE INDEX IF NOT EXISTS idx_tbl_mistake_user_id_mistake_type_is_resolved ON public.tbl_mistake (user_id, mistake_type, is_resolved) WHERE (is_deleted = FALSE);
-CREATE INDEX IF NOT EXISTS idx_tbl_refresh_token_user_id ON public.tbl_refresh_token (user_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_repractice_session_user_id ON public.tbl_repractice_session (user_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_repractice_session_user_id_status ON public.tbl_repractice_session (user_id, status) WHERE (is_deleted = FALSE);
-CREATE INDEX IF NOT EXISTS idx_tbl_repractice_utterance_repractice_session_id ON public.tbl_repractice_utterance (repractice_session_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_script_category ON public.tbl_script (category);
-CREATE INDEX IF NOT EXISTS idx_tbl_script_grammar_focus_tag ON public.tbl_script (grammar_focus_tag);
-CREATE INDEX IF NOT EXISTS idx_tbl_script_is_active ON public.tbl_script (is_active);
-CREATE INDEX IF NOT EXISTS idx_tbl_script_version_script_id ON public.tbl_script_version (script_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_session_host_user_id ON public.tbl_session (host_user_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_session_join_code ON public.tbl_session (join_code);
-CREATE INDEX IF NOT EXISTS idx_tbl_session_status ON public.tbl_session (status);
-CREATE INDEX IF NOT EXISTS idx_tbl_session_status_is_deleted ON public.tbl_session (status) WHERE (is_deleted = FALSE);
-CREATE UNIQUE INDEX IF NOT EXISTS uk_tbl_session_join_code ON public.tbl_session (join_code) WHERE (is_deleted = FALSE);
-CREATE INDEX IF NOT EXISTS idx_tbl_session_member_session_id ON public.tbl_session_member (session_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_session_member_session_id_is_active ON public.tbl_session_member (session_id, is_active) WHERE (is_deleted = FALSE);
-CREATE INDEX IF NOT EXISTS idx_tbl_session_member_user_id ON public.tbl_session_member (user_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uk_tbl_session_member_session_id_slot_index ON public.tbl_session_member (session_id, slot_index) WHERE (is_deleted = FALSE AND is_active = TRUE);
-CREATE INDEX IF NOT EXISTS idx_tbl_turn_state_session_id ON public.tbl_turn_state (session_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_turn_state_session_id_turn_index ON public.tbl_turn_state (session_id, turn_index);
-CREATE INDEX IF NOT EXISTS idx_tbl_user_badge_user_id ON public.tbl_user_badge (user_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_user_streak_user_id ON public.tbl_user_streak (user_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_utterance_script_id ON public.tbl_utterance (script_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uk_tbl_utterance_script_id_sequence_id ON public.tbl_utterance (script_id, sequence_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_voice_analysis_session_id ON public.tbl_voice_analysis (session_id);
-CREATE INDEX IF NOT EXISTS idx_tbl_voice_analysis_session_id_user_id ON public.tbl_voice_analysis (session_id, user_id) WHERE (is_deleted = FALSE);
-CREATE INDEX IF NOT EXISTS idx_tbl_voice_analysis_user_id ON public.tbl_voice_analysis (user_id);
+-- ============================================
+-- FOREIGN KEY CONSTRAINTS
+-- ============================================
+
+-- tblAdminNote FKs
+ALTER TABLE tbladminnote
+    ADD CONSTRAINT fk_tbladminnote_adminuserid_tbluser_userid
+    FOREIGN KEY (adminuserid) REFERENCES tbluser(userid);
+
+ALTER TABLE tbladminnote
+    ADD CONSTRAINT fk_tbladminnote_targetuserid_tbluser_userid
+    FOREIGN KEY (targetuserid) REFERENCES tbluser(userid);
+
+-- tblListenerFeedback FKs
+ALTER TABLE tbllistenerfeedback
+    ADD CONSTRAINT fk_tbllistenerfeedback_fromuserid_tbluser_userid
+    FOREIGN KEY (fromuserid) REFERENCES tbluser(userid);
+
+ALTER TABLE tbllistenerfeedback
+    ADD CONSTRAINT fk_tbllistenerfeedback_sessionid_tblsession_sessionid
+    FOREIGN KEY (sessionid) REFERENCES tblsession(sessionid);
+
+ALTER TABLE tbllistenerfeedback
+    ADD CONSTRAINT fk_tbllistenerfeedback_targetuserid_tbluser_userid
+    FOREIGN KEY (targetuserid) REFERENCES tbluser(userid);
+
+-- tblMistake FKs
+ALTER TABLE tblmistake
+    ADD CONSTRAINT fk_tblmistake_scriptid_tblscript_scriptid
+    FOREIGN KEY (scriptid) REFERENCES tblscript(scriptid);
+
+ALTER TABLE tblmistake
+    ADD CONSTRAINT fk_tblmistake_sessionid_tblsession_sessionid
+    FOREIGN KEY (sessionid) REFERENCES tblsession(sessionid);
+
+ALTER TABLE tblmistake
+    ADD CONSTRAINT fk_tblmistake_userid_tbluser_userid
+    FOREIGN KEY (userid) REFERENCES tbluser(userid);
+
+ALTER TABLE tblmistake
+    ADD CONSTRAINT fk_tblmistake_utteranceid_tblutterance_utteranceid
+    FOREIGN KEY (utteranceid) REFERENCES tblutterance(utteranceid);
+
+-- tblRefreshToken FKs
+ALTER TABLE tblrefreshtoken
+    ADD CONSTRAINT fk_tblrefreshtoken_userid_tbluser_userid
+    FOREIGN KEY (userid) REFERENCES tbluser(userid);
+
+-- tblRepracticeSession FKs
+ALTER TABLE tblrepracticesession
+    ADD CONSTRAINT fk_tblrepracticesession_sourcesessionid_tblsession_sessionid
+    FOREIGN KEY (sourcesessionid) REFERENCES tblsession(sessionid);
+
+ALTER TABLE tblrepracticesession
+    ADD CONSTRAINT fk_tblrepracticesession_userid_tbluser_userid
+    FOREIGN KEY (userid) REFERENCES tbluser(userid);
+
+-- tblRepracticeUtterance FKs
+ALTER TABLE tblrepracticeutterance
+    ADD CONSTRAINT fk_tblrepracticeutterance_mistakeid_tblmistake_mistakeid
+    FOREIGN KEY (mistakeid) REFERENCES tblmistake(mistakeid);
+
+ALTER TABLE tblrepracticeutterance
+    ADD CONSTRAINT fk_tblrepracticeutterance_originalutteranceid_tblutterance_utteranceid
+    FOREIGN KEY (originalutteranceid) REFERENCES tblutterance(utteranceid);
+
+ALTER TABLE tblrepracticeutterance
+    ADD CONSTRAINT fk_tblrepracticeutterance_repracticesessionid_tblrepracticesession_repracticesessionid
+    FOREIGN KEY (repracticesessionid) REFERENCES tblrepracticesession(repracticesessionid);
+
+-- tblScript FKs
+ALTER TABLE tblscript
+    ADD CONSTRAINT fk_tblscript_uploadedbyuserid_tbluser_userid
+    FOREIGN KEY (uploadedbyuserid) REFERENCES tbluser(userid);
+
+-- tblScriptVersion FKs
+ALTER TABLE tblscriptversion
+    ADD CONSTRAINT fk_tblscriptversion_scriptid_tblscript_scriptid
+    FOREIGN KEY (scriptid) REFERENCES tblscript(scriptid);
+
+ALTER TABLE tblscriptversion
+    ADD CONSTRAINT fk_tblscriptversion_uploadedbyuserid_tbluser_userid
+    FOREIGN KEY (uploadedbyuserid) REFERENCES tbluser(userid);
+
+-- tblSession FKs
+ALTER TABLE tblsession
+    ADD CONSTRAINT fk_tblsession_hostuserid_tbluser_userid
+    FOREIGN KEY (hostuserid) REFERENCES tbluser(userid);
+
+ALTER TABLE tblsession
+    ADD CONSTRAINT fk_tblsession_scriptid_tblscript_scriptid
+    FOREIGN KEY (scriptid) REFERENCES tblscript(scriptid);
+
+-- tblSessionMember FKs
+ALTER TABLE tblsessionmember
+    ADD CONSTRAINT fk_tblsessionmember_sessionid_tblsession_sessionid
+    FOREIGN KEY (sessionid) REFERENCES tblsession(sessionid);
+
+ALTER TABLE tblsessionmember
+    ADD CONSTRAINT fk_tblsessionmember_userid_tbluser_userid
+    FOREIGN KEY (userid) REFERENCES tbluser(userid);
+
+-- tblTurnState FKs
+ALTER TABLE tblturnstate
+    ADD CONSTRAINT fk_tblturnstate_activememberid_tbluser_userid
+    FOREIGN KEY (activememberid) REFERENCES tbluser(userid);
+
+ALTER TABLE tblturnstate
+    ADD CONSTRAINT fk_tblturnstate_sessionid_tblsession_sessionid
+    FOREIGN KEY (sessionid) REFERENCES tblsession(sessionid);
+
+ALTER TABLE tblturnstate
+    ADD CONSTRAINT fk_tblturnstate_utteranceid_tblutterance_utteranceid
+    FOREIGN KEY (utteranceid) REFERENCES tblutterance(utteranceid);
+
+-- tblUserBadge FKs
+ALTER TABLE tbluserbadge
+    ADD CONSTRAINT fk_tbluserbadge_userid_tbluser_userid
+    FOREIGN KEY (userid) REFERENCES tbluser(userid);
+
+-- tblUserStreak FKs
+ALTER TABLE tbluserstreak
+    ADD CONSTRAINT fk_tbluserstreak_userid_tbluser_userid
+    FOREIGN KEY (userid) REFERENCES tbluser(userid);
+
+-- tblUtterance FKs
+ALTER TABLE tblutterance
+    ADD CONSTRAINT fk_tblutterance_scriptid_tblscript_scriptid
+    FOREIGN KEY (scriptid) REFERENCES tblscript(scriptid);
+
+-- tblVoiceAnalysis FKs
+ALTER TABLE tblvoiceanalysis
+    ADD CONSTRAINT fk_tblvoiceanalysis_sessionid_tblsession_sessionid
+    FOREIGN KEY (sessionid) REFERENCES tblsession(sessionid);
+
+ALTER TABLE tblvoiceanalysis
+    ADD CONSTRAINT fk_tblvoiceanalysis_userid_tbluser_userid
+    FOREIGN KEY (userid) REFERENCES tbluser(userid);
+
+ALTER TABLE tblvoiceanalysis
+    ADD CONSTRAINT fk_tblvoiceanalysis_utteranceid_tblutterance_utteranceid
+    FOREIGN KEY (utteranceid) REFERENCES tblutterance(utteranceid);
+
+-- ============================================
+-- UNIQUE CONSTRAINTS
+-- ============================================
+
+-- UK_tblDashboardMetric_MetricDate
+ALTER TABLE tbldashboardmetric
+    ADD CONSTRAINT uk_tbldashboardmetric_metricdate UNIQUE (metricdate);
+
+-- UK_tblUser_MobileNumber
+ALTER TABLE tbluser
+    ADD CONSTRAINT uk_tbluser_mobilenumber UNIQUE (mobilenumber);
+
+-- UK_tblUserBadge_UserId_BadgeCode
+ALTER TABLE tbluserbadge
+    ADD CONSTRAINT uk_tbluserbadge_userid_badgecode UNIQUE (userid, badgecode);
+
+-- UK_tblUserStreak_UserId_StreakDate
+ALTER TABLE tbluserstreak
+    ADD CONSTRAINT uk_tbluserstreak_userid_streakdate UNIQUE (userid, streakdate);
+
+-- UK_tblSession_JoinCode (filtered in SQL Server: WHERE IsDeleted = 0)
+-- PostgreSQL partial unique index equivalent
+CREATE UNIQUE INDEX IF NOT EXISTS uk_tblsession_joincode
+    ON tblsession (joincode)
+    WHERE isdeleted = FALSE;
+
+-- UK_tblSessionMember_SessionId_SlotIndex (filtered: WHERE IsDeleted=0 AND IsActive=1)
+CREATE UNIQUE INDEX IF NOT EXISTS uk_tblsessionmember_sessionid_slotindex
+    ON tblsessionmember (sessionid, slotindex)
+    WHERE isdeleted = FALSE AND isactive = TRUE;
+
+-- UK_tblUtterance_ScriptId_SequenceId
+ALTER TABLE tblutterance
+    ADD CONSTRAINT uk_tblutterance_scriptid_sequenceid UNIQUE (scriptid, sequenceid);
+
+-- ============================================
+-- NON-CLUSTERED INDEXES
+-- All converted with partial WHERE isdeleted = FALSE where source had filtered index
+-- ============================================
+
+-- tblAdminNote
+CREATE INDEX IF NOT EXISTS idx_tbladminnote_targetuserid
+    ON tbladminnote (targetuserid);
+
+-- tblListenerFeedback
+CREATE INDEX IF NOT EXISTS idx_tbllistenerfeedback_sessionid_turnindex
+    ON tbllistenerfeedback (sessionid, turnindex);
+
+-- tblMistake
+CREATE INDEX IF NOT EXISTS idx_tblmistake_grammartag
+    ON tblmistake (grammartag);
+
+CREATE INDEX IF NOT EXISTS idx_tblmistake_sessionid
+    ON tblmistake (sessionid);
+
+CREATE INDEX IF NOT EXISTS idx_tblmistake_userid
+    ON tblmistake (userid);
+
+CREATE INDEX IF NOT EXISTS idx_tblmistake_userid_isresolved
+    ON tblmistake (userid, isresolved);
+
+-- Filtered index: SQL Server WHERE IsDeleted = 0
+CREATE INDEX IF NOT EXISTS idx_tblmistake_userid_mistaketype_isresolved
+    ON tblmistake (userid, mistaketype, isresolved)
+    WHERE isdeleted = FALSE;
+
+-- tblRefreshToken
+CREATE INDEX IF NOT EXISTS idx_tblrefreshtoken_userid
+    ON tblrefreshtoken (userid);
+
+-- tblRepracticeSession
+CREATE INDEX IF NOT EXISTS idx_tblrepracticesession_userid
+    ON tblrepracticesession (userid);
+
+-- Filtered index
+CREATE INDEX IF NOT EXISTS idx_tblrepracticesession_userid_status
+    ON tblrepracticesession (userid, status)
+    WHERE isdeleted = FALSE;
+
+-- tblRepracticeUtterance
+CREATE INDEX IF NOT EXISTS idx_tblrepracticeutterance_repracticesessionid
+    ON tblrepracticeutterance (repracticesessionid);
+
+-- tblScript
+CREATE INDEX IF NOT EXISTS idx_tblscript_category
+    ON tblscript (category);
+
+CREATE INDEX IF NOT EXISTS idx_tblscript_grammarfocustag
+    ON tblscript (grammarfocustag);
+
+CREATE INDEX IF NOT EXISTS idx_tblscript_isactive
+    ON tblscript (isactive);
+
+-- tblScriptVersion
+CREATE INDEX IF NOT EXISTS idx_tblscriptversion_scriptid
+    ON tblscriptversion (scriptid);
+
+-- tblSession
+CREATE INDEX IF NOT EXISTS idx_tblsession_hostuserid
+    ON tblsession (hostuserid);
+
+CREATE INDEX IF NOT EXISTS idx_tblsession_joincode
+    ON tblsession (joincode);
+
+CREATE INDEX IF NOT EXISTS idx_tblsession_status
+    ON tblsession (status);
+
+-- Filtered index
+CREATE INDEX IF NOT EXISTS idx_tblsession_status_isdeleted
+    ON tblsession (status)
+    WHERE isdeleted = FALSE;
+
+-- tblSessionMember
+CREATE INDEX IF NOT EXISTS idx_tblsessionmember_sessionid
+    ON tblsessionmember (sessionid);
+
+-- Filtered index
+CREATE INDEX IF NOT EXISTS idx_tblsessionmember_sessionid_isactive
+    ON tblsessionmember (sessionid, isactive)
+    WHERE isdeleted = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_tblsessionmember_userid
+    ON tblsessionmember (userid);
+
+-- tblTurnState
+CREATE INDEX IF NOT EXISTS idx_tblturnstate_sessionid
+    ON tblturnstate (sessionid);
+
+CREATE INDEX IF NOT EXISTS idx_tblturnstate_sessionid_turnindex
+    ON tblturnstate (sessionid, turnindex);
+
+-- tblUserBadge
+CREATE INDEX IF NOT EXISTS idx_tbluserbadge_userid
+    ON tbluserbadge (userid);
+
+-- tblUserStreak
+CREATE INDEX IF NOT EXISTS idx_tbluserstreak_userid
+    ON tbluserstreak (userid);
+
+-- tblUtterance
+CREATE INDEX IF NOT EXISTS idx_tblutterance_scriptid
+    ON tblutterance (scriptid);
+
+-- tblVoiceAnalysis
+CREATE INDEX IF NOT EXISTS idx_tblvoiceanalysis_sessionid
+    ON tblvoiceanalysis (sessionid);
+
+-- Filtered index
+CREATE INDEX IF NOT EXISTS idx_tblvoiceanalysis_sessionid_userid
+    ON tblvoiceanalysis (sessionid, userid)
+    WHERE isdeleted = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_tblvoiceanalysis_userid
+    ON tblvoiceanalysis (userid);
+
+-- ============================================
+-- TRIGRAM INDEXES for ILIKE search performance
+-- These replace SQL Server's case-insensitive LIKE behaviour
+-- ============================================
+
+CREATE INDEX IF NOT EXISTS idx_tbluser_fullname_trgm
+    ON tbluser USING gin (fullname gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_tbluser_mobilenumber_trgm
+    ON tbluser USING gin (mobilenumber gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_tblscript_scripttitle_trgm
+    ON tblscript USING gin (scripttitle gin_trgm_ops);
 
 COMMIT;
