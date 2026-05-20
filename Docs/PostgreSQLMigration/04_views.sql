@@ -1,0 +1,18 @@
+-- ============================================
+-- File: 04_views.sql
+-- Description: All views converted from SQL Server GoWithFlowDB
+-- Run order: 4 of 10
+-- Dependencies: 01_extensions.sql, 02_schema.sql, 03_constraints_indexes.sql
+-- ============================================
+-- Tables migrated: N/A
+-- Views migrated: 0
+-- Functions migrated: N/A
+-- Stored Procedures migrated: N/A
+-- Triggers migrated: N/A
+-- Indexes migrated: N/A
+-- Known incompatibilities: NONE
+-- Manual review required: NONE
+-- ============================================
+
+-- No views found in source GoWithFlowDB database.
+-- This file is intentionally empty.
