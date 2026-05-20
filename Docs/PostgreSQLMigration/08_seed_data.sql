@@ -1,0 +1,13 @@
+-- ============================================
+-- File: 08_seed_data.sql
+-- Description: Reference / lookup seed data from SQL Server GoWithFlowDB
+-- Run order: 8 of 10
+-- Dependencies: 02_schema.sql
+-- ============================================
+-- Seed rows migrated: 0
+-- Known incompatibilities: NONE
+-- Manual review required: NONE
+-- ============================================
+
+-- No static reference or lookup data found in source GoWithFlowDB database.
+-- All data is user-generated. This file is intentionally empty.

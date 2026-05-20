@@ -1,0 +1,25 @@
+-- ============================================
+-- File: 05_functions.sql
+-- Description: Scalar and table-valued functions converted from SQL Server GoWithFlowDB
+--              Also includes the UtteranceTVP type equivalent for PostgreSQL
+-- Run order: 5 of 10
+-- Dependencies: 01_extensions.sql, 02_schema.sql
+-- ============================================
+-- Tables migrated: N/A
+-- Views migrated: N/A
+-- Functions migrated: 0
+-- Stored Procedures migrated: N/A
+-- Triggers migrated: N/A
+-- Indexes migrated: N/A
+-- Known incompatibilities:
+--   - SQL Server TABLE-VALUED PARAMETER (UtteranceTVP) has no direct equivalent in PostgreSQL
+--     The uspBulkInsertUtterance SP in PostgreSQL accepts a JSON array parameter instead.
+--     See 06_stored_procedures.sql for the implementation.
+-- Manual review required:
+--   - Application code calling uspBulkInsertUtterance must be updated to pass
+--     a JSON array instead of a TVP. See SP notes in 06_stored_procedures.sql.
+-- ============================================
+
+-- No scalar or table-valued functions found in source GoWithFlowDB database.
+-- The UtteranceTVP table-valued parameter has been handled in 06_stored_procedures.sql
+-- via a JSONB array parameter for uspbulkinsertutterance.

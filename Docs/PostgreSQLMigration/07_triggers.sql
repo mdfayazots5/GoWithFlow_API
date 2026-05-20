@@ -1,0 +1,13 @@
+-- ============================================
+-- File: 07_triggers.sql
+-- Description: All triggers converted from SQL Server GoWithFlowDB
+-- Run order: 7 of 10
+-- Dependencies: 01_extensions.sql, 02_schema.sql
+-- ============================================
+-- Triggers migrated: 0
+-- Known incompatibilities: NONE
+-- Manual review required: NONE
+-- ============================================
+
+-- No triggers found in source GoWithFlowDB database.
+-- This file is intentionally empty.
