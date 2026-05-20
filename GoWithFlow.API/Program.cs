@@ -200,20 +200,13 @@ builder.Services.AddCors(options =>
 			.AllowCredentials();
 	});
 
-	var allowedOrigins = builder.Configuration.GetSection("CorsSettings").GetSection("AllowedOrigins").Get<string[]>()
-		?? builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
-		?? Array.Empty<string>();
-
 	options.AddPolicy(CorsPolicyNames.Production, policy =>
 	{
-		if (allowedOrigins.Length > 0)
-		{
-			policy
-				.WithOrigins(allowedOrigins)
-				.AllowAnyHeader()
-				.AllowAnyMethod()
-				.AllowCredentials();
-		}
+		policy
+			.SetIsOriginAllowed(_ => true)
+			.AllowAnyHeader()
+			.AllowAnyMethod()
+			.AllowCredentials();
 	});
 });
 
