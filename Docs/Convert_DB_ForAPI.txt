@@ -177,6 +177,201 @@ Add a startup health check that:
 - Throws descriptive exception if connection fails, naming which provider failed
 
 ===========================================================
+CHANGE 11 — EF Core Table and Column Name Lowercase Mapping for PostgreSQL
+===========================================================
+
+CONTEXT:
+When the PostgreSQL database is created using SQL migration scripts (not EF
+migrations), all table names and column names are stored in lowercase because
+PostgreSQL folds unquoted identifiers to lowercase at creation time.
+
+Examples of what SQL scripts create:
+    tbluser         (not "tblUser")
+    tblrefreshtoken (not "tblRefreshToken")
+    tblsession      (not "tblSession")
+
+    userid          (not "UserId")
+    fullname        (not "FullName")
+    mobilenumber    (not "MobileNumber")
+    datecreated     (not "DateCreated")
+
+EF Core with Npgsql always quotes identifiers, so it generates:
+    FROM "tblUser"    ← ERROR: relation "tblUser" does not exist
+    WHERE "IsDeleted" = false  ← ERROR: column "IsDeleted" does not exist
+
+This causes a 500 Internal Server Error on ANY endpoint that uses EF LINQ queries
+(CountAsync, FirstOrDefaultAsync, ToListAsync, etc.) even if the stored procedures
+for the same data work fine — because stored procedures use unquoted lowercase names.
+
+MANDATORY FIX — Add to ApplyProviderConventions in ModelBuilderExtensions.cs:
+
+    // 1. Lowercase all table names for PostgreSQL
+    if (DatabaseProviderNames.IsPostgreSql(provider))
+    {
+        var tableName = entityType.GetTableName();
+        if (!string.IsNullOrEmpty(tableName))
+        {
+            entityBuilder.ToTable(tableName.ToLowerInvariant());
+        }
+    }
+
+    // 2. Lowercase all column names for PostgreSQL (inside the property loop)
+    if (DatabaseProviderNames.IsPostgreSql(provider))
+    {
+        propertyBuilder.HasColumnName(property.Name.ToLowerInvariant());
+    }
+
+HOW IT WORKS:
+- ApplyConfigurationsFromAssembly runs FIRST (sets "tblUser", "UserId", etc.)
+- ApplyProviderConventions runs SECOND — overrides to lowercase for PostgreSQL
+- Result: EF generates FROM "tbluser" WHERE "userid" = @p0 — matches SQL-script schema
+
+IMPORTANT — also restructure the existing type checks from continue-style to
+else-if-style so the column name fix runs for ALL property types including
+DateTime, decimal, and DateOnly:
+
+    // BEFORE (column name fix never runs for DateTime/decimal):
+    if (clrType == typeof(DateTime)) { ...; continue; }
+    if (clrType == typeof(decimal))  { ...; continue; }
+    if (DatabaseProviderNames.IsPostgreSql(provider))
+        propertyBuilder.HasColumnName(...);  // ← skipped by continue above
+
+    // AFTER (correct — column name fix runs for every property type):
+    if      (clrType == typeof(DateTime)) { ... }
+    else if (clrType == typeof(decimal))  { ... }
+    else if (clrType == typeof(string) && ...) { ... }
+    if (DatabaseProviderNames.IsPostgreSql(provider))
+        propertyBuilder.HasColumnName(...);  // ← always runs
+
+VERIFICATION — after applying the fix, any EF LINQ query should execute:
+    _dbContext.Users.AsNoTracking().CountAsync(u => u.IsDeleted == false)
+    _dbContext.RefreshTokens.FirstOrDefaultAsync(rt => rt.Token == token)
+
+If these still fail, check that ApplyConfigurationsFromAssembly is called BEFORE
+ApplyProviderConventions in OnModelCreating — the order matters.
+
+===========================================================
+CHANGE 12 — Do Not Use TIMESTAMPTZ Input Parameters for Filtering TIMESTAMP Columns
+===========================================================
+
+When a function has input parameters of type TIMESTAMPTZ (timestamp with time zone)
+but filters against table columns that are TIMESTAMP (timestamp without time zone),
+PostgreSQL performs an implicit timezone cast that can produce unexpected results.
+
+Symptom: Date-range filters return wrong rows or no rows, especially in UTC+offset
+environments.
+
+FIX — Change input parameter types from TIMESTAMPTZ to TIMESTAMP to match the
+table column types. This is consistent with the EF Core DateTime mapping which
+sends DateTime values without timezone information.
+
+WRONG:
+    CREATE OR REPLACE FUNCTION uspgetuserreportsummarylist(
+        p_fromdate TIMESTAMPTZ DEFAULT NULL,   -- ← input param TIMESTAMPTZ
+        p_todate   TIMESTAMPTZ DEFAULT NULL    -- ← but column is TIMESTAMP
+    )
+
+CORRECT:
+    CREATE OR REPLACE FUNCTION uspgetuserreportsummarylist(
+        p_fromdate TIMESTAMP DEFAULT NULL,     -- ← matches column type
+        p_todate   TIMESTAMP DEFAULT NULL
+    )
+
+This aligns with Npgsql.EnableLegacyTimestampBehavior = true set in Program.cs,
+which treats all DateTime as timestamp without time zone throughout the application.
+
+===========================================================
+CHANGE 13 — Npgsql MARS Restriction: Close ADO.NET Reader Before EF Core Queries
+===========================================================
+
+CONTEXT:
+Npgsql (PostgreSQL .NET driver) does NOT support Multiple Active Result Sets (MARS).
+This is unlike SQL Server where a DataReader can stay open while a second query executes.
+
+In PostgreSQL, only ONE query can be active on a connection at a time.
+
+SYMPTOM:
+A 500 Internal Server Error is thrown at runtime when:
+1. A stored procedure is called via raw ADO.NET (GetDbConnection() → CreateCommand() → ExecuteReaderAsync())
+2. The DbDataReader is still open (not yet disposed)
+3. EF Core LINQ then executes a second query (CountAsync, FirstOrDefaultAsync, etc.) on the SAME DbContext connection
+
+Example of the broken pattern:
+    await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+    while (await reader.ReadAsync(cancellationToken)) { ... }
+
+    // ← reader still open here — Npgsql throws on the next line
+    var totalCount = await _dbContext.Users.CountAsync(cancellationToken);
+
+MANDATORY FIX — Close the reader before any subsequent EF Core query on the same DbContext:
+    await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+    while (await reader.ReadAsync(cancellationToken)) { ... }
+
+    await reader.CloseAsync(); // ← REQUIRED before any EF Core query
+
+    var totalCount = await _dbContext.Users.CountAsync(cancellationToken); // safe
+
+WHY CloseAsync() WORKS WITH await using:
+    CloseAsync() is idempotent — calling it before DisposeAsync() does not throw.
+    The await using at method exit calls DisposeAsync() which internally handles
+    an already-closed reader without error.
+
+ALTERNATIVE FIX — Nest in a separate scope block so the reader is disposed first:
+    List<...> items;
+    {
+        await using var command = await CreateStoredProcedureCommandAsync(...);
+        await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, ...);
+        items = ...;  // read all items
+    } // reader and command disposed here, BEFORE the EF Core query below
+
+    var totalCount = await _dbContext.Users.CountAsync(...); // safe
+
+AUDIT RULE — For any repository method that:
+  - Opens a raw ADO.NET reader from a stored procedure, AND
+  - Then calls any EF Core LINQ method (CountAsync, FirstOrDefaultAsync, ToListAsync, etc.)
+→ Ensure the reader is closed / disposed BEFORE the EF Core call.
+
+SQL Server is NOT affected — MARS allows multiple active readers per connection.
+This rule applies ONLY to the PostgreSQL code path.
+
+===========================================================
+CHANGE 14 — Use ILike (Not Contains) for Case-Insensitive Search in EF Core Count Queries
+===========================================================
+
+CONTEXT:
+When an API endpoint uses a stored procedure (SP) for pagination rows and a separate
+EF Core LINQ query for the total count, the search logic must match.
+
+PostgreSQL SP already uses ILIKE (case-insensitive):
+    OR usr.fullname ILIKE '%' || p_searchterm || '%'
+
+But EF Core .Contains() generates LIKE (case-SENSITIVE in PostgreSQL):
+    WHERE fullname LIKE '%term%'   ← case-sensitive, will not match ILIKE results
+
+This causes a mismatch: items returned ≠ totalCount, breaking pagination.
+
+MANDATORY PATTERN for any count EF Core query in a paginated endpoint (PostgreSQL path):
+
+    if (DatabaseProviderNames.IsPostgreSql(_dbContext.DatabaseProvider))
+    {
+        query = query.Where(user =>
+            EF.Functions.ILike(user.FullName, $"%{searchTerm}%") ||
+            EF.Functions.ILike(user.MobileNumber, $"%{searchTerm}%"));
+    }
+    else
+    {
+        query = query.Where(user =>
+            user.FullName.Contains(searchTerm) ||
+            user.MobileNumber.Contains(searchTerm));
+    }
+
+Required using directive:
+    using Npgsql.EntityFrameworkCore.PostgreSQL;
+
+Required package (already in GoWithFlow.Infrastructure.csproj):
+    Npgsql.EntityFrameworkCore.PostgreSQL
+
+===========================================================
 
 STANDARDS TO FOLLOW (non-negotiable):
 - Clean Architecture — no DB logic in controllers or application layer

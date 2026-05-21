@@ -245,6 +245,8 @@ public sealed class SessionRepository : ISessionRepository
 			});
 		}
 
+		await reader.CloseAsync();
+
 		var totalCount = await _dbContext.SessionMembers
 			.AsNoTracking()
 			.Where(sessionMember => sessionMember.UserId == userId && sessionMember.IsDeleted == false)

@@ -6,6 +6,7 @@ using GoWithFlow.Application.DTOs.Responses.Admin;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Npgsql.EntityFrameworkCore.PostgreSQL;
 
 namespace GoWithFlow.Infrastructure.Repositories;
 
@@ -111,6 +112,10 @@ public sealed class AdminRepository : IAdminRepository
 				IsActive = GetBoolean(reader, "IsActive")
 			});
 		}
+
+		// Close the reader before running EF Core CountAsync — Npgsql does not allow
+		// a second query on the same connection while a reader is still open (no MARS).
+		await reader.CloseAsync();
 
 		var totalCount = await CountUsersAsync(dto, cancellationToken);
 
@@ -246,6 +251,8 @@ public sealed class AdminRepository : IAdminRepository
 			});
 		}
 
+		await reader.CloseAsync();
+
 		var totalCount = await _dbContext.Users
 			.AsNoTracking()
 			.CountAsync(user => user.IsDeleted == false && (dto.UserId.HasValue == false || dto.UserId == 0 || user.UserId == dto.UserId.Value), cancellationToken);
@@ -283,6 +290,8 @@ public sealed class AdminRepository : IAdminRepository
 				AvgScore = GetDecimal(reader, "AvgScore")
 			}
 		};
+
+		await reader.CloseAsync();
 
 		result.SessionHistoryList = await GetRecentUserSessionsAsync(userId, null, cancellationToken);
 		result.MistakeBreakdownList = await _dbContext.Mistakes
@@ -355,9 +364,20 @@ public sealed class AdminRepository : IAdminRepository
 		if (string.IsNullOrWhiteSpace(dto.SearchTerm) == false)
 		{
 			var searchTerm = dto.SearchTerm.Trim();
-			query = query.Where(user =>
-				user.FullName.Contains(searchTerm) ||
-				user.MobileNumber.Contains(searchTerm));
+
+			if (DatabaseProviderNames.IsPostgreSql(_dbContext.DatabaseProvider))
+			{
+				// Use ILike to match the SP's case-insensitive ILIKE search
+				query = query.Where(user =>
+					EF.Functions.ILike(user.FullName, $"%{searchTerm}%") ||
+					EF.Functions.ILike(user.MobileNumber, $"%{searchTerm}%"));
+			}
+			else
+			{
+				query = query.Where(user =>
+					user.FullName.Contains(searchTerm) ||
+					user.MobileNumber.Contains(searchTerm));
+			}
 		}
 
 		if (string.IsNullOrWhiteSpace(dto.AgeGroup) == false)

@@ -72,6 +72,8 @@ public sealed class RepracticeRepository : IRepracticeRepository
 			GeneratedDate = GetDateTime(reader, "GeneratedDate")
 		};
 
+		await reader.CloseAsync();
+
 		response.Utterances = await _dbContext.RepracticeUtterances
 			.AsNoTracking()
 			.Where(utterance => utterance.RepracticeSessionId == repracticeSessionId && utterance.IsDeleted == false)
@@ -121,6 +123,8 @@ public sealed class RepracticeRepository : IRepracticeRepository
 				GeneratedDate = GetDateTime(reader, "GeneratedDate")
 			});
 		}
+
+		await reader.CloseAsync();
 
 		var totalCount = await CountRepracticeHistoryAsync(userId, cancellationToken);
 

@@ -106,6 +106,8 @@ public sealed class MistakeRepository : IMistakeRepository
 			});
 		}
 
+		await reader.CloseAsync();
+
 		var totalCount = await CountMistakesAsync(dto, userId, cancellationToken);
 
 		return new PagedResult<MistakeResponseDto>

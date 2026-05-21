@@ -1,8 +1,10 @@
+using System.Security.Cryptography;
 using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.Admin;
 using GoWithFlow.Application.DTOs.Responses.Admin;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
+using GoWithFlow.Domain.Entities;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace GoWithFlow.Application.Services;
@@ -178,6 +180,106 @@ public sealed class AdminService : IAdminService
 
 		return ApiResponse<byte[]>.SuccessResult(workbookBytes, "Admin reports exported successfully.");
 	}
+
+	public async Task<ApiResponse<AdminCreateUserResponseDto>> CreateUserAsync(AdminCreateUserRequestDto dto, CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(dto.FullName))
+			return ApiResponse<AdminCreateUserResponseDto>.FailureResult(new[] { "Full name is required." }, "Validation failed.");
+
+		if (string.IsNullOrWhiteSpace(dto.MobileNumber))
+			return ApiResponse<AdminCreateUserResponseDto>.FailureResult(new[] { "Mobile number is required." }, "Validation failed.");
+
+		if (string.IsNullOrWhiteSpace(dto.AgeGroup) || !IsValidAgeGroup(dto.AgeGroup))
+			return ApiResponse<AdminCreateUserResponseDto>.FailureResult(new[] { "Age group must be one of: Child (6-12), Teen (13-17), Adult (18+)." }, "Validation failed.");
+
+		if (string.IsNullOrWhiteSpace(dto.PreferredHintLanguage) || !IsValidHintLanguage(dto.PreferredHintLanguage))
+			return ApiResponse<AdminCreateUserResponseDto>.FailureResult(new[] { "Preferred language must be one of: Telugu, Hindi, Tamil, Kannada, None." }, "Validation failed.");
+
+		var existing = await _userRepository.GetByMobileNumberAsync(dto.MobileNumber.Trim(), cancellationToken);
+		if (existing is not null)
+			return ApiResponse<AdminCreateUserResponseDto>.FailureResult(new[] { "Mobile number is already registered." }, "User creation failed.");
+
+		var user = new User
+		{
+			FullName = dto.FullName.Trim(),
+			MobileNumber = dto.MobileNumber.Trim(),
+			Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim(),
+			PasswordHash = string.IsNullOrWhiteSpace(dto.Password) ? null : HashPassword(dto.Password),
+			AgeGroup = dto.AgeGroup.Trim(),
+			PreferredHintLanguage = dto.PreferredHintLanguage.Trim(),
+			Role = "USER",
+			CreatedBy = "Admin",
+			IPAddress = "127.0.0.1"
+		};
+
+		var userId = await _userRepository.InsertUserAsync(user, cancellationToken);
+
+		var response = new AdminCreateUserResponseDto
+		{
+			UserId = userId,
+			FullName = user.FullName,
+			MobileNumber = user.MobileNumber,
+			AgeGroup = user.AgeGroup,
+			Status = "ACTIVE"
+		};
+
+		return ApiResponse<AdminCreateUserResponseDto>.SuccessResult(response, "User created successfully.");
+	}
+
+	public async Task<ApiResponse<bool>> UpdateUserAsync(long userId, AdminUpdateUserRequestDto dto, CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(dto.FullName))
+			return ApiResponse<bool>.FailureResult(new[] { "Full name is required." }, "Validation failed.");
+
+		if (string.IsNullOrWhiteSpace(dto.MobileNumber))
+			return ApiResponse<bool>.FailureResult(new[] { "Mobile number is required." }, "Validation failed.");
+
+		if (string.IsNullOrWhiteSpace(dto.AgeGroup) || !IsValidAgeGroup(dto.AgeGroup))
+			return ApiResponse<bool>.FailureResult(new[] { "Age group must be one of: Child (6-12), Teen (13-17), Adult (18+)." }, "Validation failed.");
+
+		if (string.IsNullOrWhiteSpace(dto.PreferredHintLanguage) || !IsValidHintLanguage(dto.PreferredHintLanguage))
+			return ApiResponse<bool>.FailureResult(new[] { "Preferred language must be one of: Telugu, Hindi, Tamil, Kannada, None." }, "Validation failed.");
+
+		var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
+		if (user is null)
+			return ApiResponse<bool>.FailureResult(new[] { "User not found." }, "Update failed.");
+
+		if (!string.Equals(user.MobileNumber, dto.MobileNumber.Trim(), StringComparison.OrdinalIgnoreCase))
+		{
+			var existing = await _userRepository.GetByMobileNumberAsync(dto.MobileNumber.Trim(), cancellationToken);
+			if (existing is not null)
+				return ApiResponse<bool>.FailureResult(new[] { "Mobile number is already registered." }, "Update failed.");
+		}
+
+		user.FullName = dto.FullName.Trim();
+		user.MobileNumber = dto.MobileNumber.Trim();
+		user.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim();
+		user.AgeGroup = dto.AgeGroup.Trim();
+		user.PreferredHintLanguage = dto.PreferredHintLanguage.Trim();
+		user.UpdatedBy = "Admin";
+		user.LastUpdated = DateTime.UtcNow;
+
+		if (!string.IsNullOrWhiteSpace(dto.Password))
+			user.PasswordHash = HashPassword(dto.Password);
+
+		_userRepository.Update(user);
+		await _userRepository.SaveChangesAsync(cancellationToken);
+
+		return ApiResponse<bool>.SuccessResult(true, "User updated successfully.");
+	}
+
+	private static string HashPassword(string password)
+	{
+		byte[] salt = RandomNumberGenerator.GetBytes(16);
+		byte[] hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 100_000, HashAlgorithmName.SHA256, 32);
+		return $"{Convert.ToBase64String(salt)}:{Convert.ToBase64String(hash)}";
+	}
+
+	private static bool IsValidAgeGroup(string value) =>
+		value is "Child (6-12)" or "Teen (13-17)" or "Adult (18+)";
+
+	private static bool IsValidHintLanguage(string value) =>
+		value is "Telugu" or "Hindi" or "Tamil" or "Kannada" or "None";
 
 	private static void NormalizeUserSearch(AdminUserSearchRequestDto dto)
 	{

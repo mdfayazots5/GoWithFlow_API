@@ -376,6 +376,108 @@ Or use RETURNS TABLE with the new ID as one of the returned columns.
 Avoid OUT parameters unless the calling application specifically expects them.
 
 ===========================================================
+RULE 16 — RETURNS TABLE Timestamp Type Must Match Actual Column Type
+===========================================================
+
+CRITICAL — This causes PostgreSQL error 42804 (return type mismatch) at RUNTIME,
+not at CREATE FUNCTION time. The function is created successfully but fails
+the first time it is called.
+
+The rule: RETURNS TABLE column types MUST exactly match the actual table column types.
+
+When tbl* tables are created with TIMESTAMP (without time zone) — which is the
+correct type per Rule 1 (DATETIME → TIMESTAMP) — every function that reads from
+those tables and returns timestamp values MUST declare TIMESTAMP in RETURNS TABLE.
+
+WRONG — causes 42804 at runtime:
+    CREATE OR REPLACE FUNCTION uspgetuserbymobilenumber(p_mobilenumber VARCHAR(16))
+    RETURNS TABLE (
+        ...
+        lastlogindate   TIMESTAMPTZ,    -- ← WRONG if column is TIMESTAMP
+        registrationdate TIMESTAMPTZ,   -- ← WRONG if column is TIMESTAMP
+        datecreated     TIMESTAMPTZ     -- ← WRONG if column is TIMESTAMP
+    )
+
+CORRECT:
+    CREATE OR REPLACE FUNCTION uspgetuserbymobilenumber(p_mobilenumber VARCHAR(16))
+    RETURNS TABLE (
+        ...
+        lastlogindate   TIMESTAMP,      -- ← matches actual column type
+        registrationdate TIMESTAMP,     -- ← matches actual column type
+        datecreated     TIMESTAMP       -- ← matches actual column type
+    )
+
+RULE: Never use TIMESTAMPTZ in RETURNS TABLE unless the underlying column is
+also TIMESTAMPTZ (timestamp with time zone). PostgreSQL will not auto-cast.
+
+HOW TO VERIFY before writing functions:
+    SELECT column_name, data_type
+    FROM information_schema.columns
+    WHERE table_name = 'tbl<entityname>'
+      AND data_type LIKE 'timestamp%'
+    ORDER BY ordinal_position;
+
+Check the result: if data_type = 'timestamp without time zone' → use TIMESTAMP.
+                  if data_type = 'timestamp with time zone'    → use TIMESTAMPTZ.
+
+This drift commonly appears when:
+- Functions are written before checking the actual table schema
+- A fix patch corrects one column type (e.g. VARCHAR size) but misses timestamp types
+- Functions are copied from documentation that uses TIMESTAMPTZ as a default
+
+===========================================================
+RULE 17 — RETURNS TABLE VARCHAR Size Must Match Actual Column Size
+===========================================================
+
+CRITICAL — Same 42804 error as Rule 16. PostgreSQL will not truncate silently.
+If the function declares VARCHAR(256) but the column is VARCHAR(512), the
+function fails at runtime.
+
+WRONG:
+    RETURNS TABLE (
+        passwordhash VARCHAR(256)    -- ← fails if column is VARCHAR(512)
+    )
+
+CORRECT:
+    RETURNS TABLE (
+        passwordhash VARCHAR(512)    -- ← matches actual column definition
+    )
+
+RULE: Always check the actual column size in information_schema before writing
+the RETURNS TABLE declaration. Do not guess or copy sizes from old scripts.
+
+HOW TO VERIFY:
+    SELECT column_name, character_maximum_length
+    FROM information_schema.columns
+    WHERE table_name = 'tbl<entityname>'
+    ORDER BY ordinal_position;
+
+When in doubt — cast explicitly in the SELECT body to force the size:
+    usr.passwordhash::VARCHAR(512)
+
+The body cast alone is NOT enough if the RETURNS TABLE declaration has a
+smaller size. Both must match.
+
+===========================================================
+RULE 18 — Validate Every Function After Creation With a Live Call
+===========================================================
+
+CREATE OR REPLACE FUNCTION succeeds even when RETURNS TABLE types are wrong.
+The error only surfaces at runtime. Always validate immediately after creation:
+
+    SELECT * FROM usp<functionname>(<test_param>);
+
+If it throws 42804, find the mismatched column:
+- The error message says: "Returned type X does not match expected type Y in column N"
+- Column N is 1-based. Count the RETURNS TABLE columns to identify which one.
+- Fix that column type in the RETURNS TABLE declaration, then DROP and recreate.
+
+DROP command when fixing:
+    DROP FUNCTION IF EXISTS usp<functionname>(<input_param_types>);
+
+Specify input parameter types only (not output/table columns) in the DROP signature.
+
+===========================================================
 
 WHAT TO DELIVER FOR EACH OBJECT:
 

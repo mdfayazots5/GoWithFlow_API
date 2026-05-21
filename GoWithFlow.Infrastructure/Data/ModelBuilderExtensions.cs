@@ -16,6 +16,16 @@ public static class ModelBuilderExtensions
 
 			var entityBuilder = modelBuilder.Entity(entityType.ClrType);
 
+			// PostgreSQL: lowercase table names to match SQL-script-created schema (e.g. "tblUser" → "tbluser")
+			if (DatabaseProviderNames.IsPostgreSql(provider))
+			{
+				var tableName = entityType.GetTableName();
+				if (!string.IsNullOrEmpty(tableName))
+				{
+					entityBuilder.ToTable(tableName.ToLowerInvariant());
+				}
+			}
+
 			foreach (var property in entityType.GetProperties())
 			{
 				var clrType = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
@@ -29,25 +39,24 @@ public static class ModelBuilderExtensions
 					{
 						propertyBuilder.HasDefaultValueSql(ColumnTypeHelper.CurrentTimestampSql(provider));
 					}
-
-					continue;
 				}
-
-				if (clrType == typeof(DateOnly))
+				else if (clrType == typeof(DateOnly))
 				{
 					propertyBuilder.HasColumnType(ColumnTypeHelper.Date(provider));
-					continue;
 				}
-
-				if (clrType == typeof(decimal))
+				else if (clrType == typeof(decimal))
 				{
 					propertyBuilder.HasColumnType(ResolveDecimalColumnType(provider, property.Name));
-					continue;
 				}
-
-				if (clrType == typeof(string) && property.Name.EndsWith("Json", StringComparison.Ordinal))
+				else if (clrType == typeof(string) && property.Name.EndsWith("Json", StringComparison.Ordinal))
 				{
 					propertyBuilder.HasColumnType(ColumnTypeHelper.Json(provider));
+				}
+
+				// PostgreSQL: lowercase column names to match SQL-script-created schema (e.g. "UserId" → "userid")
+				if (DatabaseProviderNames.IsPostgreSql(provider))
+				{
+					propertyBuilder.HasColumnName(property.Name.ToLowerInvariant());
 				}
 			}
 

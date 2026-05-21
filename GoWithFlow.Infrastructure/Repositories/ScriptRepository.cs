@@ -9,6 +9,7 @@ using GoWithFlow.Domain.Entities;
 using GoWithFlow.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Npgsql.EntityFrameworkCore.PostgreSQL;
 
 namespace GoWithFlow.Infrastructure.Repositories;
 
@@ -112,6 +113,8 @@ public sealed class ScriptRepository : IScriptRepository
 			});
 		}
 
+		await reader.CloseAsync();
+
 		var totalCount = await CountScriptsAsync(dto, cancellationToken);
 
 		return new PagedResult<ScriptListItemResponseDto>
@@ -151,6 +154,8 @@ public sealed class ScriptRepository : IScriptRepository
 			Version = GetInt32(reader, "Version"),
 			UtteranceCount = GetInt32(reader, "UtteranceCount")
 		};
+
+		await reader.CloseAsync();
 
 		result.Utterances = await _dbContext.Utterances
 			.AsNoTracking()
@@ -336,10 +341,21 @@ public sealed class ScriptRepository : IScriptRepository
 		if (string.IsNullOrWhiteSpace(dto.SearchTerm) == false)
 		{
 			var searchTerm = dto.SearchTerm.Trim();
-			query = query.Where(script =>
-				script.ScriptTitle.Contains(searchTerm) ||
-				script.Category.Contains(searchTerm) ||
-				script.ContextTag.Contains(searchTerm));
+
+			if (DatabaseProviderNames.IsPostgreSql(_dbContext.DatabaseProvider))
+			{
+				query = query.Where(script =>
+					EF.Functions.ILike(script.ScriptTitle, $"%{searchTerm}%") ||
+					EF.Functions.ILike(script.Category, $"%{searchTerm}%") ||
+					EF.Functions.ILike(script.ContextTag, $"%{searchTerm}%"));
+			}
+			else
+			{
+				query = query.Where(script =>
+					script.ScriptTitle.Contains(searchTerm) ||
+					script.Category.Contains(searchTerm) ||
+					script.ContextTag.Contains(searchTerm));
+			}
 		}
 
 		if (string.IsNullOrWhiteSpace(dto.Category) == false)

@@ -4,6 +4,7 @@ using GoWithFlow.API.Constants;
 using GoWithFlow.Application.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
 
 namespace GoWithFlow.API.Controllers;
 
@@ -34,10 +35,24 @@ public sealed class AdminController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
+	[HttpPost(ApiRoutes.Admin.Users)]
+	public async Task<IActionResult> CreateUserAsync([FromBody] AdminCreateUserRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.CreateUserAsync(dto, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status201Created);
+	}
+
 	[HttpGet(ApiRoutes.Admin.UserDetail)]
 	public async Task<IActionResult> GetUserDetailAsync(long userId, CancellationToken cancellationToken)
 	{
 		var response = await _adminService.GetUserDetailAsync(userId, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
+	}
+
+	[HttpPut(ApiRoutes.Admin.UserDetail)]
+	public async Task<IActionResult> UpdateUserAsync(long userId, [FromBody] AdminUpdateUserRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.UpdateUserAsync(userId, dto, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
 	}
 

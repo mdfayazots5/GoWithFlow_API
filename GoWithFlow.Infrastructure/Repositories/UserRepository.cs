@@ -262,6 +262,8 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 			response.LongestStreak = GetInt32(reader, "LongestStreak");
 		}
 
+		await reader.CloseAsync();
+
 		response.Last30Days = await DbContext.UserStreaks
 			.AsNoTracking()
 			.Where(userStreak => userStreak.UserId == userId && userStreak.IsDeleted == false)
@@ -344,6 +346,8 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 				MemberCount = GetInt32(reader, "MemberCount")
 			}
 		};
+
+		await reader.CloseAsync();
 
 		response.MyPerformance = await GetSessionPerformanceSummaryAsync(sessionId, userId, cancellationToken);
 		response.MyMistakes = await GetSessionMistakesAsync(sessionId, userId, response.SessionHeader.SessionName, response.SessionHeader.ScriptTitle, cancellationToken);

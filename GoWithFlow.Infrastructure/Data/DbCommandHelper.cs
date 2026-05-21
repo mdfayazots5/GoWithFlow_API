@@ -116,11 +116,22 @@ public static class DbCommandHelper
 
 	private static async Task<int> ExecutePostgreSqlNonQueryAsync(DbCommand command, CancellationToken cancellationToken)
 	{
-		var hasOutputParameters = command.Parameters
+		var outputParameters = command.Parameters
 			.Cast<DbParameter>()
-			.Any(parameter => parameter.Direction is ParameterDirection.Output or ParameterDirection.InputOutput or ParameterDirection.ReturnValue);
+			.Where(p => p.Direction is ParameterDirection.Output or ParameterDirection.InputOutput or ParameterDirection.ReturnValue)
+			.ToList();
 
-		PreparePostgreSqlFunctionInvocation(command, PostgreSqlRoutineExecutionMode.NonQuery);
+		var hasOutputParameters = outputParameters.Count > 0;
+
+		// Remove output params before switching to text mode — Npgsql 8.x rejects unreferenced parameters
+		foreach (var outParam in outputParameters)
+		{
+			command.Parameters.Remove(outParam);
+		}
+
+		PreparePostgreSqlFunctionInvocation(command, hasOutputParameters
+			? PostgreSqlRoutineExecutionMode.ReaderOrScalar
+			: PostgreSqlRoutineExecutionMode.NonQuery);
 
 		if (hasOutputParameters == false)
 		{
@@ -133,9 +144,9 @@ public static class DbCommandHelper
 			return 0;
 		}
 
-		foreach (var parameter in command.Parameters.Cast<DbParameter>().Where(parameter => parameter.Direction is ParameterDirection.Output or ParameterDirection.InputOutput or ParameterDirection.ReturnValue))
+		foreach (var parameter in outputParameters)
 		{
-			var columnName = NormalizeParameterName(DatabaseProviderNames.PostgreSQL, parameter.ParameterName);
+			var columnName = parameter.ParameterName;
 			var ordinal = reader.GetOrdinal(columnName);
 			parameter.Value = reader.IsDBNull(ordinal) ? DBNull.Value : reader.GetValue(ordinal);
 		}
