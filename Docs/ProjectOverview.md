@@ -2228,6 +2228,82 @@ ApiResponse<SessionSummaryResponseDto>
 | `showReReadSkipButtons` | bool | `false` | Shows Re-Speak + Skip buttons below mic button while `isRecording() = true` |
 
 **UI entry:** Gear icon in session room top bar → `showSettings` signal → 4-toggle panel slides in below top bar. Each toggle calls `sessionPrefs.update({ key: !current })`.
+**Toggle UI contract:** Track remains `w-11 h-6 rounded-full`; thumb remains `left-0.5 top-0.5 h-5 w-5 rounded-full`; active state moves the thumb with inline `transform: translateX(1.25rem)`, inactive state uses `translateX(0)`. Do not rely on utility translation classes alone for thumb geometry in this component.
+
+### Flow: Session Room Route Bootstrap — Stable Contract
+
+### Entry Points
+- Lobby and rejoin navigation target: `/live-session/room/:sessionId`
+- Parent Angular route: `path: 'live-session'` in `Frontend/src/app/app.routes.ts`
+- Child Angular route: `Frontend/src/app/modules/live-session/live-session.routes.ts`
+- Frontend bootstrap file: `Frontend/src/main.ts`
+
+### UI Trigger
+- Host or guest receives `SESSION_STARTED` and navigates from lobby
+- Returning participant re-enters an already active session from session detail or lobby recovery flow
+
+### Request Contract
+Endpoint: Angular navigation only, not an HTTP endpoint
+Headers: `[VERIFY]` not applicable
+Body:
+  - `sessionId` (route param, required): numeric session identifier used by `sessionGuard`, `SessionRoomComponent.initSession()`, and live-session hub connection setup
+
+### Response Contract
+Success:
+  - `authGuard` admits the parent `live-session` route
+  - `sessionGuard` admits `room/:sessionId`
+  - `LIVE_SESSION_ROUTES` resolves `SessionRoomComponent` through `component: SessionRoomComponent` inside the already lazy-loaded child route file
+  - `Frontend/src/main.ts` imports `@angular/compiler` before `bootstrapApplication(AppComponent, appConfig)` as runtime compatibility fallback when any partially compiled dependency requests JIT
+Error responses:
+  - Route guard rejection redirects away from live-session room before component init
+  - If the compiler fallback is removed while a dependency still requires JIT, browser runtime throws `The component 'SessionRoomComponent' needs to be compiled using the JIT compiler, but '@angular/compiler' is not available`
+
+### Validation
+- `sessionId` route param must be present
+- Caller must satisfy `authGuard`
+- Caller must satisfy `sessionGuard`
+- `SessionRoomComponent` must stay within Angular's compiled graph; avoid a second dynamic component import from this child route unless the replacement path is verified under the current Vite/Angular compiler setup
+- In the inline `SessionRoomComponent` template, Tailwind utility tokens containing `/` or `.` must not be expressed via `[class.some-token]` bindings; use `ngClass` or plain `class` strings instead so Angular template parsing remains stable under JIT and AOT
+
+### Database / Stored Procedures
+Tables read: none directly during route resolution
+Tables written: none directly during route resolution
+Stored procedures: none
+Key queries: none
+
+### Business Rules
+- `app.routes.ts` lazy-loads the live-session route file; the room component does not need an additional nested lazy import in that child route
+- `SessionRoomComponent` becomes responsible for REST and SignalR startup only after route guards pass
+- The compiler import in `main.ts` is a compatibility fallback, not the preferred primary compilation mode; AOT-safe route/component wiring remains the target state
+
+### State Transitions
+- User shell route → `/live-session/room/:sessionId`
+- Session room bootstrap pending → room component initialized → current turn load + hub connection start
+
+### Realtime Events
+Hub: `/hubs/live-session`
+Event: bootstrap begins listening for `TURN_SHIFT`, `LISTENER_TAG`, `RE_READ_REQUESTED`, `SESSION_ENDED`, `VOICE_BROADCAST_STARTED`, `VOICE_STREAM_REQUESTED`, `WEBRTC_OFFER`, `WEBRTC_ANSWER`, `ICE_CANDIDATE`, `VOICE_BROADCAST_STOPPED`
+Payload: handled after `SessionRoomComponent.initSession(sessionId)`
+Subscribers: active session members inside the live room
+
+### Failure Cases
+- Missing `sessionId` route param → room init does not run
+- Guard rejection → navigation blocked before room render
+- Compiler fallback removed while a dependency still requests JIT → browser runtime failure on room navigation
+- Current turn API failure after successful route load → room renders retry state with `loadError`
+
+### Recovery / Fallback Logic
+- `main.ts` imports `@angular/compiler` so JIT-required dependencies do not hard-fail bootstrap
+- Child live-session route resolves the room through a static component reference inside the lazy child route file
+- `SessionRoomComponent.retryLoad()` re-runs `GET /api/v1/turns/{sessionId}/current` after transient API failure
+- Session preference toggle states use `ngClass` string switching for `bg-white/15`, `bg-white/5`, `text-white/40`, and `translate-x-0.5` style utilities instead of `[class.*]` bindings
+- Session preference toggle thumbs use explicit `left-0.5` anchoring plus inline transform distance instead of class-only translation so the knob stays visually aligned in rendered HTML
+
+### Notes on Known Drift Prevented
+- Stale docs drift: `ProjectOverview.md` previously stated that `Frontend/src/main.ts` imported `@angular/compiler`, but source had drifted and the import was missing
+- Route compilation drift: the live-session room is documented to resolve through `component: SessionRoomComponent` within the lazy child route contract to reduce runtime JIT-only failures on this page
+- Template compilation drift: session-room settings toggles previously used escaped `[class.bg-white\/15]` and `[class.translate-x-0\.5]` bindings, which broke Angular template parsing and surfaced as unclosed `button` tags during JIT compilation
+- UI drift: session-room preference toggles previously rendered with class-driven thumb translation but no fixed left anchor, producing an unstable knob position in the actual DOM
 
 ### Flow: Speaker Turn — Stable Contract
 
