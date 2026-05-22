@@ -60,6 +60,9 @@ public sealed class LiveSessionHub : Hub
 					userId = connectionInfo.UserId,
 					slotIndex = connectionInfo.SlotIndex
 				});
+
+			// Best-effort DB update — ensures IsActive=0, IsReady=0 even on browser close or network loss
+			await _liveSessionService.MarkMemberLeftAsync(connectionInfo.SessionId, connectionInfo.UserId);
 		}
 
 		_logger.LogInformation("Live session hub disconnected. ConnectionId {ConnectionId}.", Context.ConnectionId);
@@ -190,6 +193,74 @@ public sealed class LiveSessionHub : Hub
 				sessionId = parsedSessionId,
 				summary = response.Data
 			},
+			Context.ConnectionAborted);
+	}
+
+	// ── WebRTC voice broadcast relay methods (stateless, no DB interaction) ──
+
+	public async Task VoiceBroadcastStart(string sessionId, string speakerId)
+	{
+		var parsedSessionId = ParseSessionId(sessionId);
+		ParseAndValidateCallerUserId(speakerId);
+
+		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+			"VOICE_BROADCAST_STARTED",
+			new { speakerId },
+			Context.ConnectionAborted);
+	}
+
+	public async Task VoiceBroadcastStop(string sessionId, string speakerId)
+	{
+		var parsedSessionId = ParseSessionId(sessionId);
+		ParseAndValidateCallerUserId(speakerId);
+
+		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+			"VOICE_BROADCAST_STOPPED",
+			new { speakerId },
+			Context.ConnectionAborted);
+	}
+
+	public async Task RequestVoiceStream(string sessionId, string listenerUserId)
+	{
+		var parsedSessionId = ParseSessionId(sessionId);
+		ParseAndValidateCallerUserId(listenerUserId);
+
+		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+			"VOICE_STREAM_REQUESTED",
+			new { listenerUserId },
+			Context.ConnectionAborted);
+	}
+
+	public async Task SendWebRTCOffer(string sessionId, string toUserId, string offerJson)
+	{
+		var parsedSessionId = ParseSessionId(sessionId);
+		var fromUserId = ParseCallerUserId().ToString();
+
+		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+			"WEBRTC_OFFER",
+			new { fromUserId, toUserId, offerJson },
+			Context.ConnectionAborted);
+	}
+
+	public async Task SendWebRTCAnswer(string sessionId, string toUserId, string answerJson)
+	{
+		var parsedSessionId = ParseSessionId(sessionId);
+		var fromUserId = ParseCallerUserId().ToString();
+
+		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+			"WEBRTC_ANSWER",
+			new { fromUserId, toUserId, answerJson },
+			Context.ConnectionAborted);
+	}
+
+	public async Task SendICECandidate(string sessionId, string toUserId, string candidateJson)
+	{
+		var parsedSessionId = ParseSessionId(sessionId);
+		var fromUserId = ParseCallerUserId().ToString();
+
+		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+			"ICE_CANDIDATE",
+			new { fromUserId, toUserId, candidateJson },
 			Context.ConnectionAborted);
 	}
 

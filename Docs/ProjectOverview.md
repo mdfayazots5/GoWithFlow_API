@@ -1332,9 +1332,16 @@ HTTP 200 — ApiResponse<SessionPreviewResponseDto>
 - Fallback aliases retained only for compatibility with older payload shapes
 - After validate succeeds, frontend navigates to join page with sessionId carried from preview
 
+**Recovery / Fallback Logic:**
+- SQL Server path may consume slot rows from result set 2 of the already-open `uspGetSessionByJoinCode` reader before disposing it
+- PostgreSQL path must not call `GetAvailableSlotsBySessionIdAsync` from inside `GetSessionPreviewByJoinCodeAsync` while the first reader is still open on the same connection
+- If the preview reader has no slot result set, dispose it first, then hydrate `Slots` through `uspGetAvailableSlotsBySessionId(sessionId)` on a new command
+- If both the preview reader and standalone slot function return no slot rows, return an empty `Slots` list and treat it as data or stored-procedure drift
+
 **Notes on Known Drift Prevented:**
 - `uspGetSessionByJoinCode` must return `Duration` (not `SessionDuration`) for the repository to map correctly
-- Slot result set must be second result set; missing second result set silently yields empty slots array
+- SQL Server preview contract returns slot rows as result set 2; the live PostgreSQL routine currently returns only the header row and requires a post-disposal fallback call to `uspGetAvailableSlotsBySessionId`
+- Repository preview flow previously opened a second command (`uspGetAvailableSlotsBySessionId`) before disposing the active `uspGetSessionByJoinCode` reader; PostgreSQL rejects that pattern with an in-progress command error
 
 ---
 
@@ -1527,8 +1534,17 @@ Path param: sessionId (long)
 - Hub method `StartSession(sessionId)` is the authoritative start path
 - On success: hub immediately calls `GetCurrentTurnAsync(sessionId)` and broadcasts `SESSION_STARTED` to `session_{sessionId}`: `{ sessionId, firstSpeakerId }`
 - `firstSpeakerId` is `currentTurn.ActiveMemberId` from the newly created active turn, not a lobby-member sort derived in a second read path
-- Both host and guests navigate to the live session from `SESSION_STARTED` — no mixing of REST start with a separate hub start call
+- **Host navigation**: host navigates in `emit('StartSession').then(...)` — immediately after the hub method resolves, NOT waiting for the `SESSION_STARTED` event. This prevents the Start button from getting stuck if the event is missed (connection drop between hub resolve and event delivery).
+- **Host fallback recovery**: if the hub invoke resolves late, rejects after the backend already changed state, or the event is missed, the lobby component polls `GET /api/v1/sessions/lobby/{sessionId}` for a short window; `status = ACTIVE` forces navigation to `/live-session/room/{sessionId}` and clears the `Starting...` state
+- **Router fallback**: live-session navigation first uses Angular `router.navigateByUrl('/live-session/room/{sessionId}')`; if Angular returns `false` or does not move the URL, the lobby component falls back to `window.location.assign('/live-session/room/{sessionId}')`
+- **Guest navigation**: guests still navigate on `SESSION_STARTED` event (they have no `.then()` path)
 - On failure: hub throws the first detailed service error from `ApiResponse.Errors` when present; it must not collapse the cause back to the generic message `Session start failed.`
+- Angular route target for successful start is `/live-session/room/:sessionId`, mounted under `path: 'live-session'` and protected by `authGuard` plus `sessionGuard`
+
+**Frontend lobby state status (CRITICAL fix):**
+- `getLobbyState()` in `session.service.ts` previously hardcoded `status: 'LOBBY'` — the actual DB status was ignored
+- Fixed to `status: d.status ?? 'LOBBY'` so that if a session is ACTIVE/COMPLETED/ABANDONED, `loadLobby()` properly redirects instead of showing lobby UI
+- Without this fix: a session in ACTIVE status would show the Start Session button, and clicking it would trigger a hub error without resetting `isStarting`, leading to the button being stuck in "Starting..." state indefinitely
 
 **Failure Cases:**
 - Not host → `"Only the host can start this session."`
@@ -1538,11 +1554,16 @@ Path param: sessionId (long)
 - Speaker-slot mismatch during turn init → `"No active member holds the slot '{speakerLabel}'. Active slots: [{slots}]. Check that the script speaker labels match the session slot names."`
 - Missing session utterances during turn init → `"The script linked to this session has no utterances."`
 
+**Notes on Known Drift Prevented:**
+- Session `14` showed `tblSession.Status = ACTIVE` and turn `1` existed while the host lobby button still displayed `Starting...`; this proves the business flow completed and the drift was in frontend recovery after a successful start
+- Lobby start UX must reconcile hub errors or delayed responses against fresh lobby status before leaving the button in a permanent loading state
+- Session `15` returned lobby state `status = ACTIVE` but the host remained on `/session/lobby/15`; redirect logic now treats failed Angular router navigation as a client-side drift and hard-navigates to the live-session route
+
 ---
 
-### Flow: Leave Session
+### Flow: Leave Session (Lobby + Live Room)
 
-**Purpose:** Member leaves the lobby. Host leaving abandons the session.
+**Purpose:** Member leaves a session — works for both LOBBY and ACTIVE status. Host leaving abandons the session.
 
 **Request Contract:**
 ```
@@ -1554,20 +1575,53 @@ Path param: sessionId (long)
 **Response Contract:** `ApiResponse<bool>` — `Data: true` on success
 
 **Business Rules:**
-- User must be an active member of the lobby
+- User must be a currently **active** member (`IsActive = 1`) of the session — enforced via `GetLobbyStateBySessionIdAsync` LINQ filter
 - Calls `uspUpdateSessionMemberLeft(@SessionId, @UserId, @UpdatedBy, @IPAddress)`
 - SP sets `IsActive = 0`, `IsReady = 0`, `LeftAt = GETDATE()` for the leaving member
 - SP auto-abandons session (`Status = 'ABANDONED'`) when host leaves OR when no active members remain
+- Calling leave when already inactive → "Session member was not found" (correct, idempotent-safe)
 
-**SignalR / Realtime Events:**
-- Hub `LeaveLobby(sessionId, userId)` calls the same service method
-- Broadcasts `MEMBER_LEFT` to group: `{ userId, slotIndex }`
-- OnDisconnect: hub only calls leave if session status is still `LOBBY`; `ACTIVE` sessions skip leave to preserve `IsActive` state (member navigated to live session room)
+**`GetLobbyStateBySessionIdAsync` LINQ filter (CRITICAL):**
+```csharp
+where sessionMember.SessionId == sessionId
+  && sessionMember.IsActive == true   // ← required — filters out left members
+  && sessionMember.IsDeleted == false
+  && user.IsDeleted == false
+```
+Without this filter: left members still appear in lobby, blocking rejoin and giving wrong CanStart.
 
-**Failure Cases:** User not found; lobby not found; user not in members list
+**ResolveCanStart logic:**
+```csharp
+// Only active members are in Members list (filtered by IsActive above)
+return activeMembers.Count >= 2 && activeMembers.All(m => m.IsReady);
+```
+
+**SignalR / Realtime Events — Lobby Hub (`/hubs/session`):**
+- `LeaveLobby(sessionId, userId)` calls `LeaveSessionAsync` → broadcasts `MEMBER_LEFT { userId, slotIndex }`
+- `OnDisconnectedAsync`: only calls leave when `Status == "LOBBY"`; skips for `ACTIVE` (hub has separate live session disconnect handling)
+
+**SignalR / Realtime Events — Live Session Hub (`/hubs/live-session`):**
+- `OnDisconnectedAsync`: always calls `_liveSessionService.MarkMemberLeftAsync(sessionId, userId)` — best-effort DB update (IsActive=0, IsReady=0); also broadcasts `MEMBER_LEFT { userId, slotIndex }`
+- Frontend `confirmLeave()`: calls `POST /api/v1/sessions/{sessionId}/leave` then navigates. Navigation always happens (success or error). `OnDisconnectedAsync` acts as the safety net for browser-close/network-loss.
+
+**Rejoin flow (after leave):**
+1. User navigates back to `/session/join` or dashboard
+2. `JoinSessionAsync` calls `GetLobbyStateBySessionIdAsync` → with IsActive filter, left member is NOT in Members list → check at line 165 passes → rejoin allowed
+3. `GetAvailableSlotsBySessionIdAsync` (via SP `uspGetAvailableSlotsBySessionId`) filters `AND IsActive = 1` — slot appears as available after leave
+4. `uspInsertSessionMember` inserts a NEW row (previous inactive row kept for history)
+
+**Failure Cases:**
+- User not found → 200 with failure (Session or user was not found)
+- Session not found → 200 with failure (same message)
+- User not an active member → 200 with failure (Session member was not found in the lobby)
+
+**Stored Procedures:** `uspUpdateSessionMemberLeft`, `uspGetAvailableSlotsBySessionId`, `uspInsertSessionMember` (all filter by `IsActive`)
 
 **Notes on Known Drift Prevented:**
-- `uspUpdateSessionMemberLeft` previously did not reset `IsReady = 0`; leaving a lobby while ready preserved the flag — on rejoin the member appeared ready without toggling. Fixed in migration `FixMemberLeftSP_ResetIsReady`.
+- **Drift 1:** `GetLobbyStateBySessionIdAsync` LINQ was missing `&& sessionMember.IsActive == true` — left members appeared in lobby state, blocking rejoin and giving wrong CanStart. Fixed 2026-05-22.
+- **Drift 2:** `session-room.component.ts` `confirmLeave()` only called `router.navigate()` — no DB update on leave. Fixed 2026-05-22: now calls `POST /api/v1/sessions/{sessionId}/leave` before navigating.
+- **Drift 3:** `LiveSessionHub.OnDisconnectedAsync` only broadcast `MEMBER_LEFT` but did not call `MarkMemberLeftAsync` — DB state not updated on browser close or network loss. Fixed 2026-05-22.
+- **Drift 4:** `uspUpdateSessionMemberLeft` previously did not reset `IsReady = 0`; leaving a lobby while ready preserved the flag — on rejoin the member appeared ready without toggling. Fixed in migration `FixMemberLeftSP_ResetIsReady`.
 
 ---
 
@@ -1918,6 +1972,7 @@ ApiResponse<VoiceAnalysisResponseDto>
 - `HesitationWords` and `RepeatedWords` stored as comma-separated strings in NVARCHAR column
 - `GrammarErrors` and `PronunciationIssues` stored as JSON strings in NVARCHAR columns
 - Deserialized back to typed lists in response
+- PostgreSQL insert path requires `GrammarErrorsJson` and `PronunciationJson` to be sent as `jsonb` parameters, not plain `varchar` parameters
 
 **Failure Cases:**
 - Session member or turn not found → `"Session member or turn was not found."`
@@ -1935,6 +1990,7 @@ ApiResponse<VoiceAnalysisResponseDto>
 - Session 33 (new script) failed: new utterances have different DB IDs, exposing the bug
 - Root cause: `UtteranceData` interface was missing `utteranceId`; component used `sequenceId` as substitute
 - Fix: Added `utteranceId: number` to `UtteranceData` and changed `speaker-screen.component.ts` line 103 to use `utteranceId`
+- PostgreSQL `uspInsertVoiceAnalysis` expects `p_grammarerrorsjson jsonb` and `p_pronunciationjson jsonb`; sending them as generic string parameters causes function-resolution failure before insert
 
 ---
 
@@ -2121,6 +2177,12 @@ ApiResponse<SessionSummaryResponseDto>
 | `SubmitListenerFeedback` | `sessionId: string, tag: string, targetTurnIndex: int` | Broadcasts `LISTENER_TAG` |
 | `RequestReRead` | `sessionId: string, requesterId: string` | Broadcasts `RE_READ_REQUESTED` |
 | `EndSession` | `sessionId: string` | Broadcasts `SESSION_ENDED` |
+| `VoiceBroadcastStart` | `sessionId: string, speakerId: string` | Broadcasts `VOICE_BROADCAST_STARTED` |
+| `VoiceBroadcastStop` | `sessionId: string, speakerId: string` | Broadcasts `VOICE_BROADCAST_STOPPED` |
+| `RequestVoiceStream` | `sessionId: string, listenerUserId: string` | Broadcasts `VOICE_STREAM_REQUESTED` |
+| `SendWebRTCOffer` | `sessionId: string, toUserId: string, offerJson: string` | Broadcasts `WEBRTC_OFFER` |
+| `SendWebRTCAnswer` | `sessionId: string, toUserId: string, answerJson: string` | Broadcasts `WEBRTC_ANSWER` |
+| `SendICECandidate` | `sessionId: string, toUserId: string, candidateJson: string` | Broadcasts `ICE_CANDIDATE` |
 
 **Server → Client events:**
 
@@ -2132,11 +2194,18 @@ ApiResponse<SessionSummaryResponseDto>
 | `LISTENER_TAG` | `{ tag: string, fromUserId: long }` |
 | `RE_READ_REQUESTED` | `{ requesterId: long, reReadCount: int }` |
 | `SESSION_ENDED` | `{ sessionId: long, summary: SessionSummaryResponseDto }` |
+| `VOICE_BROADCAST_STARTED` | `{ speakerId: string }` |
+| `VOICE_BROADCAST_STOPPED` | `{ speakerId: string }` |
+| `VOICE_STREAM_REQUESTED` | `{ listenerUserId: string }` |
+| `WEBRTC_OFFER` | `{ fromUserId: string, toUserId: string, offerJson: string }` |
+| `WEBRTC_ANSWER` | `{ fromUserId: string, toUserId: string, answerJson: string }` |
+| `ICE_CANDIDATE` | `{ fromUserId: string, toUserId: string, candidateJson: string }` |
 
 **Connection rules:**
 - Live hub connection requires caller to be an active `tblSessionMember` — resolved in `OnConnectedAsync` and `JoinLiveSession`
 - `userId` param must match JWT `UserId` — enforced server-side; throws `HubException` if mismatch
 - `HubConnectionMetadata` stores `SlotIndex` and `FullName` for disconnect broadcast (no DB lookup needed on disconnect)
+- WebRTC methods (`VoiceBroadcastStart/Stop`, `RequestVoiceStream`, `SendWebRTCOffer/Answer`, `SendICECandidate`) are pure relay: no DB writes, broadcast to group, clients filter by `toUserId`
 
 ### Live Session Business Rules
 
@@ -2146,6 +2215,130 @@ ApiResponse<SessionSummaryResponseDto>
 - One voice-analysis record per session + user + turn (enforced before insert)
 - Re-read count capped at `MaxReReads = 2`
 - Session completion summary aggregates: fluency score, confidence score, listener rating, grammar mistake count per member
+
+### User Session Preferences — Stable Contract
+
+**Storage:** `localStorage` key `gwf_session_prefs` (JSON). Managed by `SessionPreferencesService`. No DB table. Device-local.
+
+| Key | Type | Default | Behaviour |
+|---|---|---|---|
+| `defaultVoiceStarter` | bool | `true` | Auto-starts mic 400 ms after `ngOnChanges` fires on new `turnState` |
+| `autoSubmitOnStop` | bool | `false` | `stopRecording()` fires `setTimeout(() => onConfirm(), 0)` — skips "Done Speaking". `onConfirm()` guards re-entry via `isSubmitting()` |
+| `listenVoiceBroadcast` | bool | `false` | On `VOICE_BROADCAST_STARTED`: listener emits `RequestVoiceStream`; speaker creates WebRTC offer in response |
+| `showReReadSkipButtons` | bool | `false` | Shows Re-Speak + Skip buttons below mic button while `isRecording() = true` |
+
+**UI entry:** Gear icon in session room top bar → `showSettings` signal → 4-toggle panel slides in below top bar. Each toggle calls `sessionPrefs.update({ key: !current })`.
+
+### Flow: Speaker Turn — Stable Contract
+
+**Entry:** `SpeakerScreenComponent` rendered when `isSpeaker() = true`.
+
+**Turn Start:**
+1. `ngOnChanges(turnState)` → `resetRecording()` → if `defaultVoiceStarter`: `setTimeout(() => startRecording(), 400)`
+2. `startRecording()`: sets `isRecording = true`, subscribes to Web Speech API stream, calls `VoiceBroadcastService.startBroadcast()` (async, fire-and-forget)
+
+**Stop Recording:**
+1. `stopRecording()`: sets `isRecording = false`, stops SpeechRecognition, calls `stopBroadcast()`, calls `performAnalysis(interimTranscript)`
+2. If `autoSubmitOnStop = true`: `setTimeout(() => onConfirm(), 0)`
+
+**onConfirm() — Turn Submission:**
+- Guard: `if (isSubmitting()) return` — prevents double-fire from Skip + autoSubmitOnStop
+- POST `/api/v1/turns/{sessionId}/voice-analysis` → on success: SignalR `CompleteTurn` → `TURN_SHIFT`
+- Failure: toast + `isSubmitting = false`
+
+**onSkip():**
+- If recording: stops recording inline (no autoSubmit setTimeout side-effect), runs `performAnalysis`
+- Calls `onConfirm()` — idempotency guard prevents double-fire
+
+**onReRead():** Emits `RequestReRead` → `RE_READ_REQUESTED` to group → calls `resetRecording()`
+
+**RE-SPEAK visibility:** `turnState.reReadAllowed = true` AND `turnState.reReadCount < turnState.maxReReads` (max = 2)
+
+**Failure Cases:**
+- `saveVoiceAnalysis` error → toast "Failed to save voice analysis. Please try again." + reset `isSubmitting`
+- `completeTurnRealtime` error → toast "Failed to advance turn. Please try again." + reset `isSubmitting`
+- `getUserMedia` denied → broadcast silently skipped; SpeechRecognition continues normally
+
+### Flow: WebRTC Voice Broadcast — Stable Contract
+
+**Services:** `VoiceBroadcastService` (singleton). Call `init(sessionId, userId)` from `SessionRoomComponent.initSession()`. Call `destroy()` from `ngOnDestroy()`.
+
+**Internal state:**
+- `localStream` — speaker getUserMedia stream
+- `peerConnections: Map<peerId, RTCPeerConnection>`
+- `pendingCandidates: Map<peerId, RTCIceCandidateInit[]>` — ICE candidate queue (race-condition guard)
+- `remoteDescriptionSet: Set<peerId>` — tracks which peers have had `setRemoteDescription` called
+- `isReceivingAudio: signal<boolean>` — drives "Live Audio" badge
+- `isBroadcasting: signal<boolean>` — prevents duplicate startBroadcast calls
+
+**STUN:** `stun:stun.l.google.com:19302`. No TURN server. Requires direct or NAT-traversable network.
+
+**Full Sequence:**
+
+```
+Speaker startRecording()
+  → startBroadcast() → getUserMedia({ audio }) → ws.emit('VoiceBroadcastStart')
+  → Hub broadcasts VOICE_BROADCAST_STARTED { speakerId }
+
+Listener (listenVoiceBroadcast = true)
+  → handleBroadcastStarted(speakerId) [guard: speakerId !== myUserId]
+  → ws.emit('RequestVoiceStream') → Hub broadcasts VOICE_STREAM_REQUESTED { listenerUserId }
+
+SessionRoomComponent (speaker side)
+  → on VOICE_STREAM_REQUESTED: if isSpeaker() → createOfferForListener(listenerUserId)
+    → createPeerConnection(listenerUserId): resets pendingCandidates + remoteDescriptionSet for peer
+    → addTrack(audioTrack) → createOffer → setLocalDescription
+    → ws.emit('SendWebRTCOffer') → Hub broadcasts WEBRTC_OFFER { fromUserId, toUserId, offerJson }
+
+SessionRoomComponent (listener side)
+  → on WEBRTC_OFFER where toUserId === myUserId → handleOffer(fromUserId, offerJson)
+    → createPeerConnection(fromUserId)
+    → pc.ontrack: attach stream to HTMLAudioElement → play → isReceivingAudio = true
+    → setRemoteDescription(offer) → remoteDescriptionSet.add(fromUserId)
+    → drainPendingCandidates(fromUserId) [applies queued ICE candidates]
+    → createAnswer → setLocalDescription
+    → ws.emit('SendWebRTCAnswer') → Hub broadcasts WEBRTC_ANSWER { fromUserId, toUserId, answerJson }
+
+SessionRoomComponent (speaker side)
+  → on WEBRTC_ANSWER where toUserId === myUserId → handleAnswer(fromUserId, answerJson)
+    → setRemoteDescription(answer) → remoteDescriptionSet.add(fromUserId)
+    → drainPendingCandidates(fromUserId)
+
+ICE exchange (both sides, async)
+  → pc.onicecandidate → ws.emit('SendICECandidate') → Hub broadcasts ICE_CANDIDATE
+  → handleIceCandidate(fromUserId, candidateJson):
+      If remoteDescriptionSet has fromUserId → addIceCandidate immediately
+      Else → push to pendingCandidates[fromUserId] (drained on setRemoteDescription)
+
+Speaker stopRecording()
+  → stopBroadcast(): isBroadcasting = false, stop tracks, closePeerConnections()
+    → ws.emit('VoiceBroadcastStop') → Hub broadcasts VOICE_BROADCAST_STOPPED
+  → Listeners: handleBroadcastStopped(): pause audio, closePeerConnections(), isReceivingAudio = false
+```
+
+**ICE Race Condition — Prevention:**
+ICE candidates arriving before `setRemoteDescription` are queued in `pendingCandidates[peerId]`. Drained synchronously in `handleOffer()` and `handleAnswer()` after `setRemoteDescription` completes. Previously: caught silently in try-catch, losing candidates and causing connection failure on slow networks.
+
+**Destroy sequence:** `handleBroadcastStopped()` (sync: closes connections, clears maps) → `stopBroadcast()` (stops tracks, best-effort WS emit with `.catch(() => {})` — WS may already be disconnecting)
+
+**Known Limitations:**
+- No TURN server: fails in symmetric NAT (some corporate networks / mobile carriers)
+- No renegotiation on network change
+
+### Flow: LISTENER_TAG — Corrected Contract
+
+**Bug fixed (pre-existing):** Frontend read `tagData.feedbackTag`; backend always sent `{ tag, fromUserId }`. Field corrected to `tagData.tag` in `SessionRoomComponent`.
+
+Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagData.tag)` → shown 2 s in listener screen
+
+### Notes on Drift Prevented
+
+| Drift Type | Description | Fixed In |
+|---|---|---|
+| Request drift | `LISTENER_TAG` payload: `feedbackTag` → `tag` — backend always sent `tag`; frontend silently received `undefined` | `session-room.component.ts` |
+| Logic drift | `onConfirm()` had no re-entry guard; Skip + autoSubmitOnStop double-fired submission | `speaker-screen.component.ts` |
+| Protocol drift | WebRTC ICE candidates dropped before `setRemoteDescription` — candidate queue added | `voice-broadcast.service.ts` |
+| Cleanup drift | `destroy()` called `closePeerConnections()` twice — resolved by listener-first ordering + `isBroadcasting` guard | `voice-broadcast.service.ts` |
 
 ### Migration State
 

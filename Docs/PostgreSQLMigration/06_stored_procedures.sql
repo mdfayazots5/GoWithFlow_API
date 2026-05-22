@@ -2591,24 +2591,29 @@ $$ LANGUAGE plpgsql;
 
 -- --------------------------------------------
 -- uspGetSessionByJoinCode
--- Returns 2 cursors: session overview + speaker slots
--- TOP(@MaxMembers) in CTE → LIMIT v_maxmembers in subquery
+-- Returns session overview only; slot rows are loaded through uspGetAvailableSlotsBySessionId
 -- --------------------------------------------
 CREATE OR REPLACE FUNCTION uspgetsessionbyjoincode(
     p_joincode VARCHAR(8)
-) RETURNS SETOF REFCURSOR AS $$
+) RETURNS TABLE (
+    sessionid BIGINT,
+    sessionname VARCHAR(128),
+    sessionmode VARCHAR(64),
+    scripttitle VARCHAR(128),
+    scriptgrammartag VARCHAR(64),
+    duration INT,
+    maxmembers SMALLINT,
+    currentmembercount INT,
+    status VARCHAR(16)
+) AS $$
 DECLARE
-    ref1        REFCURSOR;
-    ref2        REFCURSOR;
-    v_sessionid BIGINT   := 0;
-    v_scriptid  BIGINT   := 0;
-    v_maxmembers SMALLINT := 0;
+    v_sessionid BIGINT := 0;
 BEGIN
-    SELECT ses.sessionid, ses.scriptid, ses.maxmembers
-    INTO v_sessionid, v_scriptid, v_maxmembers
+    SELECT ses.sessionid
+    INTO v_sessionid
     FROM tblsession AS ses
-    WHERE ses.joincode   = p_joincode
-      AND ses.isdeleted  = FALSE
+    WHERE ses.joincode = p_joincode
+      AND ses.isdeleted = FALSE
       AND ses.status IN ('LOBBY', 'ACTIVE')
       AND (ses.roomexpiresat IS NULL OR ses.roomexpiresat > NOW())
     ORDER BY ses.sessionid DESC
@@ -2618,45 +2623,18 @@ BEGIN
         RETURN;
     END IF;
 
-    OPEN ref1 FOR
-    SELECT ses.sessionid, ses.sessionname, ses.sessionmode,
-           scr.scripttitle, scr.grammarfocustag AS scriptgrammartag,
-           ses.sessionduration AS duration, ses.maxmembers,
-           COUNT(sem.sessionmemberid) AS currentmembercount, ses.status
+    RETURN QUERY
+    SELECT
+        ses.sessionid, ses.sessionname::VARCHAR(128), ses.sessionmode::VARCHAR(64),
+        scr.scripttitle::VARCHAR(128), scr.grammarfocustag::VARCHAR(64),
+        ses.sessionduration, ses.maxmembers, COUNT(sem.sessionmemberid)::INT, ses.status::VARCHAR(16)
     FROM tblsession AS ses
     INNER JOIN tblscript AS scr ON scr.scriptid = ses.scriptid AND scr.isdeleted = FALSE
     LEFT JOIN tblsessionmember AS sem
         ON sem.sessionid = ses.sessionid AND sem.isdeleted = FALSE AND sem.isactive = TRUE
     WHERE ses.sessionid = v_sessionid
-    GROUP BY ses.sessionid, ses.sessionname, ses.sessionmode,
-             scr.scripttitle, scr.grammarfocustag,
+    GROUP BY ses.sessionid, ses.sessionname, ses.sessionmode, scr.scripttitle, scr.grammarfocustag,
              ses.sessionduration, ses.maxmembers, ses.status;
-    RETURN NEXT ref1;
-
-    OPEN ref2 FOR
-    WITH speakerslot AS (
-        SELECT ROW_NUMBER() OVER (ORDER BY lim.minsequenceid ASC, lim.speakerlabel ASC)::SMALLINT AS slotindex,
-               lim.speakerlabel AS slotname
-        FROM (
-            SELECT ut.speakerlabel, MIN(ut.sequenceid) AS minsequenceid
-            FROM tblutterance AS ut
-            WHERE ut.scriptid = v_scriptid AND ut.isdeleted = FALSE
-            GROUP BY ut.speakerlabel
-            ORDER BY MIN(ut.sequenceid) ASC, ut.speakerlabel ASC
-            LIMIT v_maxmembers
-        ) AS lim
-    )
-    SELECT sps.slotindex, sps.slotname,
-           (sem.sessionmemberid IS NOT NULL) AS isoccupied,
-           usr.fullname AS userfullname,
-           COALESCE(sem.isready, FALSE) AS isready
-    FROM speakerslot AS sps
-    LEFT JOIN tblsessionmember AS sem
-        ON sem.sessionid = v_sessionid AND sem.slotindex = sps.slotindex
-       AND sem.isdeleted = FALSE AND sem.isactive = TRUE
-    LEFT JOIN tbluser AS usr ON usr.userid = sem.userid AND usr.isdeleted = FALSE
-    ORDER BY sps.slotindex ASC;
-    RETURN NEXT ref2;
 END;
 $$ LANGUAGE plpgsql;
 

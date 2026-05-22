@@ -147,8 +147,8 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		command.Parameters.Add(CreateParameter("@PauseCount", voiceAnalysis.PauseCount));
 		command.Parameters.Add(CreateParameter("@HesitationWords", voiceAnalysis.HesitationWords));
 		command.Parameters.Add(CreateParameter("@RepeatedWords", voiceAnalysis.RepeatedWords));
-		command.Parameters.Add(CreateParameter("@GrammarErrorsJson", voiceAnalysis.GrammarErrorsJson));
-		command.Parameters.Add(CreateParameter("@PronunciationJson", voiceAnalysis.PronunciationJson));
+		command.Parameters.Add(CreateJsonParameter("@GrammarErrorsJson", voiceAnalysis.GrammarErrorsJson ?? "[]"));
+		command.Parameters.Add(CreateJsonParameter("@PronunciationJson", voiceAnalysis.PronunciationJson ?? "[]"));
 		command.Parameters.Add(CreateParameter("@OverallScore", voiceAnalysis.OverallScore));
 		command.Parameters.Add(CreateParameter("@CreatedBy", voiceAnalysis.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", voiceAnalysis.IPAddress));
@@ -331,6 +331,11 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 	private DbParameter CreateParameter(string parameterName, object? value)
 	{
 		return DbCommandHelper.CreateParameter(_dbContext.DatabaseProvider, parameterName, value);
+	}
+
+	private DbParameter CreateJsonParameter(string parameterName, string json)
+	{
+		return DbCommandHelper.CreateJsonParameter(_dbContext.DatabaseProvider, parameterName, json);
 	}
 
 	private static async Task EnsureConnectionOpenAsync(DbConnection connection, CancellationToken cancellationToken)

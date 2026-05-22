@@ -19,4 +19,6 @@ public interface ILiveSessionService
 	Task<ApiResponse<SessionSummaryResponseDto>> CompleteSessionAsync(long sessionId, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<bool>> RequestReReadAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
+
+	Task MarkMemberLeftAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
 }

@@ -74,27 +74,38 @@ public sealed class SessionRepository : ISessionRepository
 		await using var command = CreateCommand(connection, "dbo.uspGetSessionByJoinCode", null);
 		command.Parameters.Add(CreateParameter("@JoinCode", joinCode));
 
-		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+		SessionPreviewResponseDto response;
+		List<SlotInfoDto> slots;
 
-		if (await reader.ReadAsync(cancellationToken) == false)
+		await using (var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken))
 		{
-			return null;
+			if (await reader.ReadAsync(cancellationToken) == false)
+			{
+				return null;
+			}
+
+			response = new SessionPreviewResponseDto
+			{
+				SessionId = GetInt64(reader, "SessionId"),
+				SessionName = GetString(reader, "SessionName"),
+				SessionMode = GetString(reader, "SessionMode"),
+				ScriptTitle = GetString(reader, "ScriptTitle"),
+				ScriptGrammarTag = GetString(reader, "ScriptGrammarTag"),
+				Duration = GetInt32(reader, "Duration"),
+				MaxMembers = GetByte(reader, "MaxMembers"),
+				CurrentMemberCount = GetInt32(reader, "CurrentMemberCount"),
+				Status = GetString(reader, "Status")
+			};
+
+			slots = await ReadSlotInfoDtosAsync(reader, cancellationToken);
 		}
 
-		var response = new SessionPreviewResponseDto
+		if (slots.Count == 0)
 		{
-			SessionId = GetInt64(reader, "SessionId"),
-			SessionName = GetString(reader, "SessionName"),
-			SessionMode = GetString(reader, "SessionMode"),
-			ScriptTitle = GetString(reader, "ScriptTitle"),
-			ScriptGrammarTag = GetString(reader, "ScriptGrammarTag"),
-			Duration = GetInt32(reader, "Duration"),
-			MaxMembers = GetByte(reader, "MaxMembers"),
-			CurrentMemberCount = GetInt32(reader, "CurrentMemberCount"),
-			Status = GetString(reader, "Status")
-		};
+			slots = await GetAvailableSlotsBySessionIdAsync(response.SessionId, cancellationToken);
+		}
 
-		response.Slots = await GetAvailableSlotsBySessionIdAsync(response.SessionId, cancellationToken);
+		response.Slots = slots;
 
 		return response;
 	}
@@ -140,6 +151,7 @@ public sealed class SessionRepository : ISessionRepository
 			from sessionMember in _dbContext.SessionMembers.AsNoTracking()
 			join user in _dbContext.Users.AsNoTracking() on sessionMember.UserId equals user.UserId
 			where sessionMember.SessionId == sessionId
+				&& sessionMember.IsActive == true
 				&& sessionMember.IsDeleted == false
 				&& user.IsDeleted == false
 			orderby sessionMember.SlotIndex, sessionMember.SessionMemberId
@@ -169,21 +181,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
 
 		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
-		var slots = new List<SlotInfoDto>();
-
-		while (await reader.ReadAsync(cancellationToken))
-		{
-			slots.Add(new SlotInfoDto
-			{
-				SlotIndex = GetByte(reader, "SlotIndex"),
-				SlotName = GetString(reader, "SlotName"),
-				IsOccupied = GetBoolean(reader, "IsOccupied"),
-				UserFullName = GetNullableString(reader, "UserFullName"),
-				IsReady = GetBoolean(reader, "IsReady")
-			});
-		}
-
-		return slots;
+		return await ReadSlotInfoDtosAsync(reader, cancellationToken, advanceToNextResult: false);
 	}
 
 	public async Task UpdateSessionMemberReadyStatusAsync(long sessionId, long userId, bool isReady, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
@@ -375,6 +373,33 @@ public sealed class SessionRepository : ISessionRepository
 			.Select(session => session.Status)
 			.FirstOrDefaultAsync(cancellationToken)
 			?? "LOBBY";
+	}
+
+	private async Task<List<SlotInfoDto>> ReadSlotInfoDtosAsync(
+		DbDataReader reader,
+		CancellationToken cancellationToken,
+		bool advanceToNextResult = true)
+	{
+		if (advanceToNextResult && await reader.NextResultAsync(cancellationToken) == false)
+		{
+			return [];
+		}
+
+		var slots = new List<SlotInfoDto>();
+
+		while (await reader.ReadAsync(cancellationToken))
+		{
+			slots.Add(new SlotInfoDto
+			{
+				SlotIndex = GetByte(reader, "SlotIndex"),
+				SlotName = GetString(reader, "SlotName"),
+				IsOccupied = GetBoolean(reader, "IsOccupied"),
+				UserFullName = GetNullableString(reader, "UserFullName"),
+				IsReady = GetBoolean(reader, "IsReady")
+			});
+		}
+
+		return slots;
 	}
 
 	private async Task InsertSessionMemberInternalAsync(SessionMember sessionMember, DbTransaction transaction, CancellationToken cancellationToken)

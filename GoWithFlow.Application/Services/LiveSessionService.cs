@@ -351,6 +351,21 @@ public sealed class LiveSessionService : ILiveSessionService
 		return ApiResponse<bool>.SuccessResult(true, "Re-read requested successfully.");
 	}
 
+	public async Task MarkMemberLeftAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
+	{
+		if (sessionId <= 0 || userId <= 0) return;
+		try
+		{
+			var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
+			if (user is null) return;
+			await _sessionRepository.UpdateSessionMemberLeftAsync(sessionId, userId, user.FullName, "127.0.0.1", cancellationToken);
+		}
+		catch
+		{
+			// best-effort: hub disconnect should not propagate exceptions
+		}
+	}
+
 	private async Task<(TurnStateResponseDto? Turn, string? Error)> EnsureCurrentTurnAsync(long sessionId, string requestedBy, CancellationToken cancellationToken)
 	{
 		var existingTurn = await _liveSessionRepository.GetCurrentTurnAsync(sessionId, cancellationToken);
