@@ -302,6 +302,18 @@ public sealed class SessionRepository : ISessionRepository
 		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
+	public Task<bool> HasSessionMemberAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
+	{
+		// Checks any row — active or inactive — to distinguish "never joined" from "already left".
+		return _dbContext.SessionMembers
+			.AsNoTracking()
+			.AnyAsync(
+				sm => sm.SessionId == sessionId
+				      && sm.UserId == userId
+				      && sm.IsDeleted == false,
+				cancellationToken);
+	}
+
 	public async Task<(bool Exists, string Status, bool IsExpired, int CurrentMemberCount, int MaxMembers)?> CheckJoinCodeStatusAsync(string joinCode, CancellationToken cancellationToken = default)
 	{
 		var now = DateTime.UtcNow;

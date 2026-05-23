@@ -2829,7 +2829,7 @@ DECLARE
     ref2 REFCURSOR;
     ref3 REFCURSOR;
 BEGIN
-    -- cursor 1: dashboard summary + active session banner
+    -- cursor 1: dashboard summary
     OPEN ref1 FOR
     SELECT
         usr.fullname AS username,
@@ -2837,27 +2837,8 @@ BEGIN
         CURRENT_DATE AS todaydate,
         (SELECT COUNT(1) FROM tblrepracticesession AS rps
          WHERE rps.userid = usr.userid AND rps.status = 'PENDING' AND rps.isdeleted = FALSE
-        ) AS pendingrepracticecount,
-        activesession.sessionid     AS activesessionid,
-        activesession.sessionname   AS activesessionname,
-        activesession.status        AS activesessionstatus,
-        activesession.joincode
+        ) AS pendingrepracticecount
     FROM tbluser AS usr
-    LEFT JOIN LATERAL (
-        SELECT ses.sessionid, ses.sessionname, ses.status, ses.joincode
-        FROM tblsessionmember AS sem
-        INNER JOIN tblsession AS ses
-            ON ses.sessionid = sem.sessionid AND ses.isdeleted = FALSE
-        WHERE sem.userid    = usr.userid
-          AND sem.isdeleted = FALSE
-          AND sem.isactive  = TRUE
-          AND ses.status IN ('LOBBY', 'ACTIVE')
-        ORDER BY
-            CASE WHEN ses.status = 'ACTIVE' THEN 0 ELSE 1 END,
-            COALESCE(ses.starteddate, COALESCE(ses.roomexpiresat, ses.datecreated)) DESC,
-            ses.sessionid DESC
-        LIMIT 1
-    ) AS activesession ON TRUE
     WHERE usr.userid    = p_userid
       AND usr.isdeleted = FALSE
       AND usr.isactive  = TRUE;

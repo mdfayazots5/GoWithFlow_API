@@ -152,56 +152,12 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 				PendingRepracticeCount = GetInt32(reader, "PendingRepracticeCount")
 			};
 
-			var activeSessionId = GetNullableInt64(reader, "ActiveSessionId");
-
-			if (activeSessionId.HasValue && activeSessionId.Value > 0)
-			{
-				dashboard.ActiveSession = new ActiveSessionBannerDto
-				{
-					SessionId = activeSessionId.Value,
-					SessionName = GetString(reader, "ActiveSessionName"),
-					Status = GetString(reader, "ActiveSessionStatus"),
-					JoinCode = GetString(reader, "JoinCode")
-				};
-			}
-
 		}
 
 		dashboard.RecentSessions = await GetRecentDashboardSessionsAsync(userId, cancellationToken);
 		dashboard.PendingMistakes = await GetPendingDashboardMistakesAsync(userId, cancellationToken);
 
-		if (dashboard.ActiveSession is null)
-		{
-			dashboard.ActiveSession = await GetUnexpiredDashboardSessionAsync(userId, cancellationToken);
-		}
-
 		return dashboard;
-	}
-
-	private async Task<ActiveSessionBannerDto?> GetUnexpiredDashboardSessionAsync(long userId, CancellationToken cancellationToken)
-	{
-		var now = DateTime.Now;
-
-		return await (
-			from sessionMember in DbContext.SessionMembers.AsNoTracking()
-			join session in DbContext.Sessions.AsNoTracking() on sessionMember.SessionId equals session.SessionId
-			where sessionMember.UserId == userId
-				&& sessionMember.IsDeleted == false
-				&& session.IsDeleted == false
-				&& (session.Status == "LOBBY" || session.Status == "ACTIVE")
-				&& (session.RoomExpiresAt == null || session.RoomExpiresAt > now)
-			orderby session.Status == "ACTIVE" descending,
-				session.RoomExpiresAt descending,
-				session.SessionId descending,
-				sessionMember.SessionMemberId descending
-			select new ActiveSessionBannerDto
-			{
-				SessionId = session.SessionId,
-				SessionName = session.SessionName,
-				Status = session.Status,
-				JoinCode = session.JoinCode
-			})
-			.FirstOrDefaultAsync(cancellationToken);
 	}
 
 	public async Task UpdateUserProfileAsync(

@@ -58,6 +58,7 @@ public sealed class LiveSessionHub : Hub
 				new
 				{
 					userId = connectionInfo.UserId,
+					name = connectionInfo.FullName ?? "A participant",
 					slotIndex = connectionInfo.SlotIndex
 				});
 
@@ -105,6 +106,22 @@ public sealed class LiveSessionHub : Hub
 
 		if (response.Success == false || response.Data is null)
 		{
+			// ShiftTurnAsync returns failure when no further turns remain.
+			// Attempt to complete the session automatically and notify all clients.
+			var completeResponse = await _liveSessionService.CompleteSessionAsync(
+				parsedSessionId,
+				Context.ConnectionAborted);
+
+			if (completeResponse.Success && completeResponse.Data is not null)
+			{
+				await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+					"SESSION_ENDED",
+					new { sessionId = parsedSessionId, summary = completeResponse.Data },
+					Context.ConnectionAborted);
+				return;
+			}
+
+			// Shift failed for a real reason (wrong turn, wrong user, etc.) — surface it.
 			throw new HubException(response.Message);
 		}
 
@@ -332,7 +349,21 @@ public sealed class LiveSessionHub : Hub
 
 		if (sessionMember is null)
 		{
-			throw new HubException("Active session member was not found for the authenticated connection.");
+			// Member may be temporarily inactive due to the OnDisconnectedAsync race on a page refresh:
+			//   1. Browser refreshes → WebSocket drops → OnDisconnectedAsync → MarkMemberLeftAsync → IsActive = 0
+			//   2. Page reloads → new connection → OnConnectedAsync → here
+			// If a member record exists (any state) they are rejoining a session they belong to.
+			// Reactivate them so the session can continue without requiring a manual rejoin flow.
+			var anyMember = await _liveSessionRepository.GetSessionMemberByUserIdAsync(sessionId, userId, cancellationToken);
+
+			if (anyMember is null)
+			{
+				throw new HubException("Active session member was not found for the authenticated connection.");
+			}
+
+			// Reactivate — best-effort, does not throw if it fails
+			await _liveSessionService.ReactivateMemberAsync(sessionId, userId, cancellationToken);
+			sessionMember = anyMember;
 		}
 
 		return new HubConnectionMetadata(

@@ -8,6 +8,12 @@ namespace GoWithFlow.Infrastructure.Data.Migrations
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            // SQL Server only — PostgreSQL equivalent is handled in migration 20260523000002
+            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
+            {
+                return;
+            }
+
             migrationBuilder.Sql(@"
 -------------------------------------------------------------------------------------------------------------
 -- Created By       : Project AI Engineer
@@ -73,6 +79,12 @@ END
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // SQL Server only — PostgreSQL equivalent is handled in migration 20260523000002
+            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
+            {
+                return;
+            }
+
             migrationBuilder.Sql(@"
 ALTER PROCEDURE dbo.uspGetImprovementDataByUserId
 (

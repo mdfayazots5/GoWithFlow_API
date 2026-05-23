@@ -21,4 +21,10 @@ public interface ILiveSessionService
 	Task<ApiResponse<bool>> RequestReReadAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
 
 	Task MarkMemberLeftAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
+
+	/// <summary>
+	/// Restores IsActive = true for a member deactivated by an OnDisconnectedAsync race (page refresh).
+	/// Called from LiveSessionHub on reconnect before tracking the connection.
+	/// </summary>
+	Task ReactivateMemberAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
 }

@@ -18,6 +18,18 @@ Logic source: `ProjectOverview.md` only.
 | turn | Backend Live Session Module | Backend Live Session Module |
 | turnstate | Backend Live Session Module | Backend Live Session Module |
 | voice | Backend Live Session Module | Backend Live Session Module |
+| voice engine | Backend Live Session Module | Frontend Voice Recognition Engine |
+| voice recognition | Backend Live Session Module | Frontend Voice Recognition Engine |
+| voice recorder | Backend Live Session Module | Frontend Voice Recognition Engine |
+| voice feedback | Backend Live Session Module | Frontend Voice Recognition Engine |
+| waveform | Backend Live Session Module | Frontend Voice Recognition Engine |
+| vad | Backend Live Session Module | Frontend Voice Recognition Engine |
+| silence detection | Backend Live Session Module | Frontend Voice Recognition Engine |
+| pronunciation scorer | Backend Live Session Module | Frontend Voice Recognition Engine |
+| transcript normalizer | Backend Live Session Module | Frontend Voice Recognition Engine |
+| fuzzy match | Backend Live Session Module | Frontend Voice Recognition Engine |
+| levenshtein | Backend Live Session Module | Frontend Voice Recognition Engine |
+| soundex | Backend Live Session Module | Frontend Voice Recognition Engine |
 | analysis | Backend Live Session Module | Backend Live Session Module |
 | feedback | Backend Live Session Module | Backend Live Session Module |
 | listener | Backend Live Session Module | Backend Live Session Module |
@@ -40,6 +52,15 @@ Logic source: `ProjectOverview.md` only.
 | upload | Backend Script Module | Backend Script Module |
 | template | Backend Script Module | Backend Script Module |
 | library | Backend Script Module | Backend Script Module |
+| grammardrill | Backend Script Module | Backend Script Module |
+| roleplay | Backend Script Module | Backend Script Module |
+| mockinterview | Backend Script Module | Backend Script Module |
+| vocabularysprint | Backend Script Module | Backend Script Module |
+| fluencydrill | Backend Script Module | Backend Script Module |
+| repracticeround | Backend Script Module | Backend Script Module |
+| speaker label | Backend Script Module | Backend Script Module |
+| category template | Backend Script Module | Backend Script Module |
+| excel template standard | Backend Script Module | Backend Script Module |
 | dashboard | Backend Admin Module | Backend Admin Module |
 | user dashboard | Backend User Module | Backend User Module |
 | report | Backend Admin Module | Backend Admin Module |

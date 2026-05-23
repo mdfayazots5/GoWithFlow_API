@@ -28,5 +28,11 @@ public interface ISessionRepository
 
 	Task UpdateSessionMemberLeftAsync(long sessionId, long userId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
 
+	/// <summary>
+	/// Returns true if the user has any member record for the session (active or inactive).
+	/// Used to distinguish "never joined" from "already left" in idempotent leave logic.
+	/// </summary>
+	Task<bool> HasSessionMemberAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
+
 	Task<(bool Exists, string Status, bool IsExpired, int CurrentMemberCount, int MaxMembers)?> CheckJoinCodeStatusAsync(string joinCode, CancellationToken cancellationToken = default);
 }

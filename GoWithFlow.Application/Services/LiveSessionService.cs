@@ -113,7 +113,10 @@ public sealed class LiveSessionService : ILiveSessionService
 		}
 
 		var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
-		var sessionMember = await _liveSessionRepository.GetActiveSessionMemberByUserIdAsync(dto.SessionId, userId, cancellationToken);
+		// Use GetSessionMemberByUserIdAsync (any IsActive state) — the speaker may have briefly
+		// disconnected (page refresh race) but their voice analysis is still valid for the turn
+		// they owned. Turn ownership is enforced by ActiveMemberId == userId below.
+		var sessionMember = await _liveSessionRepository.GetSessionMemberByUserIdAsync(dto.SessionId, userId, cancellationToken);
 		var turnState = await _liveSessionRepository.GetTurnBySessionAndTurnIndexAsync(dto.SessionId, dto.TurnIndex, cancellationToken);
 
 		if (user is null || sessionMember is null || turnState is null)
@@ -126,13 +129,7 @@ public sealed class LiveSessionService : ILiveSessionService
 			return ApiResponse<VoiceAnalysisResponseDto>.FailureResult(new[] { "Voice analysis can only be saved for the caller's active turn." }, "Voice analysis save failed.");
 		}
 
-		var alreadyExists = await _liveSessionRepository.VoiceAnalysisExistsAsync(dto.SessionId, userId, dto.TurnIndex, cancellationToken);
-
-		if (alreadyExists)
-		{
-			return ApiResponse<VoiceAnalysisResponseDto>.FailureResult(new[] { "Voice analysis already exists for this user and turn." }, "Voice analysis save failed.");
-		}
-
+		// Build the value object (shared for both insert and update paths)
 		var voiceAnalysis = new VoiceAnalysis
 		{
 			SessionId = dto.SessionId,
@@ -154,7 +151,27 @@ public sealed class LiveSessionService : ILiveSessionService
 			IPAddress = "127.0.0.1"
 		};
 
-		var voiceAnalysisId = await _liveSessionRepository.InsertVoiceAnalysisAsync(voiceAnalysis, cancellationToken);
+		// UPSERT: if a record already exists for this session+user+turn (e.g. speaker re-recording
+		// after page refresh before CompleteTurn was called), update it — do not reject.
+		// This makes the endpoint idempotent for the active speaker's own turn.
+		var existing = await _liveSessionRepository.GetVoiceAnalysisByUserTurnAsync(dto.SessionId, userId, dto.TurnIndex, cancellationToken);
+
+		long voiceAnalysisId;
+		string saveMessage;
+
+		if (existing is not null)
+		{
+			// Update path: speaker re-recorded the same active turn
+			voiceAnalysisId = existing.VoiceAnalysisId;
+			await _liveSessionRepository.UpdateVoiceAnalysisAsync(voiceAnalysisId, voiceAnalysis, user.FullName, cancellationToken);
+			saveMessage = "Voice analysis updated successfully.";
+		}
+		else
+		{
+			// Insert path: first recording for this turn
+			voiceAnalysisId = await _liveSessionRepository.InsertVoiceAnalysisAsync(voiceAnalysis, cancellationToken);
+			saveMessage = "Voice analysis saved successfully.";
+		}
 
 		return ApiResponse<VoiceAnalysisResponseDto>.SuccessResult(
 			new VoiceAnalysisResponseDto
@@ -178,7 +195,7 @@ public sealed class LiveSessionService : ILiveSessionService
 				OverallScore = dto.OverallScore,
 				RecordedAt = DateTime.UtcNow
 			},
-			"Voice analysis saved successfully.");
+			saveMessage);
 	}
 
 	public async Task<ApiResponse<bool>> SubmitListenerFeedbackAsync(ListenerFeedbackRequestDto dto, long userId, CancellationToken cancellationToken = default)
@@ -363,6 +380,19 @@ public sealed class LiveSessionService : ILiveSessionService
 		catch
 		{
 			// best-effort: hub disconnect should not propagate exceptions
+		}
+	}
+
+	public async Task ReactivateMemberAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
+	{
+		if (sessionId <= 0 || userId <= 0) return;
+		try
+		{
+			await _liveSessionRepository.ReactivateMemberAsync(sessionId, userId, cancellationToken);
+		}
+		catch
+		{
+			// best-effort: hub reconnect should not propagate exceptions to the client
 		}
 	}
 

@@ -10,6 +10,12 @@
   - `Frontend/playwright.config.ts`
   - `Frontend/e2e/smoke.spec.ts`
   - `npm run test:e2e` runs the smoke check against a dedicated preview server on port `4175`
+- Frontend shared header branding:
+  - `Frontend/src/app/shared/components/header/header.component.ts`
+  - visible header site title: `GoWithFlow - Grow Together`
+  - header logo links to `/user/dashboard`
+  - shared header no longer renders route-based center titles such as `Join Session`; the layout shows only the left logo/back control and the right avatar/streak area
+  - logo text truncates safely on narrow screens via `header.component.scss`
 - Current validated backend solution:
   - `Backend/GoWithFlow.sln`
   - Projects:
@@ -422,11 +428,13 @@ Key queries:
 ## Backend Authentication Foundation — Login Flow
 
 ### Entry Points
-- Frontend login screen route: `[VERIFY]`
+- Frontend login screen route: `/auth/login`
+- Optional query parameter: `mobile` pre-fills the `mobileNumber` field when present
 - API endpoint: `POST /api/auth/login`
 
 ### UI Trigger
-- Login form submit button: `[VERIFY]`
+- Login form submit button in `Frontend/src/app/modules/auth/login/login.component.html`
+- On component init, `ActivatedRoute.queryParams` seeds `mobileNumber` from `?mobile=`
 
 ### Request Contract
 Endpoint: `POST /api/auth/login`
@@ -471,6 +479,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - Generate a JWT access token and a new refresh token
 - Persist the refresh token with `DeviceInfo = Web`
 - Return token payload and profile shell fields for frontend session caching
+- The login view is a single-screen auth surface: `login.component.scss` uses `min-height: 100dvh` with `box-sizing: border-box` and clamp-based spacing so the branded shell fits the active device viewport without adding first-load page scroll under normal desktop and phone heights
 
 ### State Transitions
 - `tblUser.LastLoginDate` → previous timestamp or `NULL` → `NOW()` after successful login
@@ -492,12 +501,14 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - PostgreSQL path must execute migrated routines as functions via `SELECT * FROM public.routine(...)` for result sets and `SELECT public.routine(...)` for void routines
 - Apply `14_auth_user_result_contract_fixes.sql` after `13_provider_safe_tabular_routines.sql` so auth and user-read functions use the same `passwordhash VARCHAR(512)` contract as `tbluser`
 - Frontend should treat `401` responses as credential/account failures and avoid retry loops
+- On shorter viewports, the login shell reduces outer padding, brand scale, card padding, and form gaps through CSS `clamp(...)` sizing and a `max-height: 760px` rule instead of relying on body scroll to reveal the form
 
 ### Notes on Known Drift Prevented
 - `ProjectOverview` previously omitted the `/api/auth/login` flow contract even though the controller and validator are live
 - `ProjectOverview` previously documented PostgreSQL routine names with underscores; the generated migration actually emits lowercase function names without underscores
 - Live PostgreSQL auth failures occurred because application code used stored-procedure invocation semantics against function-based migration output; provider-aware execution now rewrites those calls before execution
 - Live PostgreSQL auth failures also occurred when an active function returned `passwordhash VARCHAR(256)` against `tbluser.passwordhash VARCHAR(512)`; the fix is appended in `14_auth_user_result_contract_fixes.sql`
+- The frontend login shell previously used `min-height: 100vh` plus vertical padding, which produced unnecessary page scroll on compact viewports; the stable contract is now a device-fit `100dvh` shell with responsive spacing
 
 ## Backend Authentication Foundation — Database Provider Selection and Startup Validation
 
@@ -763,9 +774,51 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 - Returns: session header, caller performance summary, caller mistake list, listener feedback received, all member scores
 
-#### GET /api/v1/users/progress
+#### GET /api/users/progress — User Progress (Improvement Data)
 
-- Returns: recent session scores, weekly fluency trend, grammar progress, repractice history, badges, stats header
+**Entry Points:** `GET /api/users/progress` (Angular route: `/user/progress`)
+**Controller:** `UserController.GetImprovementDataAsync`
+**Service:** `UserService.GetImprovementDataAsync`
+**Repository:** `UserRepository` (6 sequential SP calls)
+
+**Response Contract (HTTP 200):**
+```json
+{
+  "RecentSessions":    [ { "SessionDate", "SessionName", "FluencyScore", "ConfidenceScore", "MistakeCount" } ],
+  "WeeklyScores":      [ { "WeekLabel", "AvgFluencyScore" } ],
+  "GrammarProgress":   [ { "GrammarTag", "TotalMistakes", "ResolvedMistakes", "ImprovementPercent", "ProgressBarValue" } ],
+  "RepracticeHistory": [ { "RepracticeSessionId", "SourceSessionId", "Status", "TotalMistakes", "CompletedRounds", "ImprovementPercent", "GeneratedDate" } ],
+  "BadgesEarned":      [ { "BadgeCode", "BadgeName", "EarnedDate", "IsEarned" } ],
+  "StatsHeader":       { "SessionsCompleted", "AvgScoreThisWeek", "MistakesResolved", "CurrentStreak" }
+}
+```
+
+**Stored Procedures (PostgreSQL):**
+| Call | SP | Returns |
+|---|---|---|
+| 1 | `uspgetuserprofilebyuserid` | Profile + stats totals |
+| 2 | `uspgetimprovementdatabyuserid` | Top-10 sessions (COMPLETED + ABANDONED) |
+| 3 | `uspgetweeklyfluencyscorebyuserid` | Last 4-week fluency trend |
+| 4 | `uspgetgrammarprogressbyuserid` | Grammar tag breakdown |
+| 5 | `uspgetrepracticesessionlistbyuserid` | Page 1 of repractice history (10 rows) |
+| 6 | `uspgetuserbadgebyuserid` | Earned badges |
+| 7 | `uspgetstreakdatabyuserid` | Current + longest streak |
+
+**PostgreSQL SP Management:**
+- All SPs are managed via `Docs/PostgreSQLMigration/*.sql` scripts applied directly to Supabase (NOT via EF migrations).
+- EF migrations are SQL Server-only for SP changes.
+
+**Known Drift Fixed (23 May 2026) — VERIFIED ON SUPABASE:**
+- **Error:** `Npgsql.PostgresException 42804: structure of query does not match function result type` on `uspgetimprovementdatabyuserid(bigint)`
+- **Confirmed root cause:** `SUM(BIGINT)` in PostgreSQL returns `NUMERIC` — not `BIGINT`. The RETURNS TABLE declared `mistakecount BIGINT` but the query returned `NUMERIC`. Confirmed: `SELECT pg_typeof(SUM(1::BIGINT)) → numeric`.
+- **Fix:** Changed `mistakecount BIGINT` → `mistakecount INTEGER` in RETURNS TABLE. Added `::INTEGER` cast on the SUM result. Added `::TIMESTAMP` on sessiondate. ABANDONED sessions included in filter.
+- **C# compatibility:** `UserRepository.GetInt32(reader, "MistakeCount")` requires `int4` (INTEGER) from PostgreSQL — confirmed compatible.
+- **Files changed:** `Docs/PostgreSQLMigration/16_fix_improvementsp_type_mismatch.sql` (applied to Supabase directly), `Migrations/20260523000002_FixImprovementSP_PostgreSQLTypeSafety.cs`
+- **Migration 20260523000001** (SQL Server `ALTER PROCEDURE`) was also made PostgreSQL-aware (guard added) so it no longer fails silently on the PostgreSQL migration pipeline.
+
+**Failure Cases:**
+- `404` if `uspgetuserprofilebyuserid` returns no row for the userId
+- `500` if any SP call throws (e.g., type mismatch, missing function, DB unavailable)
 
 #### GET /api/v1/users/streak
 
@@ -788,10 +841,13 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - User: `UserController`, `IUserService`, `UserService`, `IUserRepository`, `UserRepository`
 - `FileStorageSettings` controls avatar directory and max upload size
 - Session completion in `LiveSessionService` calls streak upsert and badge evaluation
+- **Important:** PostgreSQL SPs are NOT managed via EF migrations. Apply `Docs/PostgreSQLMigration/*.sql` scripts directly to Supabase when SP changes are needed.
 
 ### Migration State
 
 - `AddUserModule_Phase7`
+- `RelaxImprovementSP_IncludeAbandoned` (SQL Server only — now has PostgreSQL guard)
+- `FixImprovementSP_PostgreSQLTypeSafety` (PostgreSQL only — fixes 500 on /api/users/progress)
 
 ---
 
@@ -943,6 +999,19 @@ Success (200):
 - Expected columns: `A=SequenceId`, `B=SpeakerLabel`, `C=EnglishText`, `D=HintText`, `E=GrammarTag`, `F=ContextTag`, `G=FocusWord`, `H=PronunciationNote`
 - Row validation: `SequenceId` positive integer and unique within file; `SpeakerLabel` required; `EnglishText` required max 512; `HintText` optional max 512
 - Validation response: `ValidRows` returns first 5 preview rows; `ErrorRows` returns row-level issues; `TotalRows`, `ValidCount`, `ErrorCount`, `IsValid`
+
+### Excel Template Standard (Category-Wise)
+
+- Permanent reference document: `Docs/ExcelTemplateStandard.md` (Version 1.0, 2026-05-22)
+- Six registered categories: `Grammar Drill`, `Roleplay`, `Mock Interview`, `Vocabulary Sprint`, `Fluency Drill`, `Repractice Round`
+- Each category defines: fixed speaker labels, mandatory columns (D/G/H), row count limits, content rules, metadata defaults, and sample data
+- Speaker labels by category: GrammarDrill → `Speaker A/B`; Roleplay → role-based; MockInterview → `Interviewer/Candidate`; VocabularySprint → `Tutor/Learner`; FluencyDrill → `Speaker A/B`; RepracticeRound → `Coach/Learner`
+- Column D (HintText) mandatory for: `Vocabulary Sprint`, `Repractice Round`
+- Column G (FocusWord) mandatory for: `Mock Interview`, `Vocabulary Sprint`
+- Column H (PronunciationNote) mandatory on Tutor rows for: `Vocabulary Sprint`
+- File naming convention: `[CategoryCode]_[slug]_v[Version]_[YYYY-MM-DD].xlsx`
+- AI generation output format: JSON with `metadata` block and `rows` array — spec in `ExcelTemplateStandard.md §10`
+- Row limits: GrammarDrill 12–30; Roleplay 16–40; MockInterview 20–50; VocabularySprint 20–40; FluencyDrill 30–60; RepracticeRound 14–28
 
 ### API Surface
 
@@ -1611,9 +1680,25 @@ return activeMembers.Count >= 2 && activeMembers.All(m => m.IsReady);
 4. `uspInsertSessionMember` inserts a NEW row (previous inactive row kept for history)
 
 **Failure Cases:**
-- User not found → 200 with failure (Session or user was not found)
-- Session not found → 200 with failure (same message)
-- User not an active member → 200 with failure (Session member was not found in the lobby)
+- User not found → 400 with failure (Session or user was not found)
+- Session not found → 400 with failure (same message)
+- User has NO member record at all for this session → 400 with failure (Session member was not found in the lobby)
+- User is already inactive (already left) → **200 success** (idempotent — see Drift 5 below)
+
+**Idempotency Contract (CRITICAL):**
+`LeaveSessionAsync` is idempotent for users who have a member record (active or inactive).
+Flow:
+1. Check `GetLobbyStateBySessionIdAsync` — only returns `IsActive = 1` members
+2. If user NOT in active members → call `HasSessionMemberAsync(sessionId, userId)` (checks any row including `IsActive = 0`)
+3. If ANY member record exists → return success (already left — skip SP call, no double-update needed)
+4. If NO member record exists → return failure "Session member was not found in the lobby."
+5. If user IS active → call `uspUpdateSessionMemberLeft` → deactivate row
+
+**`ISessionRepository.HasSessionMemberAsync` contract:**
+```csharp
+// LINQ — checks tblSessionMember with IsDeleted = 0, any IsActive value
+_dbContext.SessionMembers.AnyAsync(sm => sm.SessionId == sessionId && sm.UserId == userId && sm.IsDeleted == false)
+```
 
 **Stored Procedures:** `uspUpdateSessionMemberLeft`, `uspGetAvailableSlotsBySessionId`, `uspInsertSessionMember` (all filter by `IsActive`)
 
@@ -1622,6 +1707,7 @@ return activeMembers.Count >= 2 && activeMembers.All(m => m.IsReady);
 - **Drift 2:** `session-room.component.ts` `confirmLeave()` only called `router.navigate()` — no DB update on leave. Fixed 2026-05-22: now calls `POST /api/v1/sessions/{sessionId}/leave` before navigating.
 - **Drift 3:** `LiveSessionHub.OnDisconnectedAsync` only broadcast `MEMBER_LEFT` but did not call `MarkMemberLeftAsync` — DB state not updated on browser close or network loss. Fixed 2026-05-22.
 - **Drift 4:** `uspUpdateSessionMemberLeft` previously did not reset `IsReady = 0`; leaving a lobby while ready preserved the flag — on rejoin the member appeared ready without toggling. Fixed in migration `FixMemberLeftSP_ResetIsReady`.
+- **Drift 5:** `LeaveSessionAsync` returned 400 "Session member was not found in the lobby" when `IsActive = 0`, which happens legitimately when `OnDisconnectedAsync` (SessionHub or LiveSessionHub) fires on a WebSocket drop/reconnect cycle BEFORE the user manually clicks Leave. Frontend received 400 but user was already left — idempotent path was missing. Fixed 2026-05-23: added `HasSessionMemberAsync` check; if member exists (any state) but not active → return 200 success. Only returns 400 when member has NO record at all in the session.
 
 ---
 
@@ -1977,7 +2063,7 @@ ApiResponse<VoiceAnalysisResponseDto>
 **Failure Cases:**
 - Session member or turn not found → `"Session member or turn was not found."`
 - Caller not active speaker for the turn → `"Voice analysis can only be saved for the caller's active turn."`
-- Duplicate → `"Voice analysis already exists for this user and turn."`
+- ~~Duplicate → rejected~~ — **REMOVED (2026-05-23 Drift 2 fix)**. Duplicate is now an UPDATE (UPSERT semantics). Re-recording the same active turn before `CompleteTurn` is valid (e.g. page refresh). Returns 200 with message `"Voice analysis updated successfully."`
 
 **Frontend UtteranceData Model Contract:**
 - `UtteranceData` interface MUST include `utteranceId: number` (the DB primary key from `tblUtterance.UtteranceId`)
@@ -2148,9 +2234,26 @@ ApiResponse<SessionSummaryResponseDto>
 5. Frontend calls `GET /api/v1/turns/{sessionId}/current` to load the first turn
 6. On each `TURN_SHIFT`, every connected client reloads `GET /api/v1/turns/{sessionId}/current` before deciding whether to render speaker or listener UI
 
-**Precondition for live hub connection:** Caller must be an active `tblSessionMember` for the session — hub throws `HubException` if not found
+**Precondition for live hub connection (UPDATED — page-refresh reconnect supported):**
+- `ResolveConnectionMetadataAsync` first checks `GetActiveSessionMemberByUserIdAsync` (`IsActive = 1`)
+- If not found (can happen after page refresh races with `OnDisconnectedAsync → MarkMemberLeftAsync`):
+  - Falls back to `GetSessionMemberByUserIdAsync` (any `IsActive` state)
+  - If any member row found → calls `ReactivateMemberAsync` (sets `IsActive = 1`) → connection proceeds
+  - If no member row at all → throws `HubException("Active session member was not found...")`
+- This allows members to reconnect transparently after a page refresh without a full rejoin flow
 
-**OnDisconnect behavior:** Hub broadcasts `MEMBER_LEFT`: `{ userId, slotIndex }` to group unconditionally (no lobby-check; live session members always broadcast on disconnect)
+**Page-refresh race (CRITICAL — Drift 1 for live session):**
+```
+Page refresh → WebSocket drops → OnDisconnectedAsync → MarkMemberLeftAsync → IsActive = 0
+↓
+New page load → new WebSocket connect → OnConnectedAsync → ResolveConnectionMetadataAsync
+↓
+GetActiveSessionMemberByUserIdAsync → null (IsActive = 0)
+↓ (before fix) → HubException → connection fails → user stuck with broken live room
+↓ (after fix)  → GetSessionMemberByUserIdAsync → found → ReactivateMemberAsync → IsActive = 1 → connected
+```
+
+**OnDisconnect behavior:** Hub broadcasts `MEMBER_LEFT`: `{ userId, slotIndex }` to group unconditionally; also calls `MarkMemberLeftAsync` (sets IsActive = 0, IsReady = 0) — best-effort safety net for browser close / genuine leave
 
 ---
 
@@ -2202,17 +2305,24 @@ ApiResponse<SessionSummaryResponseDto>
 | `ICE_CANDIDATE` | `{ fromUserId: string, toUserId: string, candidateJson: string }` |
 
 **Connection rules:**
-- Live hub connection requires caller to be an active `tblSessionMember` — resolved in `OnConnectedAsync` and `JoinLiveSession`
+- Live hub connection requires caller to be a member of the session (active OR inactive due to reconnect) — see page-refresh race note above
+- `JoinLiveSession` and `OnConnectedAsync` both call `ResolveConnectionMetadataAsync` which handles the reactivation fallback
 - `userId` param must match JWT `UserId` — enforced server-side; throws `HubException` if mismatch
 - `HubConnectionMetadata` stores `SlotIndex` and `FullName` for disconnect broadcast (no DB lookup needed on disconnect)
 - WebRTC methods (`VoiceBroadcastStart/Stop`, `RequestVoiceStream`, `SendWebRTCOffer/Answer`, `SendICECandidate`) are pure relay: no DB writes, broadcast to group, clients filter by `toUserId`
+
+**`ILiveSessionRepository` additions (2026-05-23):**
+- `GetSessionMemberByUserIdAsync(sessionId, userId)` — any `IsActive` state, used by reconnect fallback and voice analysis save
+- `ReactivateMemberAsync(sessionId, userId)` — EF update setting `IsActive = true` for the matching row
+**`ILiveSessionService` additions (2026-05-23):**
+- `ReactivateMemberAsync(sessionId, userId)` — best-effort wrapper; swallows exceptions to not break hub reconnect
 
 ### Live Session Business Rules
 
 - Next speaker resolved by matching `SessionMember.SlotName` to `Utterance.SpeakerLabel` (case-insensitive trim)
 - Only active speaker can complete the current turn
 - Only active speaker can save voice analysis for their own turn
-- One voice-analysis record per session + user + turn (enforced before insert)
+- One voice-analysis record per session + user + turn — INSERT on first recording, UPDATE on re-recording (UPSERT). Re-recording the same active turn (before `CompleteTurn` fires) is valid and updates the existing row.
 - Re-read count capped at `MaxReReads = 2`
 - Session completion summary aggregates: fluency score, confidence score, listener rating, grammar mistake count per member
 
@@ -2222,10 +2332,10 @@ ApiResponse<SessionSummaryResponseDto>
 
 | Key | Type | Default | Behaviour |
 |---|---|---|---|
-| `defaultVoiceStarter` | bool | `true` | Auto-starts mic 400 ms after `ngOnChanges` fires on new `turnState` |
-| `autoSubmitOnStop` | bool | `false` | `stopRecording()` fires `setTimeout(() => onConfirm(), 0)` — skips "Done Speaking". `onConfirm()` guards re-entry via `isSubmitting()` |
+| `defaultVoiceStarter` | bool | `true` | ⚠ INACTIVE — was auto-start mic 400ms after `ngOnChanges`. Removed from `SpeakerScreenComponent` in Voice Recognition Upgrade. Pref key retained in storage but no longer consumed. |
+| `autoSubmitOnStop` | bool | `false` | ⚠ INACTIVE — was `stopRecording()` auto-firing `onConfirm()`. Removed in Voice Recognition Upgrade. `onDoneSpeaking()` requires explicit user tap. |
 | `listenVoiceBroadcast` | bool | `false` | On `VOICE_BROADCAST_STARTED`: listener emits `RequestVoiceStream`; speaker creates WebRTC offer in response |
-| `showReReadSkipButtons` | bool | `false` | Shows Re-Speak + Skip buttons below mic button while `isRecording() = true` |
+| `showReReadSkipButtons` | bool | `false` | Shows Skip button below `VoiceRecorderComponent` during recording phase, and Skip + Try Again below `VoiceFeedbackComponent` during feedback phase |
 
 **UI entry:** Gear icon in session room top bar → `showSettings` signal → 4-toggle panel slides in below top bar. Each toggle calls `sessionPrefs.update({ key: !current })`.
 **Toggle UI contract:** Track remains `w-11 h-6 rounded-full`; thumb remains `left-0.5 top-0.5 h-5 w-5 rounded-full`; active state moves the thumb with inline `transform: translateX(1.25rem)`, inactive state uses `translateX(0)`. Do not rely on utility translation classes alone for thumb geometry in this component.
@@ -2304,36 +2414,211 @@ Subscribers: active session members inside the live room
 - Route compilation drift: the live-session room is documented to resolve through `component: SessionRoomComponent` within the lazy child route contract to reduce runtime JIT-only failures on this page
 - Template compilation drift: session-room settings toggles previously used escaped `[class.bg-white\/15]` and `[class.translate-x-0\.5]` bindings, which broke Angular template parsing and surfaced as unclosed `button` tags during JIT compilation
 - UI drift: session-room preference toggles previously rendered with class-driven thumb translation but no fixed left anchor, producing an unstable knob position in the actual DOM
+- **Drift 1 (2026-05-23): Page-refresh breaks hub reconnect + voice analysis + leave** — `OnDisconnectedAsync` sets `IsActive = 0` on every disconnect including page refreshes. On page reload: (a) hub `OnConnectedAsync` → `GetActiveSessionMemberByUserIdAsync` → null → HubException → connection fails; (b) `SaveVoiceAnalysisAsync` → same null check → 400 "Voice analysis save failed."; (c) `LeaveSessionAsync` → same null check → 400 "Session leave failed." Fixed 2026-05-23 via three-part fix: hub `ResolveConnectionMetadataAsync` now falls back to `GetSessionMemberByUserIdAsync` and calls `ReactivateMemberAsync` on reconnect; `SaveVoiceAnalysisAsync` now uses `GetSessionMemberByUserIdAsync` (turn ownership enforced by `ActiveMemberId == userId`); `LeaveSessionAsync` already made idempotent in Drift 5 of Session Module.
+- **Drift 4 (2026-05-23): Single skipped word cascades entire alignment → all subsequent words score near-zero** — `alignAndScore` only detected *insertions* (extra spoken words) in its look-ahead, never *deletions* (skipped expected words). When a speaker skips one word (e.g. "I have **[been]** waiting..."), the algorithm did a substitution ("waiting" scored against "been"), then compared every following word against the wrong expected slot. Entire sentence offset by 1 position → fluency=15 for a near-perfect sentence. **Mathematical proof from screen:** spoken missed only "been", yet fluency=15 and "[project]" showed as missing at the end (exhausted spokenIdx one slot early). **Fix:** Added deletion look-ahead in `alignAndScore`: when `wordSimilarity(spokenWord, expected[expectedIdx+1]) >= 0.7 AND > current similarity`, mark `expected[expectedIdx]` as `isMissing`, advance `expectedIdx` only (keep `spokenIdx` on same word). Priority: insertion checked first, deletion second, substitution last. **Verified trace:** with fix, "I have waiting to see it how long have you been working on this project" vs expected gives 15/16 matched, [been] missing, fluency≈94, overall≈93 — correct.
+- **Drift 3 (2026-05-23): 8000ms fallback timer fires before isFinal for long sentences → all scores wrong** — Timer started at mic press; interim results did not reset it. For a 12-word sentence where the user takes 2–3s to prepare then speaks for 4–5s, the 8000ms timer fired just before the browser emitted `isFinal=true`. `finalize()` ran with `allFinalTranscripts=[]` → `transcribedText=""`, `confidenceScore=70` (hardcoded fallback), `fluencyScore=0`, `overallScore=18` (= `0.25 × 70`), all words `[missing]`. **Fix:** In the `onresult` handler's `else` (interim) branch, when `allFinalTranscripts.length===0`, call `resetSilenceTimeout(8000)`. This makes the fallback deadline "8s from last speech activity" not "8s from mic press". Once a `isFinal` arrives the 2500ms timer takes over. **Secondary fix:** `VoiceFeedbackComponent.speedLabel` now returns `'— Not detected'` for `wpm===0` instead of `'🐢 Too slow'` — 0 WPM means capture failed, not that the speaker was too slow.
+- **Drift 2 (2026-05-23): Page-refresh after recording-complete causes 400 on re-submit** — Drift 1 fixed hub reconnect and member lookup, but did not address: the voice analysis is saved immediately at `onRecordingComplete` (before `CompleteTurn`). If the user refreshes at that point, `ngOnChanges` resets phase to `'recording'` (in-memory state lost). The user re-records the same active turn and the backend rejects with 400 "already exists". **Two-part fix applied 2026-05-23:** (a) **Backend UPSERT**: `SaveVoiceAnalysisAsync` now calls `GetVoiceAnalysisByUserTurnAsync`; if a record exists for this session+user+turn, it calls `UpdateVoiceAnalysisAsync` (EF `ExecuteUpdateAsync` on all score fields) and returns 200 `"Voice analysis updated successfully."` — no more 400 on re-record. New repo methods: `GetVoiceAnalysisByUserTurnAsync(sessionId, userId, turnIndex)`, `UpdateVoiceAnalysisAsync(voiceAnalysisId, updates, updatedBy)`. (b) **Frontend sessionStorage persistence**: `SpeakerScreenComponent` stores the `VoiceSessionResult` in `sessionStorage` under key `gwf_va_{sessionId}_{turnIndex}_{userId}` on `onRecordingComplete`. On `ngOnChanges`, `tryRestoreFromStorage()` checks this key and if found, restores `sessionResult` and sets `analysisPhase = 'feedback'` — user lands back on their score screen after refresh, not a blank recorder. Entry is cleared on `CompleteTurn` success or `Skip` success.
 
 ### Flow: Speaker Turn — Stable Contract
 
+> ⚠ UPGRADED — Voice Recognition Engine v1.0 (2026-05-23). Old `VoiceAnalysisService` recording pattern replaced. See "Frontend Voice Recognition Engine" section below.
+
 **Entry:** `SpeakerScreenComponent` rendered when `isSpeaker() = true`.
 
+**Phase State Machine:**
+```
+analysisPhase: 'recording' | 'feedback' | 'confirmed'
+sessionResult: VoiceSessionResult | null
+```
+- `'recording'` → `VoiceRecorderComponent` shown. User taps mic to start/stop.
+- `'feedback'` → `VoiceFeedbackComponent` shown with word-level scoring. User taps "Done Speaking".
+- Reset on each `ngOnChanges(turnState)` → `resetPhase()`.
+
 **Turn Start:**
-1. `ngOnChanges(turnState)` → `resetRecording()` → if `defaultVoiceStarter`: `setTimeout(() => startRecording(), 400)`
-2. `startRecording()`: sets `isRecording = true`, subscribes to Web Speech API stream, calls `VoiceBroadcastService.startBroadcast()` (async, fire-and-forget)
+1. `ngOnChanges(turnState)` → `words.set(...)` → `resetPhase()` → `analysisPhase = 'recording'`, `sessionResult = null`
+2. User taps mic inside `VoiceRecorderComponent` → `VoiceRecognitionEngine.startSession()` begins
 
-**Stop Recording:**
-1. `stopRecording()`: sets `isRecording = false`, stops SpeechRecognition, calls `stopBroadcast()`, calls `performAnalysis(interimTranscript)`
-2. If `autoSubmitOnStop = true`: `setTimeout(() => onConfirm(), 0)`
+**Recording Phase — VoiceRecognitionEngine flow:**
+1. `requestMicPermission()` — `navigator.mediaDevices.getUserMedia` before recognition starts
+2. `AudioActivityDetector.start()` — opens AudioContext, waveform + VAD starts
+3. `SpeechRecognition` configured: `lang = 'en-IN'`, `continuous = !isIOS`, `interimResults = true`, `maxAlternatives = 3`
+4. `onresult` — interim buffered for display only; final chunks collected in `allFinalTranscripts[]`; **interim results reset the 8000ms fallback timer** (when no finals yet) so the deadline is "8s from last speech activity" not "8s from mic press"
+5. Silence detected (< -50dB for 1200ms) → `recognition.stop()` after 400ms buffer
+6. Fallback timeout: **8000ms from last speech activity** (interim resets timer if no finals yet); 2500ms from last final chunk → auto-finalize
+7. Finalize: join all final chunks → `TranscriptNormalizer.normalize()` both sides → `PronunciationScorer.score()` → emit `VoiceSessionResult`
+8. Retry on `network` / `audio-capture` / `no-speech` errors up to 3 times (500ms delay)
+9. iOS: `continuous = false`, restart on `onend` manually until VAD detects silence
 
-**onConfirm() — Turn Submission:**
-- Guard: `if (isSubmitting()) return` — prevents double-fire from Skip + autoSubmitOnStop
-- POST `/api/v1/turns/{sessionId}/voice-analysis` → on success: SignalR `CompleteTurn` → `TURN_SHIFT`
-- Failure: toast + `isSubmitting = false`
+**onRecordingStarted():**
+- Calls `VoiceBroadcastService.startBroadcast()` (fire-and-forget)
+
+**onRecordingComplete(result: VoiceSessionResult):**
+- Sets `sessionResult = result`, `analysisPhase = 'feedback'`
+- Calls `VoiceBroadcastService.stopBroadcast()`
+- Maps `VoiceSessionResult` → voice analysis payload
+- POST `/api/v1/turns/{sessionId}/voice-analysis` — non-blocking (`.subscribe()` no handler)
+
+**onDoneSpeaking() — Turn Submission:**
+- Guard: `if (isSubmitting()) return`
+- Sets `isSubmitting = true`
+- SignalR `CompleteTurn(sessionId, userId, turnIndex, overallScore)` → `TURN_SHIFT`
+- On success: `resetPhase()` → `turnShifted.emit()`
+- On error: toast "Failed to advance turn. Please try again." + `isSubmitting = false`
 
 **onSkip():**
-- If recording: stops recording inline (no autoSubmit setTimeout side-effect), runs `performAnalysis`
-- Calls `onConfirm()` — idempotency guard prevents double-fire
+- Calls `voiceRecorder.stopEarly()` (ViewChild reference) if recorder active
+- Calls `VoiceBroadcastService.stopBroadcast()`
+- Guard: `if (isSubmitting()) return`
+- SignalR `CompleteTurn` with score `0` → `TURN_SHIFT`
+- On success: `resetPhase()` → `turnShifted.emit()`
 
-**onReRead():** Emits `RequestReRead` → `RE_READ_REQUESTED` to group → calls `resetRecording()`
+**onReRead():**
+- Calls `requestReReadRealtime(sessionId, userId)` → `RE_READ_REQUESTED` broadcast
+- On success: `resetPhase()` → back to recording phase
 
 **RE-SPEAK visibility:** `turnState.reReadAllowed = true` AND `turnState.reReadCount < turnState.maxReReads` (max = 2)
 
+
 **Failure Cases:**
-- `saveVoiceAnalysis` error → toast "Failed to save voice analysis. Please try again." + reset `isSubmitting`
+- Mic permission denied → engine throws; component shows error message via `errorOccurred` event
+- Browser no SpeechRecognition (Firefox) → engine throws "Please use Chrome or Edge."
+- `saveVoiceAnalysis` error → non-blocking, silently swallowed (turn can still be completed). Backend uses UPSERT so a re-record after page refresh is no longer an error path.
 - `completeTurnRealtime` error → toast "Failed to advance turn. Please try again." + reset `isSubmitting`
-- `getUserMedia` denied → broadcast silently skipped; SpeechRecognition continues normally
+- `getUserMedia` for VAD denied → `AudioActivityDetector` logs warning, falls back to timeout-only silence detection
+
+**Notes on Drift Prevented:**
+- Old system: string equality compare `spoken === expected` always scored 0 due to punctuation/casing. Fixed: `TranscriptNormalizer` + `PronunciationScorer` token-level fuzzy match.
+- Old system: `recognition.lang` not set → browser defaulted to OS language (Telugu/Hindi on Indian phones). Fixed: `lang = 'en-IN'`.
+- Old system: interim results treated as final. Fixed: only `isFinal = true` results collected.
+- Old system: no silence detection → recording ran forever. Fixed: `AudioActivityDetector` VAD + 8s fallback timeout.
+- Old system: no mic permission pre-check → silent failure on first use. Fixed: `requestMicPermission()` before engine starts.
+- `defaultVoiceStarter` and `autoSubmitOnStop` session prefs no longer active — new flow requires explicit user tap for both start and confirm.
+
+### Frontend Voice Recognition Engine — Stable Contract
+
+**Introduced:** Voice Recognition Upgrade v1.0 (2026-05-23)
+**Replaces:** `VoiceAnalysisService` recording + analysis pattern in `SpeakerScreenComponent`
+
+#### File Map
+
+| File | Path | Role |
+|---|---|---|
+| `VoiceRecognitionEngine` | `core/services/voice/voice-recognition.engine.ts` | Orchestrator. Entry point for all voice sessions. |
+| `AudioActivityDetector` | `core/services/voice/audio-activity-detector.ts` | Web Audio API VAD. Waveform data + silence detection. |
+| `PronunciationScorer` | `core/services/voice/pronunciation-scorer.ts` | Token-level fuzzy match. Levenshtein + Soundex. |
+| `TranscriptNormalizer` | `core/services/voice/transcript-normalizer.ts` | Contraction expansion + punctuation strip + filler removal. |
+| `VoiceRecorderComponent` | `modules/voice/voice-recorder/` | Standalone mic UI. Waveform canvas. Interim display. |
+| `VoiceFeedbackComponent` | `modules/voice/voice-feedback/` | Standalone Duolingo-style result UI. Word chips + score bands. |
+
+#### VoiceRecognitionEngine — Public API
+
+```typescript
+state$: BehaviorSubject<RecordingState>         // 'idle'|'requesting'|'listening'|'processing'|'done'|'error'
+interimTranscript$: BehaviorSubject<string>     // live display only — never scored
+waveformData$: BehaviorSubject<Uint8Array>      // 128-sample time-domain data for canvas
+volumeLevel$: BehaviorSubject<number>           // 0–100 normalized
+
+startSession(expectedText): Promise<VoiceSessionResult>
+stopSession(): void
+```
+
+#### VoiceSessionResult Shape
+
+```typescript
+{
+  transcribedText: string       // raw joined final transcripts (display)
+  expectedText: string          // original input
+  fluencyScore: number          // 0–100 — word match accuracy weighted
+  confidenceScore: number       // 0–100 — API confidence minus hesitation penalty
+  overallScore: number          // fluency * 0.75 + apiConfidence * 0.25
+  speakingSpeedWpm: number      // words / minutes of recording
+  hesitationWords: string[]     // 'um','uh','er','hmm' etc. found in raw transcript
+  repeatedWords: string[]       // consecutive duplicate words (len > 2)
+  wordResults: WordResult[]     // per-word alignment result (for VoiceFeedbackComponent)
+  pauseCount: number            // silence events detected by VAD
+  durationMs: number            // total recording duration
+  retryCount: number            // how many SpeechRecognition retries occurred
+}
+```
+
+#### WordResult Shape
+
+```typescript
+{
+  word: string        // spoken word
+  expected: string    // expected word
+  matched: boolean    // similarity >= 0.6
+  score: number       // 0–100
+  isHesitation: bool
+  isExtra: bool       // spoken but not in expected
+  isMissing: bool     // in expected but not spoken
+}
+```
+
+#### Scoring Algorithm
+
+```
+1. Normalize both sides: lowercase → expand contractions → strip punctuation → remove fillers
+2. Apply Indian English pronunciation map to spoken tokens (V/W swap, TH→D/T, contractions)
+3. Align spoken vs expected with greedy look-ahead (extra word detection)
+4. Per word: similarity = max(levenshteinSim, soundexSim)
+   - >= 0.8 → matched (full credit)
+   - >= 0.6 → partial match (half credit)
+   - <  0.6 → wrong (no credit)
+5. fluencyScore = (matchRatio * 0.6 + avgWordScore/100 * 0.4) * 100
+6. overallScore = fluencyScore * 0.75 + apiConfidence * 100 * 0.25
+7. confidenceScore = (apiConfidence * 100) - (hesitationCount * 5, max 25)
+```
+
+#### AudioActivityDetector — Key Config
+
+| Setting | Value | Tuning Note |
+|---|---|---|
+| `silenceThresholdDB` | `-50` | Quiet room: lower to -55. Noisy room: raise to -45 |
+| `silenceDurationMs` | `1200` | Raise to 1800 for users who pause between words |
+| `fftSize` | `256` | Low latency — do not increase |
+| `sampleRate` | `16000` | Optimal for speech recognition |
+| Audio constraints | `echoCancellation`, `noiseSuppression`, `autoGainControl` all `true` | Built-in browser noise reduction |
+
+#### VoiceFeedbackComponent — Score Bands
+
+| Score | Band | Emoji |
+|---|---|---|
+| 90–100 | Excellent! | 🌟 |
+| 75–89 | Great job! | ✅ |
+| 60–74 | Good try! | 👍 |
+| 40–59 | Keep going! | 💪 |
+| 0–39 | Try again | 🔄 |
+
+#### Speaking Speed Interpretation
+
+| WPM | Label |
+|---|---|
+| 0 (exactly) | — Not detected (capture failed — not a speed judgment) |
+| 1–69 | 🐢 Too slow |
+| 70–99 | ✅ Good pace |
+| 100–139 | 👏 Natural speed |
+| ≥ 140 | ⚡ Too fast |
+
+#### Browser Compatibility
+
+| Browser | Platform | Support |
+|---|---|---|
+| Chrome 100+ | Android / Desktop | ✅ Full — use `lang=en-IN`, `continuous=true` |
+| Edge 100+ | Desktop / Android | ✅ Full |
+| Safari 15+ | iOS / iPadOS | ⚠ Partial — `continuous=false`, restart on `onend` |
+| Samsung Internet | Android | ✅ Full (Chrome engine) |
+| Firefox | Any | ❌ None — show "Please use Chrome or Edge" |
+
+#### Integration Points
+
+- `SpeakerScreenComponent` imports `VoiceRecorderComponent` + `VoiceFeedbackComponent` as standalone components
+- `VoiceRecorderComponent` emits: `recordingComplete(VoiceSessionResult)`, `recordingStarted()`, `errorOccurred(string)`
+- `VoiceFeedbackComponent` receives: `@Input() result: VoiceSessionResult | null`
+- `VoiceRecognitionEngine` is `providedIn: 'root'` — single instance per app
+- `AudioActivityDetector`, `PronunciationScorer`, `TranscriptNormalizer` are all `providedIn: 'root'`
+
+---
 
 ### Flow: WebRTC Voice Broadcast — Stable Contract
 

@@ -273,6 +273,36 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				cancellationToken);
 	}
 
+	public async Task<SessionMember?> GetSessionMemberByUserIdAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
+	{
+		// Returns any member row (active or inactive) — used to detect page-refresh reconnects.
+		return await _dbContext.SessionMembers
+			.AsNoTracking()
+			.FirstOrDefaultAsync(
+				sessionMember => sessionMember.SessionId == sessionId &&
+					sessionMember.UserId == userId &&
+					sessionMember.IsDeleted == false,
+				cancellationToken);
+	}
+
+	public async Task ReactivateMemberAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
+	{
+		// Restore IsActive = true for a member who disconnected temporarily (page refresh).
+		// Intentionally not AsNoTracking — we need EF change tracking to update the row.
+		var member = await _dbContext.SessionMembers
+			.FirstOrDefaultAsync(
+				sm => sm.SessionId == sessionId &&
+				      sm.UserId == userId &&
+				      sm.IsDeleted == false,
+				cancellationToken);
+
+		if (member is not null && member.IsActive == false)
+		{
+			member.IsActive = true;
+			await _dbContext.SaveChangesAsync(cancellationToken);
+		}
+	}
+
 	public async Task<List<Utterance>> GetOrderedUtterancesBySessionIdAsync(long sessionId, CancellationToken cancellationToken = default)
 	{
 		var scriptId = await _dbContext.Sessions
@@ -304,6 +334,37 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 					voiceAnalysis.TurnIndex == turnIndex &&
 					voiceAnalysis.IsDeleted == false,
 				cancellationToken);
+	}
+
+	public async Task<VoiceAnalysis?> GetVoiceAnalysisByUserTurnAsync(long sessionId, long userId, int turnIndex, CancellationToken cancellationToken = default)
+	{
+		return await _dbContext.VoiceAnalyses
+			.FirstOrDefaultAsync(
+				v => v.SessionId == sessionId &&
+					v.UserId == userId &&
+					v.TurnIndex == turnIndex &&
+					v.IsDeleted == false,
+				cancellationToken);
+	}
+
+	public async Task UpdateVoiceAnalysisAsync(long voiceAnalysisId, VoiceAnalysis updates, string updatedBy, CancellationToken cancellationToken = default)
+	{
+		await _dbContext.VoiceAnalyses
+			.Where(v => v.VoiceAnalysisId == voiceAnalysisId && v.IsDeleted == false)
+			.ExecuteUpdateAsync(s => s
+				.SetProperty(v => v.TranscribedText, updates.TranscribedText)
+				.SetProperty(v => v.FluencyScore, updates.FluencyScore)
+				.SetProperty(v => v.ConfidenceScore, updates.ConfidenceScore)
+				.SetProperty(v => v.SpeakingSpeedWpm, updates.SpeakingSpeedWpm)
+				.SetProperty(v => v.PauseCount, updates.PauseCount)
+				.SetProperty(v => v.HesitationWords, updates.HesitationWords)
+				.SetProperty(v => v.RepeatedWords, updates.RepeatedWords)
+				.SetProperty(v => v.GrammarErrorsJson, updates.GrammarErrorsJson)
+				.SetProperty(v => v.PronunciationJson, updates.PronunciationJson)
+				.SetProperty(v => v.OverallScore, updates.OverallScore)
+				.SetProperty(v => v.UpdatedBy, updatedBy)
+				.SetProperty(v => v.LastUpdated, DateTime.UtcNow),
+			cancellationToken);
 	}
 
 	public async Task<bool> ListenerFeedbackExistsAsync(long sessionId, int turnIndex, long fromUserId, long targetUserId, string feedbackTag, CancellationToken cancellationToken = default)

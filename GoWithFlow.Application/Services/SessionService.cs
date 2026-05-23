@@ -360,7 +360,18 @@ public sealed class SessionService : ISessionService
 
 		if (lobbyState.Members.Any(member => member.UserId == userId) == false)
 		{
-			return ApiResponse<bool>.FailureResult(new[] { "Session member was not found in the lobby." }, "Session leave failed.");
+			// Member is not in the active list. Two possible causes:
+			// 1. They were never a member of this session → return error.
+			// 2. They were already marked inactive by OnDisconnectedAsync (WebSocket drop/reconnect race)
+			//    → treat as idempotent success so the frontend leave flow completes cleanly.
+			var hasMemberRecord = await _sessionRepository.HasSessionMemberAsync(sessionId, userId, cancellationToken);
+			if (hasMemberRecord == false)
+			{
+				return ApiResponse<bool>.FailureResult(new[] { "Session member was not found in the lobby." }, "Session leave failed.");
+			}
+
+			// Already left — idempotent success.
+			return ApiResponse<bool>.SuccessResult(true, "Session member left successfully.");
 		}
 
 		await _sessionRepository.UpdateSessionMemberLeftAsync(sessionId, userId, user.FullName, "127.0.0.1", cancellationToken);

@@ -10,8 +10,6 @@ public sealed class UserDashboardResponseDto
 
 	public DateTime TodayDate { get; set; }
 
-	public ActiveSessionBannerDto? ActiveSession { get; set; }
-
 	public int PendingRepracticeCount { get; set; }
 
 	public List<SessionListItemResponseDto> RecentSessions { get; set; } = new();
