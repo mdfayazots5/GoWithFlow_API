@@ -278,6 +278,15 @@ public sealed class AdminService : IAdminService
 	private static bool IsValidAgeGroup(string value) =>
 		value is "Child (6-12)" or "Teen (13-17)" or "Adult (18+)";
 
+	public async Task<ApiResponse<PagedResult<AdminSessionHistoryItemDto>>> GetSessionHistoryAsync(
+		AdminSessionHistoryFilterRequestDto dto,
+		CancellationToken cancellationToken = default)
+	{
+		NormalizeSessionHistoryFilter(dto);
+		var result = await _adminRepository.GetSessionHistoryAsync(dto, cancellationToken);
+		return ApiResponse<PagedResult<AdminSessionHistoryItemDto>>.SuccessResult(result, "Session history retrieved successfully.");
+	}
+
 	private static bool IsValidHintLanguage(string value) =>
 		value is "Telugu" or "Hindi" or "Tamil" or "Kannada" or "None";
 
@@ -294,6 +303,14 @@ public sealed class AdminService : IAdminService
 		dto.PageNumber = dto.PageNumber <= 0 ? 1 : dto.PageNumber;
 		dto.PageSize = dto.PageSize <= 0 ? 10 : dto.PageSize;
 		dto.UserId = dto.UserId is > 0 ? dto.UserId : null;
+	}
+
+	private static void NormalizeSessionHistoryFilter(AdminSessionHistoryFilterRequestDto dto)
+	{
+		dto.SearchTerm = string.IsNullOrWhiteSpace(dto.SearchTerm) ? null : dto.SearchTerm.Trim();
+		dto.Status     = string.IsNullOrWhiteSpace(dto.Status)     ? null : dto.Status.Trim().ToUpperInvariant();
+		dto.PageNumber = dto.PageNumber <= 0 ? 1  : dto.PageNumber;
+		dto.PageSize   = dto.PageSize   <= 0 ? 20 : dto.PageSize;
 	}
 
 }

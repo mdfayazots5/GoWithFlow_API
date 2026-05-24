@@ -893,15 +893,110 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 ### API Surface
 
-- `GET /api/v1/admin/dashboard` — global totals, recent activities, top grammar mistakes
-- `GET /api/v1/admin/users` — paginated admin user list
-- `GET /api/v1/admin/users/{userId}` — full user profile with averages and recent sessions
-- `PATCH /api/v1/admin/users/status` — updates `tblUser.IsActive`
-- `POST /api/v1/admin/users/notes` — inserts admin note using admin JWT claim
-- `GET /api/v1/admin/users/{userId}/notes` — active admin notes for target user
-- `GET /api/v1/admin/reports` — paginated user report summaries; `ImprovementPercent = (resolved / total) * 100`
-- `GET /api/v1/admin/reports/users/{userId}` — user header, session history, mistake breakdown, weekly scores
-- `GET /api/v1/admin/reports/export` — exports summary rows as Excel bytes via `ClosedXML`
+> Note: Routes use `api/admin/...` prefix (no `/v1/` version segment — `ApiRoutes.VersionPrefix = "api"`).
+
+- `GET /api/admin/dashboard` — global totals, recent activities, top grammar mistakes
+- `GET /api/admin/users` — paginated admin user list
+- `GET /api/admin/users/{userId}` — full user profile with averages and recent sessions
+- `PATCH /api/admin/users/status` — updates `tblUser.IsActive`
+- `POST /api/admin/users/notes` — inserts admin note using admin JWT claim
+- `GET /api/admin/users/{userId}/notes` — active admin notes for target user
+- `GET /api/admin/reports` — paginated user report summaries; `ImprovementPercent = (resolved / total) * 100`
+- `GET /api/admin/reports/users/{userId}` — user header, session history, mistake breakdown, weekly scores
+- `GET /api/admin/reports/export` — exports summary rows as Excel bytes via `ClosedXML`
+- `POST /api/admin/users` — create new user
+- `PUT /api/admin/users/{userId}` — update user profile
+- `GET /api/admin/sessions/history` — paginated admin session history with filters
+
+### Admin Session History — Stable Flow Contract
+
+#### Entry Points
+`/admin/sessions` — Angular standalone route `AdminSessionsComponent`
+
+#### UI Trigger
+`ngOnInit()` auto-loads on mount. Filter bar has Search / Status / FromDate / ToDate inputs with Apply + Clear buttons. `mat-paginator` triggers page change.
+
+#### Request Contract
+Endpoint: `GET /api/admin/sessions/history`
+Auth: `AdminOnly` + `ActiveUser` JWT policies required
+Query params:
+- `searchTerm` (string, optional): matches session name or host full name (LIKE, case-insensitive)
+- `status` (string, optional): `COMPLETED` | `ABANDONED` | `IN_PROGRESS` | empty = all
+- `fromDate` (DateTime, optional): inclusive lower bound on session date (`EndedDate ?? StartedDate ?? DateCreated`)
+- `toDate` (DateTime, optional): exclusive upper bound (end of that day)
+- `pageNumber` (int, default 1)
+- `pageSize` (int, default 20)
+
+#### Response Contract
+Success (HTTP 200): `ApiResponse<PagedResult<AdminSessionHistoryItemDto>>`
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "sessionId": 1,
+        "sessionName": "string",
+        "hostName": "string",
+        "memberCount": 2,
+        "status": "COMPLETED",
+        "sessionDate": "2026-01-01T10:00:00",
+        "durationMin": 15,
+        "avgFluency": 82.5,
+        "mistakeCount": 3
+      }
+    ],
+    "totalCount": 100,
+    "pageNumber": 1,
+    "pageSize": 20,
+    "totalPages": 5
+  },
+  "message": "Session history retrieved successfully."
+}
+```
+Error: HTTP 400 `ApiResponse<PagedResult<...>>` with `success: false`
+
+#### Validation
+- `NormalizeSessionHistoryFilter` trims `SearchTerm`, uppercases `Status`, defaults `PageNumber`/`PageSize` to 1/20 if ≤ 0
+
+#### Database / Stored Procedures
+Tables read: `tblSession` (via `Sessions` DbSet), `tblSessionMember` (via `Set<SessionMember>()`), `tblVoiceAnalysis` (via `VoiceAnalyses`), `tblMistake` (via `Mistakes`)
+Tables written: none
+Stored procedures: none (pure EF Core LINQ)
+Key queries:
+- Main: filter + paginate `tblSession` ordered by `EndedDate ?? StartedDate ?? DateCreated DESC`
+- Member count: `GROUP BY SessionId` on `tblSessionMember WHERE IsDeleted = false`
+- Avg fluency: `AVG(FluencyScore)` per session from `tblVoiceAnalysis WHERE IsDeleted = false`
+- Mistake count: `COUNT(*)` per session from `tblMistake WHERE IsDeleted = false`
+
+#### Business Rules
+- `DurationMin` = `CEIL(ActualDurationSec / 60)` if `ActualDurationSec > 0`, else falls back to `SessionDuration` (planned minutes)
+- `AvgFluency` = 0 if no voice analysis rows exist for the session
+- `MistakeCount` = 0 if no mistake rows exist
+- Soft-deleted sessions excluded via `IsDeleted = false`
+- Host name pulled from `Session.Host.FullName` (EF navigation property); defaults to empty string if null
+
+#### State Transitions
+Read-only. No state changes.
+
+#### Realtime Events
+None.
+
+#### Failure Cases
+- Missing or invalid JWT → 401 (framework, not middleware)
+- Non-admin user → 403 (framework, not middleware)
+- EF query exception → 500 via `ExceptionMiddleware`
+- `KeyNotFoundException` thrown in repo → 404 via `ExceptionMiddleware`
+
+#### Recovery / Fallback Logic
+Empty sessions list returns early with `PagedResult { Items=[], TotalCount=0 }` without executing the member/fluency/mistake sub-queries.
+
+#### Notes on Known Drift Prevented
+- Route prefix drift: ProjectOverview previously documented routes as `/api/v1/admin/...` — corrected to `/api/admin/...` (no version segment; `ApiRoutes.VersionPrefix = "api"`)
+- Endpoint was added to `AdminController`, `IAdminService`, `AdminService`, `IAdminRepository`, `AdminRepository`, and all DTOs but ProjectOverview was not updated — corrected 2026-05-24
+- 404 root cause on first run: backend process was running a stale binary compiled before the endpoint was added; fix = restart API from Visual Studio
+
+---
 
 ### Admin Users List — Stable Flow Contract
 

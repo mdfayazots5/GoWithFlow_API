@@ -38,9 +38,10 @@ public static class ApiRoutes
 		public const string UserStatus = "users/status";
 		public const string UserNotes = "users/notes";
 		public const string UserNotesByUser = "users/{userId:long}/notes";
-		public const string Reports = "reports";
-		public const string UserReport = "reports/users/{userId:long}";
-		public const string ExportReports = "reports/export";
+		public const string Reports        = "reports";
+		public const string UserReport     = "reports/users/{userId:long}";
+		public const string ExportReports  = "reports/export";
+		public const string SessionHistory = "sessions/history";
 	}
 
 	public static class Script
@@ -52,6 +53,7 @@ public static class ApiRoutes
 		public const string Status = "status";
 		public const string Versions = "{scriptId:long}/versions";
 		public const string SampleTemplate = "sample-template";
+		public const string Download = "{scriptId:long}/download";
 	}
 
 	public static class Session

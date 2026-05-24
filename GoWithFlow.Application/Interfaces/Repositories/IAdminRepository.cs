@@ -25,4 +25,6 @@ public interface IAdminRepository
 	Task<PagedResult<AdminReportSummaryDto>> GetReportSummaryAsync(AdminReportFilterRequestDto dto, CancellationToken cancellationToken = default);
 
 	Task<AdminUserFullReportDto?> GetUserFullReportAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<PagedResult<AdminSessionHistoryItemDto>> GetSessionHistoryAsync(AdminSessionHistoryFilterRequestDto dto, CancellationToken cancellationToken = default);
 }

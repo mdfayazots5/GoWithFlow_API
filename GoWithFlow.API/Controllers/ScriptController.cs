@@ -69,6 +69,27 @@ public sealed class ScriptController : ControllerBase
 	}
 
 	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+	[HttpGet(ApiRoutes.Script.Download)]
+	public async Task<IActionResult> DownloadScriptAsync(long scriptId, CancellationToken cancellationToken)
+	{
+		var response = await _scriptService.DownloadScriptAsync(scriptId, cancellationToken);
+
+		if (response.Success == false || response.Data is null)
+		{
+			return StatusCode(StatusCodes.Status400BadRequest, response);
+		}
+
+		var rawTitle = !string.IsNullOrWhiteSpace(response.Message) ? response.Message : $"Script_{scriptId}";
+		var safeTitle = string.Concat(rawTitle.Split(Path.GetInvalidFileNameChars()));
+		var fileName = $"{safeTitle}.xlsx";
+
+		return File(
+			response.Data,
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			fileName);
+	}
+
+	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
 	[HttpGet(ApiRoutes.Script.SampleTemplate)]
 	public async Task<IActionResult> GetSampleTemplateAsync(CancellationToken cancellationToken)
 	{

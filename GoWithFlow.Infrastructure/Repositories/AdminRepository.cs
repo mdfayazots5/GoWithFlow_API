@@ -4,6 +4,7 @@ using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.Admin;
 using GoWithFlow.Application.DTOs.Responses.Admin;
 using GoWithFlow.Application.Interfaces.Repositories;
+using GoWithFlow.Domain.Entities;
 using GoWithFlow.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Npgsql.EntityFrameworkCore.PostgreSQL;
@@ -309,6 +310,127 @@ public sealed class AdminRepository : IAdminRepository
 		result.WeeklyScoreList = await GetWeeklyScoresAsync(userId, cancellationToken);
 
 		return result;
+	}
+
+	public async Task<PagedResult<AdminSessionHistoryItemDto>> GetSessionHistoryAsync(
+		AdminSessionHistoryFilterRequestDto dto,
+		CancellationToken cancellationToken = default)
+	{
+		// Base query — all non-deleted sessions
+		var query = _dbContext.Sessions
+			.AsNoTracking()
+			.Where(s => s.IsDeleted == false);
+
+		// Search: session name or host name
+		if (string.IsNullOrWhiteSpace(dto.SearchTerm) == false)
+		{
+			var term = dto.SearchTerm.Trim();
+			query = query.Where(s =>
+				s.SessionName.Contains(term) ||
+				(s.Host != null && s.Host.FullName.Contains(term)));
+		}
+
+		// Status filter
+		if (string.IsNullOrWhiteSpace(dto.Status) == false)
+		{
+			var status = dto.Status.Trim().ToUpperInvariant();
+			query = query.Where(s => s.Status.ToUpper() == status);
+		}
+
+		// Date range
+		if (dto.FromDate.HasValue)
+		{
+			query = query.Where(s =>
+				(s.EndedDate ?? s.StartedDate ?? s.DateCreated) >= dto.FromDate.Value);
+		}
+		if (dto.ToDate.HasValue)
+		{
+			var toEnd = dto.ToDate.Value.Date.AddDays(1);
+			query = query.Where(s =>
+				(s.EndedDate ?? s.StartedDate ?? s.DateCreated) < toEnd);
+		}
+
+		var totalCount = await query.CountAsync(cancellationToken);
+
+		// Pull raw session rows for pagination
+		var sessions = await query
+			.OrderByDescending(s => s.EndedDate ?? s.StartedDate ?? s.DateCreated)
+			.ThenByDescending(s => s.SessionId)
+			.Skip((dto.PageNumber - 1) * dto.PageSize)
+			.Take(dto.PageSize)
+			.Select(s => new
+			{
+				s.SessionId,
+				s.SessionName,
+				s.JoinCode,
+				s.Status,
+				s.SessionDuration,
+				s.ActualDurationSec,
+				SessionDate = s.EndedDate ?? s.StartedDate ?? s.DateCreated,
+				HostName    = s.Host != null ? s.Host.FullName : string.Empty
+			})
+			.ToListAsync(cancellationToken);
+
+		if (sessions.Count == 0)
+		{
+			return new PagedResult<AdminSessionHistoryItemDto>
+			{
+				Items      = [],
+				TotalCount = 0,
+				PageNumber = dto.PageNumber,
+				PageSize   = dto.PageSize
+			};
+		}
+
+		var sessionIds = sessions.Select(s => s.SessionId).ToList();
+
+		// Member counts per session
+		var memberCounts = await _dbContext.Set<SessionMember>()
+			.AsNoTracking()
+			.Where(m => sessionIds.Contains(m.SessionId) && m.IsDeleted == false)
+			.GroupBy(m => m.SessionId)
+			.Select(g => new { SessionId = g.Key, Count = g.Count() })
+			.ToDictionaryAsync(x => x.SessionId, x => x.Count, cancellationToken);
+
+		// Average fluency per session (across all members)
+		var fluencyAvgs = await _dbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(v => sessionIds.Contains(v.SessionId) && v.IsDeleted == false)
+			.GroupBy(v => v.SessionId)
+			.Select(g => new { SessionId = g.Key, Avg = g.Average(v => v.FluencyScore) })
+			.ToDictionaryAsync(x => x.SessionId, x => x.Avg, cancellationToken);
+
+		// Total mistakes per session
+		var mistakeCounts = await _dbContext.Mistakes
+			.AsNoTracking()
+			.Where(m => sessionIds.Contains(m.SessionId) && m.IsDeleted == false)
+			.GroupBy(m => m.SessionId)
+			.Select(g => new { SessionId = g.Key, Count = g.Count() })
+			.ToDictionaryAsync(x => x.SessionId, x => x.Count, cancellationToken);
+
+		var items = sessions.Select(s => new AdminSessionHistoryItemDto
+		{
+			SessionId   = s.SessionId,
+			SessionName = s.SessionName,
+			JoinCode    = s.JoinCode,
+			HostName    = s.HostName,
+			Status      = s.Status,
+			SessionDate = s.SessionDate,
+			DurationMin = s.ActualDurationSec.HasValue && s.ActualDurationSec.Value > 0
+				? (int)Math.Ceiling(s.ActualDurationSec.Value / 60.0)
+				: s.SessionDuration,
+			MemberCount  = memberCounts.TryGetValue(s.SessionId, out var mc) ? mc : 0,
+			AvgFluency   = fluencyAvgs.TryGetValue(s.SessionId, out var af) ? af : 0m,
+			MistakeCount = mistakeCounts.TryGetValue(s.SessionId, out var mkc) ? mkc : 0
+		}).ToList();
+
+		return new PagedResult<AdminSessionHistoryItemDto>
+		{
+			Items      = items,
+			TotalCount = totalCount,
+			PageNumber = dto.PageNumber,
+			PageSize   = dto.PageSize
+		};
 	}
 
 	private async Task<DbCommand> CreateStoredProcedureCommandAsync(string storedProcedureName, CancellationToken cancellationToken)

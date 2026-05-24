@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using GoWithFlow.Application.DTOs.Requests.Admin;
+using GoWithFlow.Application.DTOs.Responses.Admin;
 using GoWithFlow.API.Constants;
 using GoWithFlow.Application.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -90,6 +91,13 @@ public sealed class AdminController : ControllerBase
 	{
 		var response = await _adminService.GetUserFullReportAsync(userId, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
+	}
+
+	[HttpGet(ApiRoutes.Admin.SessionHistory)]
+	public async Task<IActionResult> GetSessionHistoryAsync([FromQuery] AdminSessionHistoryFilterRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.GetSessionHistoryAsync(dto, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
 	[HttpGet(ApiRoutes.Admin.ExportReports)]

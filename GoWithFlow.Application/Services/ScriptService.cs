@@ -209,6 +209,25 @@ public sealed class ScriptService : IScriptService
 		return ApiResponse<List<ScriptVersionResponseDto>>.SuccessResult(versions, "Script version history retrieved successfully.");
 	}
 
+	public async Task<ApiResponse<byte[]>> DownloadScriptAsync(long scriptId, CancellationToken cancellationToken = default)
+	{
+		if (scriptId <= 0)
+		{
+			return ApiResponse<byte[]>.FailureResult(new[] { "ScriptId must be greater than zero." }, "Validation failed.");
+		}
+
+		var script = await _scriptRepository.GetScriptByIdAsync(scriptId, cancellationToken);
+
+		if (script is null)
+		{
+			return ApiResponse<byte[]>.FailureResult(new[] { "Script not found." }, "Script not found.");
+		}
+
+		var fileBytes = await _excelExportService.GenerateScriptExcelAsync(script);
+
+		return ApiResponse<byte[]>.SuccessResult(fileBytes, script.ScriptTitle);
+	}
+
 	public Task<ApiResponse<byte[]>> GetSampleTemplateAsync(CancellationToken cancellationToken = default)
 	{
 		if (_memoryCache.TryGetValue(CacheKeys.SampleTemplate, out byte[]? cachedTemplate) && cachedTemplate is not null)

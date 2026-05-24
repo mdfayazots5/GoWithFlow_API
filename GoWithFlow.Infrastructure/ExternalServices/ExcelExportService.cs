@@ -1,8 +1,7 @@
-using System.Data;
-using System.Data.Common;
 using ClosedXML.Excel;
 using GoWithFlow.Application.DTOs.Requests.Admin;
 using GoWithFlow.Application.DTOs.Responses.Admin;
+using GoWithFlow.Application.DTOs.Responses.Script;
 using GoWithFlow.Application.Interfaces.Services;
 using GoWithFlow.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -20,55 +19,70 @@ public sealed class ExcelExportService : IExcelExportService
 
 	public async Task<byte[]> GenerateUserReportExcelAsync(AdminReportFilterRequestDto filter)
 	{
-		var summaryRows = new List<UserReportExportSummaryDto>();
-		var sessionDetailRows = new List<UserReportExportSessionDetailDto>();
-
-		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspExportUserReportData");
-		command.Parameters.Add(CreateParameter("@FromDate", filter.FromDate));
-		command.Parameters.Add(CreateParameter("@ToDate", filter.ToDate));
-		command.Parameters.Add(CreateParameter("@UserId", filter.UserId));
-
-		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command);
-
-		while (await reader.ReadAsync())
-		{
-			summaryRows.Add(new UserReportExportSummaryDto
-			{
-				UserId = GetInt64(reader, "UserId"),
-				FullName = GetString(reader, "FullName"),
-				TotalSessions = GetInt32(reader, "TotalSessions"),
-				AvgScore = GetDecimal(reader, "AvgScore"),
-				TotalMistakes = GetInt32(reader, "TotalMistakes"),
-				ImprovementPercent = GetDecimal(reader, "ImprovementPercent")
-			});
-		}
-
-		sessionDetailRows = await (
+		// ── Session detail rows (EF Core — provider-agnostic) ──────────────────
+		var sessionDetailRows = await (
 			from sessionMember in _dbContext.SessionMembers.AsNoTracking()
-			join user in _dbContext.Users.AsNoTracking() on sessionMember.UserId equals user.UserId
+			join user    in _dbContext.Users.AsNoTracking()    on sessionMember.UserId    equals user.UserId
 			join session in _dbContext.Sessions.AsNoTracking() on sessionMember.SessionId equals session.SessionId
 			where sessionMember.IsDeleted == false
-				&& user.IsDeleted == false
+				&& user.IsDeleted    == false
 				&& session.IsDeleted == false
-				&& (filter.UserId.HasValue == false || filter.UserId.Value == 0 || user.UserId == filter.UserId.Value)
-				&& (filter.FromDate.HasValue == false || (session.StartedDate ?? session.DateCreated) >= filter.FromDate.Value)
-				&& (filter.ToDate.HasValue == false || (session.StartedDate ?? session.DateCreated) < filter.ToDate.Value.Date.AddDays(1))
+				&& (filter.UserId.HasValue    == false || filter.UserId.Value    == 0 || user.UserId == filter.UserId.Value)
+				&& (filter.FromDate.HasValue  == false || (session.StartedDate ?? session.DateCreated) >= filter.FromDate.Value)
+				&& (filter.ToDate.HasValue    == false || (session.StartedDate ?? session.DateCreated) <  filter.ToDate.Value.Date.AddDays(1))
 			orderby user.UserId, session.SessionId
 			select new UserReportExportSessionDetailDto
 			{
-				UserId = user.UserId,
-				FullName = user.FullName,
-				SessionId = session.SessionId,
+				UserId      = user.UserId,
+				FullName    = user.FullName,
+				SessionId   = session.SessionId,
 				SessionName = session.SessionName,
 				SessionDate = session.StartedDate ?? session.DateCreated,
 				FluencyScore = _dbContext.VoiceAnalyses
-					.Where(voiceAnalysis => voiceAnalysis.SessionId == session.SessionId && voiceAnalysis.UserId == user.UserId && voiceAnalysis.IsDeleted == false)
-					.Average(voiceAnalysis => (decimal?)voiceAnalysis.FluencyScore) ?? 0m,
+					.Where(va => va.SessionId == session.SessionId && va.UserId == user.UserId && va.IsDeleted == false)
+					.Average(va => (decimal?)va.FluencyScore) ?? 0m,
 				MistakeCount = _dbContext.Mistakes
-					.Count(mistake => mistake.SessionId == session.SessionId && mistake.UserId == user.UserId && mistake.IsDeleted == false),
+					.Count(m => m.SessionId == session.SessionId && m.UserId == user.UserId && m.IsDeleted == false),
 				Status = session.Status
 			})
 			.ToListAsync();
+
+		// ── Resolved mistakes per user (needed for ImprovementPercent) ─────────
+		var resolvedByUser = await (
+			from m in _dbContext.Mistakes.AsNoTracking()
+			join s in _dbContext.Sessions.AsNoTracking() on m.SessionId equals s.SessionId
+			where m.IsDeleted    == false
+				&& m.IsResolved  == true
+				&& s.IsDeleted   == false
+				&& (filter.UserId.HasValue   == false || filter.UserId.Value   == 0 || m.UserId == filter.UserId.Value)
+				&& (filter.FromDate.HasValue == false || (s.StartedDate ?? s.DateCreated) >= filter.FromDate.Value)
+				&& (filter.ToDate.HasValue   == false || (s.StartedDate ?? s.DateCreated) <  filter.ToDate.Value.Date.AddDays(1))
+			group m by m.UserId into g
+			select new { UserId = g.Key, ResolvedCount = g.Count() })
+			.ToDictionaryAsync(x => x.UserId, x => x.ResolvedCount);
+
+		// ── Summary: aggregate session detail rows in-memory ──────────────────
+		var summaryRows = sessionDetailRows
+			.GroupBy(r => new { r.UserId, r.FullName })
+			.OrderBy(g => g.Key.FullName).ThenBy(g => g.Key.UserId)
+			.Select(g =>
+			{
+				var totalMistakes    = g.Sum(r => r.MistakeCount);
+				var resolvedMistakes = resolvedByUser.TryGetValue(g.Key.UserId, out var rc) ? rc : 0;
+				return new UserReportExportSummaryDto
+				{
+					UserId    = g.Key.UserId,
+					FullName  = g.Key.FullName,
+					TotalSessions     = g.Count(),
+					AvgScore          = g.Any(r => r.FluencyScore > 0)
+						? Math.Round(g.Average(r => r.FluencyScore), 2)
+						: 0m,
+					TotalMistakes     = totalMistakes,
+					ImprovementPercent = totalMistakes == 0 ? 0m
+						: Math.Round((decimal)resolvedMistakes * 100m / totalMistakes, 2)
+				};
+			})
+			.ToList();
 
 		using var workbook = new XLWorkbook();
 		WriteUserSummarySheet(workbook, summaryRows);
@@ -221,54 +235,45 @@ public sealed class ExcelExportService : IExcelExportService
 		worksheet.Cell(rowIndex, columnIndex).CreateComment().AddText(commentText);
 	}
 
-	private async Task<DbCommand> CreateStoredProcedureCommandAsync(string storedProcedureName)
+	public Task<byte[]> GenerateScriptExcelAsync(ScriptDetailResponseDto script)
 	{
-		var connection = _dbContext.Database.GetDbConnection();
+		using var workbook = new XLWorkbook();
+		var worksheet = workbook.Worksheets.Add("Script");
 
-		if (connection.State != ConnectionState.Open)
+		var headers = new[]
 		{
-			await connection.OpenAsync();
+			"SequenceId",
+			"SpeakerLabel",
+			"EnglishText",
+			"HintText",
+			"GrammarTag",
+			"ContextTag",
+			"FocusWord",
+			"PronunciationNote"
+		};
+
+		WriteHeaderRow(worksheet, headers);
+
+		var rowIndex = 2;
+		foreach (var u in script.Utterances.OrderBy(u => u.SequenceId))
+		{
+			worksheet.Cell(rowIndex, 1).Value = u.SequenceId;
+			worksheet.Cell(rowIndex, 2).Value = u.SpeakerLabel;
+			worksheet.Cell(rowIndex, 3).Value = u.EnglishText;
+			worksheet.Cell(rowIndex, 4).Value = u.HintText ?? string.Empty;
+			worksheet.Cell(rowIndex, 5).Value = u.GrammarTag ?? string.Empty;
+			worksheet.Cell(rowIndex, 6).Value = u.ContextTag ?? string.Empty;
+			worksheet.Cell(rowIndex, 7).Value = u.FocusWord ?? string.Empty;
+			worksheet.Cell(rowIndex, 8).Value = u.PronunciationNote ?? string.Empty;
+			rowIndex++;
 		}
 
-		var command = connection.CreateCommand();
-		command.CommandText = DbCommandHelper.QualifyRoutineName(_dbContext.DatabaseProvider, storedProcedureName);
-		command.CommandType = CommandType.StoredProcedure;
+		worksheet.Columns().AdjustToContents();
 
-		return command ?? throw new InvalidOperationException("The SQL command could not be created.");
+		using var stream = new MemoryStream();
+		workbook.SaveAs(stream);
+
+		return Task.FromResult(stream.ToArray());
 	}
 
-	private DbParameter CreateParameter(string parameterName, object? value)
-	{
-		return DbCommandHelper.CreateParameter(_dbContext.DatabaseProvider, parameterName, value);
-	}
-
-	private static string GetString(DbDataReader reader, string columnName)
-	{
-		var ordinal = reader.GetOrdinal(columnName);
-		return reader.IsDBNull(ordinal) ? string.Empty : reader.GetString(ordinal);
-	}
-
-	private static int GetInt32(DbDataReader reader, string columnName)
-	{
-		var ordinal = reader.GetOrdinal(columnName);
-		return reader.IsDBNull(ordinal) ? 0 : reader.GetInt32(ordinal);
-	}
-
-	private static long GetInt64(DbDataReader reader, string columnName)
-	{
-		var ordinal = reader.GetOrdinal(columnName);
-		return reader.IsDBNull(ordinal) ? 0 : reader.GetInt64(ordinal);
-	}
-
-	private static decimal GetDecimal(DbDataReader reader, string columnName)
-	{
-		var ordinal = reader.GetOrdinal(columnName);
-		return reader.IsDBNull(ordinal) ? 0 : reader.GetDecimal(ordinal);
-	}
-
-	private static DateTime GetDateTime(DbDataReader reader, string columnName)
-	{
-		var ordinal = reader.GetOrdinal(columnName);
-		return reader.IsDBNull(ordinal) ? DateTime.MinValue : reader.GetDateTime(ordinal);
-	}
 }
