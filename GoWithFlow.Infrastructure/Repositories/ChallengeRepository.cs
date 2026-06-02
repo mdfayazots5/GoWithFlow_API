@@ -3,6 +3,7 @@ using System.Data.Common;
 using GoWithFlow.Application.DTOs.Requests.User;
 using GoWithFlow.Application.DTOs.Responses.User;
 using GoWithFlow.Application.Interfaces.Repositories;
+using GoWithFlow.Domain.Entities;
 using GoWithFlow.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
