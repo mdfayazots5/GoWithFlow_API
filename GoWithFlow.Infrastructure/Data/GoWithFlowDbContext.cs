@@ -39,6 +39,8 @@ public sealed class GoWithFlowDbContext : DbContext
 
 	public DbSet<SessionMember> SessionMembers => Set<SessionMember>();
 
+	public DbSet<SessionInvitation> SessionInvitations => Set<SessionInvitation>();
+
 	public DbSet<TurnState> TurnStates => Set<TurnState>();
 
 	public DbSet<VoiceAnalysis> VoiceAnalyses => Set<VoiceAnalysis>();

@@ -14,7 +14,6 @@ using GoWithFlow.Application.Mappings;
 using GoWithFlow.Application.Services;
 using GoWithFlow.Application.Settings;
 using GoWithFlow.Application.Validators;
-
 using GoWithFlow.Infrastructure.Data;
 using GoWithFlow.Infrastructure.ExternalServices;
 using GoWithFlow.Infrastructure.Repositories;
@@ -252,6 +251,8 @@ builder.Services.AddHostedService<DatabaseStartupValidationHostedService>();
 
 builder.Services.AddSingleton<IUserIdProvider, JwtUserIdProvider>();
 builder.Services.AddSingleton<IHubConnectionTracker, HubConnectionTracker>();
+builder.Services.AddScoped<SessionNotifier>();
+builder.Services.AddScoped<ISessionNotifier, SessionNotifier>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveUserRequirementHandler>();
 
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
@@ -260,6 +261,7 @@ builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IAdminRepository, AdminRepository>();
 builder.Services.AddScoped<IScriptRepository, ScriptRepository>();
 builder.Services.AddScoped<ISessionRepository, SessionRepository>();
+builder.Services.AddScoped<ISessionInvitationRepository, SessionInvitationRepository>();
 builder.Services.AddScoped<ILiveSessionRepository, LiveSessionRepository>();
 builder.Services.AddScoped<IMistakeRepository, MistakeRepository>();
 builder.Services.AddScoped<IRepracticeRepository, RepracticeRepository>();
@@ -267,6 +269,7 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IAdminService, AdminService>();
 builder.Services.AddScoped<IScriptService, ScriptService>();
 builder.Services.AddScoped<ISessionService, SessionService>();
+builder.Services.AddScoped<ISessionInvitationService, SessionInvitationService>();
 builder.Services.AddScoped<ILiveSessionService, LiveSessionService>();
 builder.Services.AddScoped<IMistakeService, MistakeService>();
 builder.Services.AddScoped<IRepracticeService, RepracticeService>();

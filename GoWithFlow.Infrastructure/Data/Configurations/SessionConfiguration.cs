@@ -71,10 +71,18 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
 			.HasForeignKey(session => session.ScriptId)
 			.HasConstraintName("FK_tblSession_ScriptId_tblScript_ScriptId");
 
+		builder.Property(session => session.ScheduledAt)
+			.HasColumnType("datetime2");
+
 		builder.HasMany(session => session.Members)
 			.WithOne(member => member.Session)
 			.HasForeignKey(member => member.SessionId)
 			.HasConstraintName("FK_tblSessionMember_SessionId_tblSession_SessionId");
+
+		builder.HasMany(session => session.Invitations)
+			.WithOne(inv => inv.Session)
+			.HasForeignKey(inv => inv.SessionId)
+			.HasConstraintName("FK_tblSessionInvitation_SessionId_tblSession_SessionId");
 	}
 
 	private static void ConfigureAuditColumns(EntityTypeBuilder<Session> builder)

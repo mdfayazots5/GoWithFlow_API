@@ -29,6 +29,12 @@ public sealed class SessionHub : Hub
 
 	public override async Task OnConnectedAsync()
 	{
+		// Always join the user's personal group so invitation push events reach them regardless of session context.
+		if (long.TryParse(Context.UserIdentifier, out var callerUserId) && callerUserId > 0)
+		{
+			await Groups.AddToGroupAsync(Context.ConnectionId, SessionNotifier.UserGroup(callerUserId), Context.ConnectionAborted);
+		}
+
 		var connectionInfo = TryBuildConnectionMetadata();
 
 		if (connectionInfo is not null)

@@ -14,10 +14,12 @@ namespace GoWithFlow.API.Controllers;
 public sealed class SessionController : ControllerBase
 {
 	private readonly ISessionService _sessionService;
+	private readonly ISessionInvitationService _invitationService;
 
-	public SessionController(ISessionService sessionService)
+	public SessionController(ISessionService sessionService, ISessionInvitationService invitationService)
 	{
 		_sessionService = sessionService;
+		_invitationService = invitationService;
 	}
 
 	[HttpPost]
@@ -80,6 +82,37 @@ public sealed class SessionController : ControllerBase
 	public async Task<IActionResult> LeaveSessionAsync(long sessionId, CancellationToken cancellationToken)
 	{
 		var response = await _sessionService.LeaveSessionAsync(sessionId, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	// ── Invitation endpoints ─────────────────────────────────────────────
+
+	[HttpPost(ApiRoutes.Session.Invitations)]
+	public async Task<IActionResult> SendInvitationsAsync(long sessionId, [FromBody] SendInvitationsRequestDto dto, CancellationToken cancellationToken)
+	{
+		dto.SessionId = sessionId;
+		var response = await _invitationService.SendInvitationsAsync(dto, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.Session.Invitations)]
+	public async Task<IActionResult> GetSessionInvitationsAsync(long sessionId, CancellationToken cancellationToken)
+	{
+		var response = await _invitationService.GetSessionInvitationsAsync(sessionId, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpPatch(ApiRoutes.Session.InvitationRespond)]
+	public async Task<IActionResult> RespondToInvitationAsync(long sessionId, long invitationId, [FromBody] RespondToInvitationRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _invitationService.RespondToInvitationAsync(invitationId, dto, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpDelete(ApiRoutes.Session.InvitationCancel)]
+	public async Task<IActionResult> CancelInvitationAsync(long sessionId, long invitationId, CancellationToken cancellationToken)
+	{
+		var response = await _invitationService.CancelInvitationAsync(invitationId, sessionId, GetUserId(), cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 

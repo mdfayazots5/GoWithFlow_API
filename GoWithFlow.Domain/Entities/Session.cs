@@ -30,9 +30,13 @@ public sealed class Session : BaseAuditEntity
 
 	public int? ActualDurationSec { get; set; }
 
+	public DateTime? ScheduledAt { get; set; }
+
 	public User? Host { get; set; }
 
 	public Script? Script { get; set; }
 
 	public ICollection<SessionMember> Members { get; set; } = new List<SessionMember>();
+
+	public ICollection<SessionInvitation> Invitations { get; set; } = new List<SessionInvitation>();
 }

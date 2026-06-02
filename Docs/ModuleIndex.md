@@ -43,6 +43,17 @@ Logic source: `ProjectOverview.md` only.
 | attempt | Backend Mistake Repractice Module | Backend Mistake Repractice Module |
 | signalr | Backend Session Module | Backend Session Module |
 | hub | Backend Session Module | Backend Session Module |
+| invitation | Backend Session Invitation Module | Backend Session Invitation Module |
+| invitations | Backend Session Invitation Module | Backend Session Invitation Module |
+| invite | Backend Session Invitation Module | Backend Session Invitation Module |
+| send invite | Backend Session Invitation Module | Backend Session Invitation Module |
+| role assignment | Backend Session Invitation Module | Backend Session Invitation Module |
+| user search | Backend Session Invitation Module | Backend Session Invitation Module |
+| accept invite | Backend Session Invitation Module | Backend Session Invitation Module |
+| decline invite | Backend Session Invitation Module | Backend Session Invitation Module |
+| scheduled session | Backend Session Invitation Module | Backend Session Invitation Module |
+| scheduledat | Backend Session Invitation Module | Backend Session Invitation Module |
+| waiting room | Backend Session Invitation Module | Backend Session Invitation Module |
 | script | Backend Script Module | Backend Script Module |
 | scripts | Backend Script Module | Backend Script Module |
 | utterance | Backend Script Module | Backend Script Module |
@@ -164,6 +175,10 @@ Logic source: `ProjectOverview.md` only.
 6. Backend Session Module
    - Section: `Backend Session Module`
    - Purpose: session creation, join code validation, lobby state, ready/start/end/leave flow, session history, SignalR lobby events
+
+6b. Backend Session Invitation Module
+   - Section: `Backend Session Invitation Module`
+   - Purpose: push-based role assignment, tblSessionInvitation, invitation send/respond/cancel, user search by name, SignalR invitation events, frontend InviteSessionComponent + MyInvitationsComponent
 
 7. Backend Live Session Module
    - Section: `Backend Live Session Module`

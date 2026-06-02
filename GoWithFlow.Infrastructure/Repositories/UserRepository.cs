@@ -894,6 +894,68 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		var recommendations = new List<LearningPathRecommendationDto>();
 		var cutoff14Days = DateTime.UtcNow.AddDays(-14);
 
+		// ── Rule 0 (highest priority): Goal-type-aware recommendation ─────────
+		// PM Phase 2 Step 4 Req #3: recommendations must be filtered to scripts
+		// relevant to the user's active goal type.
+		string? activeGoalType = null;
+		{
+			var conn = DbContext.Database.GetDbConnection();
+			await EnsureConnectionOpenAsync(conn, cancellationToken);
+			await using var goalCmd = conn.CreateCommand();
+			goalCmd.CommandText = IsPostgres
+				? "SELECT goaltype FROM public.tblusergoal WHERE userid = @UserId AND isactive = TRUE AND isdeleted = FALSE ORDER BY datecreated DESC LIMIT 1"
+				: "SELECT TOP 1 GoalType FROM dbo.tblUserGoal WHERE UserId = @UserId AND IsActive = 1 AND IsDeleted = 0 ORDER BY DateCreated DESC";
+			var gp = goalCmd.CreateParameter();
+			gp.ParameterName = "@UserId";
+			gp.Value         = userId;
+			goalCmd.Parameters.Add(gp);
+			var scalar = await goalCmd.ExecuteScalarAsync(cancellationToken);
+			if (scalar is not null && scalar != DBNull.Value)
+				activeGoalType = scalar.ToString();
+		}
+
+		if (!string.IsNullOrEmpty(activeGoalType))
+		{
+			var goalCategories = activeGoalType switch
+			{
+				"interview"  => new[] { "Mock Interview",     "MockInterview"     },
+				"grammar"    => new[] { "Grammar Drill",      "GrammarDrill"      },
+				"vocabulary" => new[] { "Vocabulary Sprint",  "VocabularySprint"  },
+				"fluency"    => new[] { "Fluency Drill",      "FluencyDrill"      },
+				_            => Array.Empty<string>()
+			};
+
+			if (goalCategories.Length > 0)
+			{
+				var goalScript = await DbContext.Scripts.AsNoTracking()
+					.Where(s => s.IsActive && s.IsDeleted == false && goalCategories.Contains(s.Category))
+					.OrderByDescending(s => s.UploadedDate)
+					.Select(s => new { s.ScriptId, s.ScriptTitle, s.Category, s.ComplexityLevel })
+					.FirstOrDefaultAsync(cancellationToken);
+
+				if (goalScript is not null)
+				{
+					var goalReason = activeGoalType switch
+					{
+						"interview"  => "Recommended for your Job Interview goal.",
+						"grammar"    => "Recommended for your Better Grammar goal.",
+						"vocabulary" => "Recommended for your Build Vocabulary goal.",
+						"fluency"    => "Recommended for your Speak Fluently goal.",
+						_            => "Recommended based on your active goal."
+					};
+					recommendations.Add(new LearningPathRecommendationDto
+					{
+						ScriptId           = goalScript.ScriptId,
+						ScriptTitle        = goalScript.ScriptTitle,
+						Category           = goalScript.Category,
+						ComplexityLevel    = goalScript.ComplexityLevel,
+						ReasonText         = goalReason,
+						RecommendationType = "goal"
+					});
+				}
+			}
+		}
+
 		// Rule 1: Unresolved mistakes → recommend RepracticeRound for top GrammarTag
 		var topErrorTag = await DbContext.Mistakes.AsNoTracking()
 			.Where(m => m.UserId == userId && m.IsDeleted == false && m.IsResolved == false && !string.IsNullOrEmpty(m.GrammarTag))
@@ -1473,8 +1535,8 @@ ORDER BY DateCreated DESC";
 				where va.UserId == userId && va.IsDeleted == false && s.IsDeleted == false
 					&& mockCategories.Contains(s.SessionMode)
 					&& va.RecordedAt >= startDate
-				select (decimal)va.OverallScore
-			).DefaultIfEmpty(0m).AverageAsync(cancellationToken);
+				select (decimal?)va.OverallScore
+			).AverageAsync(cancellationToken) ?? 0m;
 		}
 		else if (goalType == "vocabulary")
 		{
@@ -1490,8 +1552,8 @@ ORDER BY DateCreated DESC";
 				where va.UserId == userId && va.IsDeleted == false && s.IsDeleted == false
 					&& s.Status == "COMPLETED"
 					&& va.RecordedAt >= startDate
-				select (decimal)va.FluencyScore
-			).DefaultIfEmpty(startingScore).AverageAsync(cancellationToken);
+				select (decimal?)va.FluencyScore
+			).AverageAsync(cancellationToken) ?? startingScore;
 		}
 
 		currentScore = Math.Round(currentScore, 1);
@@ -1561,6 +1623,36 @@ ORDER BY DateCreated DESC";
 			RecommendedPlan      = plans.TryGetValue(goalType, out var plan) ? plan : "3 sessions/week",
 			ProgressPercent      = progressPercent
 		};
+	}
+
+	public async Task<List<UserSearchResultDto>> SearchUsersByNameAsync(string searchTerm, long excludeUserId, CancellationToken cancellationToken = default)
+	{
+		var connection = DbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		await using var command = CreateStoredProcedureCommand(connection, "dbo.uspSearchUsersByName");
+		command.Parameters.Add(CreateParameter("@SearchTerm", searchTerm));
+		command.Parameters.Add(CreateParameter("@ExcludeUserId", excludeUserId));
+
+		var results = new List<UserSearchResultDto>();
+
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+
+		while (await reader.ReadAsync(cancellationToken))
+		{
+			var userIdOrd  = reader.GetOrdinal(IsPostgres ? "userid"   : "UserId");
+			var nameOrd    = reader.GetOrdinal(IsPostgres ? "fullname" : "FullName");
+			var avatarOrd  = reader.GetOrdinal(IsPostgres ? "avatarurl" : "AvatarUrl");
+
+			results.Add(new UserSearchResultDto
+			{
+				UserId    = Convert.ToInt64(reader.GetValue(userIdOrd)),
+				FullName  = reader.IsDBNull(nameOrd)   ? string.Empty : reader.GetString(nameOrd),
+				AvatarUrl = reader.IsDBNull(avatarOrd) ? null         : reader.GetString(avatarOrd)
+			});
+		}
+
+		return results;
 	}
 
 	private static List<PronunciationIssueDto> DeserializePronunciationJson(string? json)

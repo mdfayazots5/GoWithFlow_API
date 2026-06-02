@@ -60,4 +60,6 @@ public interface IUserRepository : IGenericRepository<User>
 	Task SetUserGoalAsync(long userId, string goalType, int timelineWeeks, string detectedLevel, decimal startingScore, CancellationToken cancellationToken = default);
 
 	Task<GoalProgressResponseDto> GetGoalProgressAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<List<UserSearchResultDto>> SearchUsersByNameAsync(string searchTerm, long excludeUserId, CancellationToken cancellationToken = default);
 }

@@ -26,6 +26,7 @@ public static class ApiRoutes
 		public const string AudioArchive        = "audio-archive";
 		public const string AudioArchiveById    = "audio-archive/{archiveId:long}";
 		public const string SessionAudioArchive = "sessions/{sessionId:long}/audio-archive";
+		public const string Search              = "search";
 	}
 
 	public static class Dashboard
@@ -85,6 +86,17 @@ public static class ApiRoutes
 		public const string History = "history";
 		public const string Leave = "{sessionId:long}/leave";
 		public const string CompleteAbsolute = "~/api/sessions/{sessionId:long}/complete";
+
+		// Invitation routes
+		public const string Invitations        = "{sessionId:long}/invitations";
+		public const string InvitationRespond  = "{sessionId:long}/invitations/{invitationId:long}";
+		public const string InvitationCancel   = "{sessionId:long}/invitations/{invitationId:long}/cancel";
+	}
+
+	public static class Invitation
+	{
+		public const string Base   = VersionPrefix + "/invitations";
+		public const string MyList = "mine";
 	}
 
 	public static class LiveSession

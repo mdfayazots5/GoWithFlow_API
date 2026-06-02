@@ -15,11 +15,13 @@ public sealed class UserController : ControllerBase
 {
 	private readonly IUserService _userService;
 	private readonly IAudioArchiveService _audioArchiveService;
+	private readonly ISessionInvitationService _invitationService;
 
-	public UserController(IUserService userService, IAudioArchiveService audioArchiveService)
+	public UserController(IUserService userService, IAudioArchiveService audioArchiveService, ISessionInvitationService invitationService)
 	{
 		_userService         = userService;
 		_audioArchiveService = audioArchiveService;
+		_invitationService   = invitationService;
 	}
 
 	[HttpGet(ApiRoutes.User.Profile)]
@@ -112,6 +114,20 @@ public sealed class UserController : ControllerBase
 		var userId = GetUserId();
 		var name   = User.FindFirstValue("FullName") ?? userId.ToString();
 		var response = await _audioArchiveService.DeleteClipAsync(archiveId, userId, name, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.User.Search)]
+	public async Task<IActionResult> SearchUsersAsync([FromQuery] string q, CancellationToken cancellationToken)
+	{
+		var response = await _invitationService.SearchUsersAsync(q ?? string.Empty, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet("invitations")]
+	public async Task<IActionResult> GetMyInvitationsAsync(CancellationToken cancellationToken)
+	{
+		var response = await _invitationService.GetMyInvitationsAsync(GetUserId(), cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 

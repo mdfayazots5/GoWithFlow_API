@@ -1921,6 +1921,219 @@ PagedResult:
 - `InitialCreate_Phase1`, `AddAdminModule_Phase2`, `AddScriptModule_Phase3`, `AddSessionModule_Phase4`
 - `AddStatusToLobbyStateSP` — adds `ses.Status` to `uspGetSessionBySessionId` RS1; required for `SessionHub` disconnect guard and `ResolveLobbyStatusAsync` fallback
 - `FixMemberLeftSP_ResetIsReady` — adds `IsReady = 0` to `uspUpdateSessionMemberLeft` UPDATE; prevents stale ready-flag on member re-join
+- `AddSessionInvitation_Phase16` — adds `tblSessionInvitation`, `ScheduledAt` on `tblSession`, 6 stored procedures, `ISessionInvitationService`, `ISessionInvitationRepository`, `SessionNotifier` SignalR push service
+
+---
+
+## Backend Session Invitation Module
+
+### Module Scope
+
+Push-based role assignment and invitation workflow. Host assigns specific users to roles before session starts. Invitees receive real-time notifications and accept/decline via dashboard. Replaces the friction of share-by-code join flow as the primary path.
+
+### Database Schema
+
+#### tblSessionInvitation
+
+- `InvitationId BIGINT IDENTITY(1,1)` PK
+- `SessionId BIGINT NOT NULL` → FK tblSession
+- `UserId BIGINT NOT NULL` → FK tblUser (the invitee)
+- `SlotIndex TINYINT NOT NULL`
+- `SlotName NVARCHAR(64) NOT NULL`
+- `Status NVARCHAR(16) NOT NULL DEFAULT 'PENDING'` — valid: PENDING, ACCEPTED, DECLINED, EXPIRED, CANCELLED
+- `SentAt DATETIME2 NOT NULL DEFAULT GETDATE()`
+- `RespondedAt DATETIME2 NULL`
+- `ExpiresAt DATETIME2 NULL` — 24h for immediate sessions, 1h past ScheduledAt for scheduled sessions
+- Full audit columns
+
+#### tblSession — added column
+
+- `ScheduledAt DATETIME2 NULL` — optional future session time; NULL = start immediately
+
+### Stored Procedure Contracts
+
+| SP | Purpose |
+|---|---|
+| `uspInsertSessionInvitation` | Idempotent insert; updates existing PENDING row for same session+user, otherwise inserts new |
+| `uspUpdateInvitationStatus` | Sets ACCEPTED or DECLINED + RespondedAt |
+| `uspCancelSessionInvitation` | Host rescinds (sets CANCELLED) |
+| `uspGetInvitationsBySessionId` | Host waiting-room view: all invitations for session with user name + avatar |
+| `uspGetPendingInvitationsByUserId` | User dashboard inbox: PENDING, non-expired invitations for the user |
+| `uspSearchUsersByName` | Returns top 20 users matching LIKE %@SearchTerm%, excludes calling user |
+
+### Flow: Send Invitations
+
+#### Entry Points
+- `/session/invite?sessionId=X&sessionName=Y&slots=[...]` — navigated from create-session after session is created
+
+#### UI Trigger
+- "Send Invitations" button (enabled only when all guest slots have an assigned user)
+
+#### Request Contract
+```
+POST /api/sessions/{sessionId}/invitations
+Authorization: Bearer {accessToken}
+Body (SendInvitationsRequestDto):
+  - SessionId (long, required)
+  - Assignments (List<InvitationSlotAssignmentDto>):
+      - UserId (long, required): the invitee
+      - SlotIndex (byte, required): slot to assign
+```
+
+#### Response Contract
+```
+HTTP 200 — ApiResponse<List<SessionInvitationDto>>
+  - InvitationId, SessionId, UserId, SlotIndex, SlotName, Status, SentAt, RespondedAt, ExpiresAt, FullName, AvatarUrl
+```
+
+#### Business Rules
+1. Only host can send invitations (`session.HostUserId == hostUserId`)
+2. Session must be in LOBBY status
+3. Host slot (slot 1) is excluded from invitation — host already placed by CreateSession
+4. `uspInsertSessionInvitation` is idempotent: resends to same user on same session updates existing PENDING row
+5. ExpiresAt = ScheduledAt + 1h if scheduled, else Now + 24h
+6. After DB insert, `SessionNotifier.NotifyInvitationReceivedAsync` fires `INVITATION_RECEIVED` to each invitee's personal SignalR group (`user_{userId}`)
+7. Non-fatal if user not connected — they see invitation on next dashboard load
+
+#### State Transitions
+- `tblSessionInvitation.Status`: `PENDING` (on insert)
+
+#### Failure Cases
+- Host not found / not host → 400
+- Session not in LOBBY → 400
+
+### Flow: Respond to Invitation (Accept / Decline)
+
+#### Entry Points
+- `/user/invitations` — user dashboard invitation inbox
+- Push notification tapped → deep-link to invitation page
+
+#### Request Contract
+```
+PATCH /api/sessions/{sessionId}/invitations/{invitationId}
+Authorization: Bearer {accessToken}
+Body (RespondToInvitationRequestDto):
+  - Status (string, required): "ACCEPTED" or "DECLINED"
+```
+
+#### Response Contract
+```
+HTTP 200 — ApiResponse<bool>
+Success: true
+```
+
+#### Business Rules
+1. Invitation must belong to the calling user (UserId must match JWT UserId)
+2. Invitation must be in PENDING status — already-responded invitations return 400
+3. If ACCEPTED: calls `JoinSessionAsync` to create a `tblSessionMember` row — user auto-joins the lobby
+4. If DECLINED: no lobby record created
+5. After status update, `SessionNotifier.NotifyInvitationRespondedAsync` fires `INVITATION_RESPONDED` to `session_{sessionId}` group (host sees update in lobby)
+
+#### State Transitions
+- `tblSessionInvitation.Status`: `PENDING → ACCEPTED` or `PENDING → DECLINED`
+- `tblSessionMember` row inserted (IsReady=false) only on ACCEPTED
+
+### Flow: Cancel Invitation (Host)
+
+#### Request Contract
+```
+DELETE /api/sessions/{sessionId}/invitations/{invitationId}/cancel
+Authorization: Bearer {accessToken}
+```
+
+#### Business Rules
+1. Only session host can cancel
+2. Sets Status → CANCELLED
+3. Fires `INVITATION_CANCELLED` to invitee's personal group `user_{userId}`
+
+### Flow: User Search (for role assignment)
+
+#### Request Contract
+```
+GET /api/users/search?q={searchTerm}
+Authorization: Bearer {accessToken}
+```
+
+#### Response Contract
+```
+HTTP 200 — ApiResponse<List<UserSearchResultDto>>
+  - UserId, FullName, AvatarUrl
+```
+
+#### Business Rules
+- Search term must be ≥ 2 characters
+- Calls `uspSearchUsersByName` — LIKE '%@SearchTerm%' on FullName, max 20 results
+- Excludes calling user from results
+
+### Flow: My Invitations (User Inbox)
+
+#### Request Contract
+```
+GET /api/users/invitations
+Authorization: Bearer {accessToken}
+```
+
+#### Response Contract
+```
+HTTP 200 — ApiResponse<List<UserInvitationDto>>
+  - InvitationId, SessionId, SlotIndex, SlotName, Status, SentAt, ExpiresAt
+  - SessionName, SessionMode, SessionDuration, ScheduledAt
+  - HostName, HostAvatarUrl
+```
+
+#### Business Rules
+- Returns only PENDING invitations where ExpiresAt IS NULL OR ExpiresAt > NOW()
+- Sorted by SentAt DESC
+
+### SignalR Events Added (Session Hub)
+
+| Event | Group | Direction | Payload |
+|---|---|---|---|
+| `INVITATION_RECEIVED` | `user_{userId}` | Server → Invitee | `{ invitationId, sessionId, sessionName, sessionMode, slotName, hostName, scheduledAt }` |
+| `INVITATION_RESPONDED` | `session_{sessionId}` | Server → Host/Lobby | `{ invitationId, userId, fullName, slotName, status }` |
+| `INVITATION_CANCELLED` | `user_{userId}` | Server → Invitee | `{ invitationId, sessionId, sessionName }` |
+
+**User-level group:** `OnConnectedAsync` now always adds the authenticated user to group `user_{userId}` for invitation push delivery regardless of session context.
+
+### Application Wiring
+
+- `ISessionInvitationService → SessionInvitationService`
+- `ISessionInvitationRepository → SessionInvitationRepository`
+- `ISessionNotifier → SessionNotifier` (API layer, uses IHubContext<SessionHub>)
+- Registered in `Program.cs` as scoped services
+- `SessionController` extended with 4 invitation endpoints
+- `UserController` extended with user search + my-invitations endpoints
+
+### Frontend Components
+
+| Component | Path | Purpose |
+|---|---|---|
+| `InviteSessionComponent` | `/session/invite` | Host role-assignment + send invitations after session creation |
+| `MyInvitationsComponent` | `/user/invitations` | User inbox: view and accept/decline pending invitations |
+| `UserDashboardComponent` | `/user/dashboard` | Shows pending invitation count badge; links to /user/invitations |
+| `LobbyComponent` | `/session/lobby/:id` | Subscribes to `INVITATION_RESPONDED` to refresh members when invitee accepts |
+
+### Session Lifecycle — Updated End-to-End
+
+```
+Host creates session  →  navigated to /session/invite
+Host assigns roles    →  searches users by name, assigns each guest slot
+Host sends invites    →  POST /api/sessions/{id}/invitations
+                         INVITATION_RECEIVED pushed to each invitee (SignalR)
+Invitee on dashboard  →  sees invitation badge + card
+Invitee accepts       →  PATCH → Status=ACCEPTED, auto-joined to lobby, INVITATION_RESPONDED pushed
+Invitee declines      →  PATCH → Status=DECLINED, INVITATION_RESPONDED pushed
+Host in lobby         →  sees INVITATION_RESPONDED, lobby refreshes with new member
+All ready             →  CanStart=true, host clicks Start
+SESSION_STARTED       →  all navigate to live room
+```
+
+### Notes on Known Drift Prevented
+
+- Join code (pull model) remains as fallback for ad-hoc sessions — invitation flow is primary path only
+- Host's own slot (slot 1) is never included in invitation assignments; host is placed by CreateSession
+- `uspInsertSessionInvitation` is idempotent to prevent duplicate rows on resend
+- `JoinSessionAsync` inside `RespondToInvitationAsync` uses `HasSessionMemberAsync` guard to prevent duplicate member rows on repeated Accept calls
 
 ---
 
@@ -2948,6 +3161,13 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 - `UserDashboardController.GetWeeklyReportAsync` — `GET /api/dashboard/weekly-report`
 - Frontend: `UserDashboardComponent` loads on `ngOnInit`. Shown once per calendar week (tracked in `localStorage` key `gwf_weekly_report_{year}-W{week}`). Dismiss sets the key to `'dismissed'` — not shown again until next week.
 
+**Re-engagement Branch (`IsReengagement = true`):**
+- Shown when `IsReengagement = true` (no sessions this week)
+- Displays last session date and a "Pick up where you left off" CTA
+- CTA is only rendered when `RecommendedScript1Id` has a value
+- CTA navigates to: `/scripts/prepare/{RecommendedScript1Id}` — opens Script Preparation view for the specific recommended script
+- **Notes on Drift (2026-06-02):** CTA previously navigated to `/scripts` (generic library). Fixed to use `/scripts/prepare/:id` matching the consistent navigation pattern used by Guided Learning Path recommendations. `/scripts` provides no re-engagement context and requires the user to rediscover the correct script manually.
+
 ---
 
 ### Phase 1 Step 4 — Guided Learning Path
@@ -2959,16 +3179,24 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 - Each recommendation: `ScriptId`, `ScriptTitle`, `Category`, `ComplexityLevel`, `ReasonText`, `RecommendationType` (`repractice` | `low_score` | `variety`)
 
 **Recommendation logic (priority order):**
+0. `goal` *(added 2026-06-02)*: User has an active goal → recommend the newest active script whose `Category` matches the goal's primary category (Goal-to-category: interview→Mock Interview/MockInterview, grammar→Grammar Drill/GrammarDrill, vocabulary→Vocabulary Sprint/VocabularySprint, fluency→Fluency Drill/FluencyDrill). Reads active goal from `tblUserGoal` via raw ADO.NET before EF LINQ rules run.
 1. `repractice`: Unresolved mistakes exist → RepracticeRound script matching top GrammarTag
 2. `low_score`: Last sessions in a category average < 65 → repeat that category
 3. `variety`: User hasn't tried a category in 14+ days → suggest it
 4. Fallback: most recently uploaded active script
 
+**RecommendationType values:** `goal` | `repractice` | `low_score` | `variety`
+
+**Navigation from Goals Page:** "View Guided Learning Path" button links to `/user/dashboard` — the Guided Learning Path panel is on the dashboard. This is correct per the PM plan (Feature 2, Phase 1 Step 4). No dedicated `/user/guided-path` route exists or is needed.
+
 **Implementation:**
-- `UserRepository.GetGuidedLearningPathAsync(userId)` — EF LINQ queries
+- `UserRepository.GetGuidedLearningPathAsync(userId)` — EF LINQ queries + raw ADO.NET for Rule 0 goal read
 - `UserDashboardService.GetGuidedLearningPathAsync(userId)`
 - `UserDashboardController.GetGuidedLearningPathAsync` — `GET /api/dashboard/learning-path`
-- Frontend: `UserDashboardComponent` loads learning path on `ngOnInit`. Panel displayed above "Recent Sessions" when recommendations exist. Each card links to `/scripts` with `scriptId` query param.
+- Frontend: `UserDashboardComponent` loads learning path on `ngOnInit`. Panel displayed when recommendations exist. Each card links to `/scripts` with `scriptId` query param. `recIcon/recIconBg/recIconColor` handle `'goal'` type (uses TargetIcon + primary blue).
+
+**Notes on Drift Prevented (2026-06-02):**
+- Drift type: **PM requirement not implemented** — Phase 2 Step 4 Requirement #3 states "recommendations are filtered to scripts relevant to the active goal type." `GetGuidedLearningPathAsync` never read `tblUserGoal`. Users with an active "Job Interview" goal received the same generic recommendations as users with no goal at all. Fixed by adding Rule 0 that queries `tblUserGoal` and injects a goal-category-matched script as the top recommendation.
 
 ## Backend Mistake Repractice Module
 
@@ -3166,6 +3394,14 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - Frontend: `LearningGoalsComponent` at `/user/goals`
 - Dashboard: goal progress panel added (progress bar, sessions/target, trend, weeks remaining). "Set a Learning Goal →" link shown when no active goal.
 
+**Current score calculation inside `GetGoalProgressAsync`:**
+- `interview`: avg `OverallScore` from VoiceAnalyses joined with Sessions where `SessionMode IN ('Mock Interview', 'Interview')` since goal start date. Returns 0 if no sessions.
+- `vocabulary`: `startingScore + sessionsSinceGoal × 3` (proxy).
+- `grammar`/`fluency`: avg `FluencyScore` from COMPLETED sessions since goal start date. Returns `startingScore` if no sessions.
+
+**Notes on Drift Prevented (2026-06-02):**
+- Drift type: **EF LINQ untranslatable expression** — `GetGoalProgressAsync` used `.DefaultIfEmpty(value).AverageAsync()` on two EF Core queries. EF Core cannot translate `DefaultIfEmpty(localVariable)` to SQL (error: "LINQ expression could not be translated"). The pattern is not valid for server-side evaluation. Fixed by changing `select (decimal)` to `select (decimal?)` and replacing `.DefaultIfEmpty(x).AverageAsync()` with `.AverageAsync() ?? x`. This translates to SQL `AVG(column)` which returns `NULL` for empty sets; the `??` applies the default in C# after the query executes. File: `UserRepository.cs` → `GetGoalProgressAsync`.
+
 ---
 
 ### Phase 2 Step 5 — Cross-Session Grammar Error Trend Analysis
@@ -3337,6 +3573,7 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - Review interval resets to stage 1 (+1 day) when the user makes the same GrammarTag mistake again in a new session (via `uspResetMistakeReview`).
 
 **Migration:** `20260601000004_AddSpacedRepetition_Phase11.cs` (SQL Server) + `20_add_spaced_repetition.sql` (PostgreSQL)
+**Drift fix:** `25_fix_challenge_columns_and_sp_drift.sql` — applied 2026-06-02
 
 **Files changed:**
 - `Mistake.cs` — added `ReviewStage`, `NextReviewDate`, `ReviewIntervalDays` properties
@@ -3353,6 +3590,9 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - `MistakeController.cs` — added `GET /api/mistakes/due-for-review` endpoint
 - `user-dashboard.component.ts` — "Reviews Due Today" banner, loads via `MistakeService.getDueForReview()`
 - `mistake.service.ts` — added `getDueForReview()`
+
+**Notes on Drift Prevented (2026-06-02):**
+- Drift type: **SP return-type drift** — `uspgetmistakesdueforreview` was created in migration 20 with `firstoccurrence TIMESTAMPTZ` and `lastattempt TIMESTAMPTZ` in its `RETURNS TABLE`, but the actual `tblmistake` columns are `TIMESTAMP` (without timezone) — the project-wide convention established in migration 15. PostgreSQL error 42804 (`structure of query does not match function result type`) was thrown on every `GET /api/mistakes/due-for-review` call. Fixed by DROP + CREATE FUNCTION with `TIMESTAMP` for both columns (migration 25). Source migration 20 updated to use correct types going forward. Note: `nextreviewdate` was added in migration 20 as `TIMESTAMPTZ` and remains `TIMESTAMPTZ` in both the column and the function return type — this is intentional since it was created after migration 15's type-correction sweep.
 
 ---
 
@@ -3411,8 +3651,8 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - Admin: "Set Challenge" button on each script in the admin scripts detail panel
 
 **New DB Tables:**
-- `tblWeeklyChallenge`: `ChallengeId PK`, `ScriptId FK`, `WeekStartDate`, `WeekEndDate`, `IsActive BIT`
-- `tblChallengeAttempt`: `AttemptId PK`, `ChallengeId FK`, `UserId FK`, `FluencyScore DECIMAL(5,2)`, `AttemptDate`
+- `tblWeeklyChallenge`: `ChallengeId PK`, `ScriptId FK`, `WeekStartDate`, `WeekEndDate`, `IsActive BIT` + full `BaseAuditEntity` columns (`Tag`, `Comments`, `SortOrder`, `IPAddress`, `CreatedBy`, `DateCreated`, `UpdatedBy`, `LastUpdated`, `DeletedBy`, `DateDeleted`, `IsDeleted`)
+- `tblChallengeAttempt`: `AttemptId PK`, `ChallengeId FK`, `UserId FK`, `FluencyScore DECIMAL(5,2)`, `AttemptDate` + full `BaseAuditEntity` columns
 
 **API Endpoints:**
 - `GET /api/challenge/active` — returns active challenge + user's best score + top 10 leaderboard (auth: UserOrAdmin)
@@ -3426,6 +3666,7 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - Challenge week: Monday 00:00 → Sunday 23:59:59
 
 **Migration:** `20260601000006_AddSpeakingChallenge_Phase13.cs` (SQL Server) + `22_add_speaking_challenge.sql` (PostgreSQL)
+**Drift fix:** `25_fix_challenge_columns_and_sp_drift.sql` — applied 2026-06-02
 
 **Files changed:**
 - `WeeklyChallenge.cs`, `ChallengeAttempt.cs` — new domain entities
@@ -3440,6 +3681,9 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - `challenge.service.ts` — frontend challenge API service
 - `user-dashboard.component.ts` — Weekly Challenge banner
 - `admin-scripts.component.ts` — "Set Challenge" button
+
+**Notes on Drift Prevented (2026-06-02):**
+- Drift type: **DB contract drift** — `tag` and `comments` columns (from `BaseAuditEntity`) were omitted from the original `22_add_speaking_challenge.sql` CREATE TABLE for both `tblweeklychallenge` and `tblchallengeattempt`. EF Core includes all `BaseAuditEntity` properties in generated SELECT queries, causing PostgreSQL error 42703 (`column t.comments does not exist`) on every `GET /api/challenge/active` call. Fixed by `ALTER TABLE ... ADD COLUMN IF NOT EXISTS tag/comments` on both tables (migration 25). Source migration 22 updated to include these columns going forward.
 
 ---
 
