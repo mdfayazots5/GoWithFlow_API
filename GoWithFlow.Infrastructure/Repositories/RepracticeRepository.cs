@@ -184,6 +184,15 @@ public sealed class RepracticeRepository : IRepracticeRepository
 		return Convert.ToDecimal(result);
 	}
 
+	public async Task<List<long>> GetResolvedMistakeIdsBySessionAsync(long repracticeSessionId, CancellationToken cancellationToken = default)
+	{
+		return await _dbContext.RepracticeUtterances
+			.AsNoTracking()
+			.Where(u => u.RepracticeSessionId == repracticeSessionId && u.IsResolved && u.IsDeleted == false)
+			.Select(u => u.MistakeId)
+			.ToListAsync(cancellationToken);
+	}
+
 	public async Task UpdateRepracticeSessionStatusAsync(long repracticeSessionId, string status, decimal improvementPercent, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
 	{
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspUpdateRepracticeSessionStatus", cancellationToken);

@@ -48,4 +48,16 @@ public interface IUserRepository : IGenericRepository<User>
 	Task<List<GrammarProgressResponseDto>> GetGrammarProgressAsync(long userId, CancellationToken cancellationToken = default);
 
 	Task<List<RepracticeSessionResponseDto>> GetRepracticeHistoryAsync(long userId, int pageNumber = 1, int pageSize = 10, CancellationToken cancellationToken = default);
+
+	Task<WeeklyReportResponseDto> GetWeeklyReportAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<GuidedLearningPathResponseDto> GetGuidedLearningPathAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<InterviewPerformanceDashboardResponseDto> GetInterviewPerformanceDashboardAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<PronunciationTimelineResponseDto> GetPronunciationTimelineAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task SetUserGoalAsync(long userId, string goalType, int timelineWeeks, string detectedLevel, decimal startingScore, CancellationToken cancellationToken = default);
+
+	Task<GoalProgressResponseDto> GetGoalProgressAsync(long userId, CancellationToken cancellationToken = default);
 }

@@ -23,4 +23,6 @@ public interface IRepracticeRepository
 	Task<decimal> CalculateImprovementPercentageAsync(long userId, CancellationToken cancellationToken = default);
 
 	Task UpdateRepracticeSessionStatusAsync(long repracticeSessionId, string status, decimal improvementPercent, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
+
+	Task<List<long>> GetResolvedMistakeIdsBySessionAsync(long repracticeSessionId, CancellationToken cancellationToken = default);
 }

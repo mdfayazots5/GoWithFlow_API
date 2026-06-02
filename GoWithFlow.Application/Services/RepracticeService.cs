@@ -30,6 +30,8 @@ public sealed class RepracticeService : IRepracticeService
 		_sessionRepository = sessionRepository;
 	}
 
+	private static readonly int[] ReviewIntervals = { 1, 3, 7, 14, 30 };
+
 	public async Task<ApiResponse<RepracticeSessionResponseDto>> GenerateRepracticeSessionAsync(GenerateRepracticeRequestDto dto, long userId, CancellationToken cancellationToken = default)
 	{
 		if (dto.SourceSessionId <= 0 || userId <= 0)
@@ -195,6 +197,13 @@ public sealed class RepracticeService : IRepracticeService
 			cancellationToken);
 
 		await _userService.CheckAndAwardBadgesAsync(userId, cancellationToken);
+
+		// Schedule spaced repetition reviews for all resolved mistakes from this session
+		var resolvedMistakeIds = await _repracticeRepository.GetResolvedMistakeIdsBySessionAsync(repracticeSessionId, cancellationToken);
+		foreach (var mistakeId in resolvedMistakeIds)
+		{
+			await _mistakeRepository.ScheduleMistakeReviewAsync(mistakeId, user.FullName, "127.0.0.1", cancellationToken);
+		}
 
 		return ApiResponse<bool>.SuccessResult(true, "Repractice session completed successfully.");
 	}

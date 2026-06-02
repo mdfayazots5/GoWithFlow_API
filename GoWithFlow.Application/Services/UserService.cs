@@ -270,6 +270,42 @@ public sealed class UserService : IUserService
 		await _userRepository.CheckAndAwardBadgesAsync(userId, existingUser.FullName, "127.0.0.1", cancellationToken);
 	}
 
+	public async Task<ApiResponse<GoalProgressResponseDto>> SetGoalAsync(long userId, SetGoalRequestDto dto, CancellationToken cancellationToken = default)
+	{
+		if (userId <= 0)
+			return ApiResponse<GoalProgressResponseDto>.FailureResult(new[] { "UserId must be greater than zero." }, "Validation failed.");
+
+		var validTypes = new HashSet<string> { "interview", "grammar", "vocabulary", "fluency" };
+		if (!validTypes.Contains(dto.GoalType.ToLowerInvariant()))
+			return ApiResponse<GoalProgressResponseDto>.FailureResult(new[] { "GoalType must be one of: interview, grammar, vocabulary, fluency." }, "Validation failed.");
+
+		if (dto.TimelineWeeks is not (2 or 4 or 8))
+			return ApiResponse<GoalProgressResponseDto>.FailureResult(new[] { "TimelineWeeks must be 2, 4, or 8." }, "Validation failed.");
+
+		// Auto-detect level from last 5 session FluencyScores
+		var recentSessions = await _userRepository.GetImprovementSessionsAsync(userId, cancellationToken);
+		var last5Avg = recentSessions.Take(5).Any()
+			? recentSessions.Take(5).Average(s => s.FluencyScore)
+			: 0m;
+
+		var detectedLevel = last5Avg < 55 ? "Beginner" : last5Avg < 75 ? "Intermediate" : "Advanced";
+		var startingScore = Math.Round(last5Avg, 1);
+
+		await _userRepository.SetUserGoalAsync(userId, dto.GoalType.ToLowerInvariant(), dto.TimelineWeeks, detectedLevel, startingScore, cancellationToken);
+
+		var progress = await _userRepository.GetGoalProgressAsync(userId, cancellationToken);
+		return ApiResponse<GoalProgressResponseDto>.SuccessResult(progress, "Learning goal set successfully.");
+	}
+
+	public async Task<ApiResponse<GoalProgressResponseDto>> GetGoalProgressAsync(long userId, CancellationToken cancellationToken = default)
+	{
+		if (userId <= 0)
+			return ApiResponse<GoalProgressResponseDto>.FailureResult(new[] { "UserId must be greater than zero." }, "Validation failed.");
+
+		var progress = await _userRepository.GetGoalProgressAsync(userId, cancellationToken);
+		return ApiResponse<GoalProgressResponseDto>.SuccessResult(progress, "Goal progress retrieved successfully.");
+	}
+
 	private static string MapAgeGroup(AgeGroupType ageGroup)
 	{
 		return ageGroup switch

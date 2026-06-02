@@ -14,10 +14,12 @@ namespace GoWithFlow.API.Controllers;
 public sealed class UserController : ControllerBase
 {
 	private readonly IUserService _userService;
+	private readonly IAudioArchiveService _audioArchiveService;
 
-	public UserController(IUserService userService)
+	public UserController(IUserService userService, IAudioArchiveService audioArchiveService)
 	{
-		_userService = userService;
+		_userService         = userService;
+		_audioArchiveService = audioArchiveService;
 	}
 
 	[HttpGet(ApiRoutes.User.Profile)]
@@ -66,6 +68,50 @@ public sealed class UserController : ControllerBase
 	public async Task<IActionResult> GetBadgesAsync(CancellationToken cancellationToken)
 	{
 		var response = await _userService.GetBadgesAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpPost(ApiRoutes.User.Goal)]
+	public async Task<IActionResult> SetGoalAsync([FromBody] SetGoalRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _userService.SetGoalAsync(GetUserId(), dto, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.User.Goal)]
+	public async Task<IActionResult> GetGoalProgressAsync(CancellationToken cancellationToken)
+	{
+		var response = await _userService.GetGoalProgressAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpPost(ApiRoutes.User.AudioArchive)]
+	[Consumes("multipart/form-data")]
+	public async Task<IActionResult> UploadAudioClipAsync(
+		[FromForm] IFormFile file,
+		[FromForm] long sessionId,
+		[FromForm] int turnIndex,
+		CancellationToken cancellationToken)
+	{
+		var userId = GetUserId();
+		var ip     = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+		var response = await _audioArchiveService.UploadClipAsync(file, sessionId, turnIndex, userId, ip, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status201Created);
+	}
+
+	[HttpGet(ApiRoutes.User.SessionAudioArchive)]
+	public async Task<IActionResult> GetSessionAudioClipsAsync(long sessionId, CancellationToken cancellationToken)
+	{
+		var response = await _audioArchiveService.GetSessionClipsAsync(sessionId, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpDelete(ApiRoutes.User.AudioArchiveById)]
+	public async Task<IActionResult> DeleteAudioClipAsync(long archiveId, CancellationToken cancellationToken)
+	{
+		var userId = GetUserId();
+		var name   = User.FindFirstValue("FullName") ?? userId.ToString();
+		var response = await _audioArchiveService.DeleteClipAsync(archiveId, userId, name, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 

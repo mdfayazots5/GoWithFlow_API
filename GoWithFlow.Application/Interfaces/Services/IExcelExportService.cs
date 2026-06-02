@@ -7,7 +7,7 @@ public interface IExcelExportService
 {
 	Task<byte[]> GenerateUserReportExcelAsync(AdminReportFilterRequestDto filter);
 
-	Task<byte[]> GenerateSampleScriptTemplateAsync();
+	Task<byte[]> GenerateSampleScriptTemplateAsync(string? category = null);
 
 	Task<byte[]> GenerateScriptExcelAsync(ScriptDetailResponseDto script);
 }

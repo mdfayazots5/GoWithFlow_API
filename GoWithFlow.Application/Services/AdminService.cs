@@ -287,6 +287,71 @@ public sealed class AdminService : IAdminService
 		return ApiResponse<PagedResult<AdminSessionHistoryItemDto>>.SuccessResult(result, "Session history retrieved successfully.");
 	}
 
+	public async Task<ApiResponse<CohortResponseDto>> CreateCohortAsync(CreateCohortRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(dto.CohortName))
+		{
+			return ApiResponse<CohortResponseDto>.FailureResult(new[] { "CohortName is required." }, "Validation failed.");
+		}
+
+		var cohortId = await _adminRepository.InsertCohortAsync(dto, createdBy, ipAddress, cancellationToken);
+
+		var allCohorts = await _adminRepository.GetAllCohortsAsync(cancellationToken);
+		var created = allCohorts.FirstOrDefault(c => c.CohortId == cohortId);
+
+		if (created is null)
+		{
+			return ApiResponse<CohortResponseDto>.FailureResult(new[] { "Cohort created but could not be retrieved." }, "Cohort creation failed.");
+		}
+
+		return ApiResponse<CohortResponseDto>.SuccessResult(created, "Cohort created successfully.");
+	}
+
+	public async Task<ApiResponse<List<CohortResponseDto>>> GetAllCohortsAsync(CancellationToken cancellationToken = default)
+	{
+		var result = await _adminRepository.GetAllCohortsAsync(cancellationToken);
+		return ApiResponse<List<CohortResponseDto>>.SuccessResult(result, "Cohorts retrieved successfully.");
+	}
+
+	public async Task<ApiResponse<bool>> AssignUserToCohortAsync(AssignUserToCohortRequestDto dto, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
+	{
+		if (dto.UserId <= 0)
+		{
+			return ApiResponse<bool>.FailureResult(new[] { "UserId must be greater than zero." }, "Validation failed.");
+		}
+
+		await _adminRepository.AssignUserToCohortAsync(dto, updatedBy, ipAddress, cancellationToken);
+		return ApiResponse<bool>.SuccessResult(true, "User assigned to cohort successfully.");
+	}
+
+	public async Task<ApiResponse<List<CohortMemberDto>>> GetCohortMembersAsync(long cohortId, CancellationToken cancellationToken = default)
+	{
+		if (cohortId <= 0)
+		{
+			return ApiResponse<List<CohortMemberDto>>.FailureResult(new[] { "CohortId must be greater than zero." }, "Validation failed.");
+		}
+
+		var result = await _adminRepository.GetCohortMembersAsync(cohortId, cancellationToken);
+		return ApiResponse<List<CohortMemberDto>>.SuccessResult(result, "Cohort members retrieved successfully.");
+	}
+
+	public async Task<ApiResponse<CohortAnalyticsResponseDto>> GetCohortAnalyticsAsync(long cohortId, CancellationToken cancellationToken = default)
+	{
+		if (cohortId <= 0)
+		{
+			return ApiResponse<CohortAnalyticsResponseDto>.FailureResult(new[] { "CohortId must be greater than zero." }, "Validation failed.");
+		}
+
+		var result = await _adminRepository.GetCohortAnalyticsAsync(cohortId, cancellationToken);
+
+		if (result is null)
+		{
+			return ApiResponse<CohortAnalyticsResponseDto>.FailureResult(new[] { "Cohort not found." }, "Cohort analytics failed.");
+		}
+
+		return ApiResponse<CohortAnalyticsResponseDto>.SuccessResult(result, "Cohort analytics retrieved successfully.");
+	}
+
 	private static bool IsValidHintLanguage(string value) =>
 		value is "Telugu" or "Hindi" or "Tamil" or "Kannada" or "None";
 

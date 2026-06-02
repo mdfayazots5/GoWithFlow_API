@@ -13,4 +13,8 @@ public interface IMistakeService
 	Task<ApiResponse<MistakeSummaryResponseDto>> GetMistakeSummaryAsync(long userId, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<List<GrammarProgressResponseDto>>> GetGrammarProgressAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<ApiResponse<List<GrammarProgressResponseDto>>> GetGrammarProgressWithTrendAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<ApiResponse<SpacedRepetitionDueResponseDto>> GetDueForReviewAsync(long userId, CancellationToken cancellationToken = default);
 }

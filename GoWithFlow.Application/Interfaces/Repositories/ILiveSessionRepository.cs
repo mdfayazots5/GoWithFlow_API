@@ -60,4 +60,11 @@ public interface ILiveSessionRepository
 	Task UpdateVoiceAnalysisAsync(long voiceAnalysisId, VoiceAnalysis updates, string updatedBy, CancellationToken cancellationToken = default);
 
 	Task<bool> ListenerFeedbackExistsAsync(long sessionId, int turnIndex, long fromUserId, long targetUserId, string feedbackTag, CancellationToken cancellationToken = default);
+
+	/// <summary>
+	/// Returns the full post-session transcript with per-turn voice analysis for the given user.
+	/// Includes all utterances (facilitator and performance turns). Performance turns without a
+	/// recording show WasAnalyzed = false. Returns null if the session or its script is not found.
+	/// </summary>
+	Task<SessionReviewResponseDto?> GetSessionReviewAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
 }

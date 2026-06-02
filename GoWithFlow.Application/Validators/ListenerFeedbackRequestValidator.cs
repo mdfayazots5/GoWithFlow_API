@@ -8,9 +8,7 @@ public sealed class ListenerFeedbackRequestValidator : AbstractValidator<Listene
 	private static readonly string[] ValidTags =
 	{
 		"Good",
-		"Hesitated",
-		"Mistake",
-		"Unclear Pronunciation"
+		"Needs Work"
 	};
 
 	public ListenerFeedbackRequestValidator()
@@ -27,6 +25,6 @@ public sealed class ListenerFeedbackRequestValidator : AbstractValidator<Listene
 		RuleFor(request => request.FeedbackTag)
 			.NotEmpty()
 			.Must(feedbackTag => ValidTags.Contains(feedbackTag.Trim(), StringComparer.OrdinalIgnoreCase))
-			.WithMessage("FeedbackTag must be one of: Good, Hesitated, Mistake, Unclear Pronunciation.");
+			.WithMessage("FeedbackTag must be one of: Good, Needs Work.");
 	}
 }

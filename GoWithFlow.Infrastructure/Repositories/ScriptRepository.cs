@@ -417,4 +417,360 @@ public sealed class ScriptRepository : IScriptRepository
 	{
 		return reader.GetDateTime(reader.GetOrdinal(columnName));
 	}
+
+	public async Task<List<ScriptAnalyticsItemDto>> GetScriptAnalyticsAsync(string? categoryFilter, CancellationToken cancellationToken = default)
+	{
+		var cutoff60Days = DateTime.UtcNow.AddDays(-60);
+
+		var query = _dbContext.Scripts.AsNoTracking()
+			.Where(s => s.IsDeleted == false);
+
+		if (!string.IsNullOrWhiteSpace(categoryFilter))
+			query = query.Where(s => s.Category == categoryFilter);
+
+		var scripts = await query
+			.OrderByDescending(s => s.UploadedDate)
+			.Select(s => new { s.ScriptId, s.ScriptTitle, s.Category })
+			.ToListAsync(cancellationToken);
+
+		var scriptIds = scripts.Select(s => s.ScriptId).ToList();
+
+		// Per-session metrics for all scripts at once
+		var sessionData = await (
+			from s in _dbContext.Sessions.AsNoTracking()
+			where scriptIds.Contains(s.ScriptId) && s.IsDeleted == false
+			select new { s.ScriptId, s.SessionId, s.Status, s.ActualDurationSec, s.StartedDate, s.EndedDate, s.DateCreated }
+		).ToListAsync(cancellationToken);
+
+		var sessionIds = sessionData.Select(s => s.SessionId).ToList();
+
+		// Avg fluency and mistake counts
+		var fluencyBySession = await _dbContext.VoiceAnalyses.AsNoTracking()
+			.Where(va => sessionIds.Contains(va.SessionId) && va.IsDeleted == false)
+			.GroupBy(va => va.SessionId)
+			.Select(g => new { SessionId = g.Key, AvgFluency = g.Average(va => (decimal)va.FluencyScore) })
+			.ToListAsync(cancellationToken);
+
+		var mistakesBySession = await _dbContext.Mistakes.AsNoTracking()
+			.Where(m => sessionIds.Contains(m.SessionId) && m.IsDeleted == false)
+			.GroupBy(m => m.SessionId)
+			.Select(g => new { SessionId = g.Key, Count = g.Count() })
+			.ToListAsync(cancellationToken);
+
+		// ReRead counts per session
+		var rereadBySession = await _dbContext.TurnStates.AsNoTracking()
+			.Where(t => sessionIds.Contains(t.SessionId) && t.IsDeleted == false)
+			.GroupBy(t => t.SessionId)
+			.Select(g => new { SessionId = g.Key, AvgReRead = g.Average(t => (decimal)t.ReReadCount) })
+			.ToListAsync(cancellationToken);
+
+		// RepracticeSession conversion (sessions that generated at least 1 repractice)
+		var repracticeSessionIds = await _dbContext.RepracticeSessions.AsNoTracking()
+			.Where(r => sessionIds.Contains(r.SourceSessionId) && r.IsDeleted == false)
+			.Select(r => r.SourceSessionId)
+			.Distinct()
+			.ToListAsync(cancellationToken);
+
+		var fluencyMap   = fluencyBySession.ToDictionary(x => x.SessionId, x => x.AvgFluency);
+		var mistakeMap   = mistakesBySession.ToDictionary(x => x.SessionId, x => (decimal)x.Count);
+		var rereadMap    = rereadBySession.ToDictionary(x => x.SessionId, x => x.AvgReRead);
+		var repracticeSet = repracticeSessionIds.ToHashSet();
+
+		var result = new List<ScriptAnalyticsItemDto>();
+
+		foreach (var script in scripts)
+		{
+			var scriptSessions = sessionData.Where(s => s.ScriptId == script.ScriptId).ToList();
+			var total          = scriptSessions.Count;
+			var completed      = scriptSessions.Count(s => s.Status == "COMPLETED");
+
+			var completionRate    = total > 0 ? Math.Round(completed * 100m / total, 1) : 0m;
+			var avgFluency        = scriptSessions.Count > 0
+									? Math.Round(scriptSessions.Where(s => fluencyMap.ContainsKey(s.SessionId)).Select(s => fluencyMap[s.SessionId]).DefaultIfEmpty(0m).Average(), 1)
+									: 0m;
+			var avgMistakes       = scriptSessions.Count > 0
+									? Math.Round(scriptSessions.Where(s => mistakeMap.ContainsKey(s.SessionId)).Select(s => mistakeMap[s.SessionId]).DefaultIfEmpty(0m).Average(), 1)
+									: 0m;
+			var avgDuration       = scriptSessions.Count > 0
+									? Math.Round(scriptSessions.Where(s => s.ActualDurationSec.HasValue && s.ActualDurationSec.Value > 0).Select(s => (decimal)s.ActualDurationSec!.Value / 60m).DefaultIfEmpty(0m).Average(), 1)
+									: 0m;
+			var avgReRead         = scriptSessions.Count > 0
+									? Math.Round(scriptSessions.Where(s => rereadMap.ContainsKey(s.SessionId)).Select(s => rereadMap[s.SessionId]).DefaultIfEmpty(0m).Average(), 2)
+									: 0m;
+			var repracticeCount   = scriptSessions.Count(s => repracticeSet.Contains(s.SessionId));
+			var conversionRate    = total > 0 ? Math.Round(repracticeCount * 100m / total, 1) : 0m;
+
+			var lastUsed = scriptSessions
+				.Select(s => s.EndedDate ?? s.StartedDate ?? s.DateCreated)
+				.OrderByDescending(d => d)
+				.FirstOrDefault();
+
+			result.Add(new ScriptAnalyticsItemDto
+			{
+				ScriptId                 = script.ScriptId,
+				ScriptTitle              = script.ScriptTitle,
+				Category                 = script.Category,
+				TotalSessionsStarted     = total,
+				CompletionRate           = completionRate,
+				AvgFluencyScore          = avgFluency,
+				AvgMistakeCount          = avgMistakes,
+				AvgDurationMinutes       = avgDuration,
+				AvgReReadRate            = avgReRead,
+				RepracticeConversionRate = conversionRate,
+				LastUsedDate             = lastUsed == default ? null : lastUsed,
+				IsInactive               = lastUsed == default || lastUsed < cutoff60Days
+			});
+		}
+
+		return result;
+	}
+
+	public async Task RollbackScriptVersionAsync(long scriptId, int versionNumber, string updatedBy, CancellationToken cancellationToken = default)
+	{
+		// Find the target version entry (contains VersionNotes for reference, but utterances were stored in the original upload)
+		var targetVersion = await _dbContext.ScriptVersions.AsNoTracking()
+			.Where(v => v.ScriptId == scriptId && v.VersionNumber == versionNumber && v.IsDeleted == false)
+			.FirstOrDefaultAsync(cancellationToken)
+			?? throw new KeyNotFoundException($"Version {versionNumber} not found for script {scriptId}.");
+
+		// Increment version on tblScript to indicate rollback event
+		var script = await _dbContext.Scripts
+			.Where(s => s.ScriptId == scriptId && s.IsDeleted == false)
+			.FirstOrDefaultAsync(cancellationToken)
+			?? throw new KeyNotFoundException($"Script {scriptId} not found.");
+
+		script.Version += 1;
+		script.UpdatedBy = updatedBy;
+		script.LastUpdated = DateTime.UtcNow;
+
+		// Insert a new version record noting the rollback
+		_dbContext.ScriptVersions.Add(new ScriptVersion
+		{
+			ScriptId = scriptId,
+			VersionNumber = script.Version,
+			VersionNotes = $"Rolled back to version {versionNumber}",
+			UploadedByUserId = script.UploadedByUserId,
+			CreatedBy = updatedBy
+		});
+
+		await _dbContext.SaveChangesAsync(cancellationToken);
+	}
+
+	private static readonly List<string> ApprovedGrammarTagList = new()
+	{
+		"Present Simple", "Present Continuous", "Present Perfect", "Present Perfect Continuous",
+		"Past Simple", "Past Continuous", "Past Perfect",
+		"Future Simple", "Future Continuous", "Future Perfect",
+		"Modal Verbs", "Passive Voice", "Conditionals", "Reported Speech",
+		"Gerunds", "Infinitives", "Articles", "Prepositions", "Subject-Verb Agreement",
+		"STAR Method", "Formal Register", "Question Forms", "Contrast", "Vocabulary", "General Fluency"
+	};
+
+	public async Task<ScriptPromptDataResponseDto> GetPromptDataForCategoryAsync(string category, CancellationToken cancellationToken = default)
+	{
+		var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var upper = category.Trim().ToUpperInvariant();
+
+		switch (upper)
+		{
+			case "MOCK INTERVIEW":    aliases.Add("Mock Interview"); aliases.Add("Interview"); break;
+			case "VOCABULARY SPRINT": aliases.Add("Vocabulary Sprint"); aliases.Add("Vocabulary"); break;
+			case "REPRACTICE ROUND":  aliases.Add("Repractice Round"); aliases.Add("Repetition"); break;
+			default: aliases.Add(category.Trim()); break;
+		}
+
+		// 1. Fetch base prompt from DB (tblscriptprompttemplate — seeded from ExcelTemplateStandard.md)
+		var connection = _dbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		string basePrompt   = string.Empty;
+		string sourceRef    = string.Empty;
+		int    promptVersion = 1;
+
+		var canonicalCategory = aliases.First();  // first entry = canonical name
+		var tableName = IsPostgres
+			? "public.tblscriptprompttemplate"
+			: "dbo.tblScriptPromptTemplate";
+		var catCol    = IsPostgres ? "category"    : "Category";
+		var activeCol = IsPostgres ? "isactive"    : "IsActive";
+		var deletedCol= IsPostgres ? "isdeleted"   : "IsDeleted";
+		var textCol   = IsPostgres ? "prompttext"  : "PromptText";
+		var sourceCol = IsPostgres ? "sourceref"   : "SourceRef";
+		var verCol    = IsPostgres ? "version"     : "Version";
+
+		await using var promptCmd = connection.CreateCommand();
+		promptCmd.CommandText = IsPostgres
+			? $"SELECT prompttext, sourceref, version FROM {tableName} WHERE category = @Cat AND isactive = TRUE AND isdeleted = FALSE LIMIT 1"
+			: $"SELECT TOP 1 PromptText, SourceRef, Version FROM {tableName} WHERE Category = @Cat AND IsActive = 1 AND IsDeleted = 0";
+		var pCat = promptCmd.CreateParameter();
+		pCat.ParameterName = "@Cat";
+		pCat.Value = canonicalCategory;
+		promptCmd.Parameters.Add(pCat);
+
+		await using (var promptReader = await promptCmd.ExecuteReaderAsync(cancellationToken))
+		{
+			if (await promptReader.ReadAsync(cancellationToken))
+			{
+				basePrompt    = promptReader.GetString(0);
+				sourceRef     = promptReader.GetString(1);
+				promptVersion = promptReader.GetInt32(2);
+			}
+		}
+
+		// 2. Get live tag data from tblscript for this category
+		var activeScripts = await _dbContext.Scripts.AsNoTracking()
+			.Where(s => s.IsDeleted == false && s.IsActive && aliases.Contains(s.Category))
+			.ToListAsync(cancellationToken);
+
+		var grammarTagsInUse = activeScripts
+			.Where(s => !string.IsNullOrWhiteSpace(s.GrammarFocusTag))
+			.Select(s => s.GrammarFocusTag!)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.OrderBy(t => t)
+			.ToList();
+
+		var contextTagsInUse = activeScripts
+			.Where(s => !string.IsNullOrWhiteSpace(s.ContextTag))
+			.Select(s => s.ContextTag!)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.OrderBy(t => t)
+			.ToList();
+
+		// 3. Enrich base prompt with live DB tag data
+		var enrichmentBlock = new System.Text.StringBuilder();
+		enrichmentBlock.AppendLine();
+		enrichmentBlock.AppendLine("─────────────────────────────────────────────────────────────");
+		enrichmentBlock.AppendLine("LIVE DATA FROM PLATFORM DATABASE:");
+		enrichmentBlock.AppendLine($"Active scripts in this category: {activeScripts.Count}");
+
+		if (grammarTagsInUse.Count > 0)
+		{
+			enrichmentBlock.AppendLine($"GrammarFocusTag values already in use: {string.Join(", ", grammarTagsInUse)}");
+			enrichmentBlock.AppendLine("→ Prefer one of these to maintain consistency, or add a new valid tag.");
+		}
+		else
+		{
+			enrichmentBlock.AppendLine("GrammarFocusTag values in use: (none yet — first script for this category)");
+		}
+
+		if (contextTagsInUse.Count > 0)
+		{
+			enrichmentBlock.AppendLine($"ContextTag values already in use: {string.Join(", ", contextTagsInUse)}");
+			enrichmentBlock.AppendLine("→ Prefer one of these, or add a new valid context.");
+		}
+		else
+		{
+			enrichmentBlock.AppendLine("ContextTag values in use: (none yet — choose any realistic context)");
+		}
+
+		if (activeScripts.Count > 0)
+		{
+			enrichmentBlock.AppendLine($"→ Your script must be DISTINCT from the {activeScripts.Count} existing script(s) in this category.");
+		}
+
+		enrichmentBlock.AppendLine("─────────────────────────────────────────────────────────────");
+
+		var fullPrompt = string.IsNullOrWhiteSpace(basePrompt)
+			? $"[Prompt template not found in DB for category: {canonicalCategory}]"
+			: basePrompt.TrimEnd() + enrichmentBlock.ToString();
+
+		var (speakerLabels, minRows, maxRows, mandatoryColumns) = upper switch
+		{
+			"MOCK INTERVIEW"    => ("Interviewer / Candidate",  20, 50, "G (FocusWord) required; E (GrammarTag) required"),
+			"VOCABULARY SPRINT" => ("Tutor / Learner",          20, 40, "D (HintText) required; G (FocusWord) required; H (PronunciationNote) required on Tutor rows"),
+			"FLUENCY DRILL"     => ("Speaker A / Speaker B",    30, 60, "E, G, H must be left blank"),
+			"REPRACTICE ROUND"  => ("Coach / Learner",          14, 28, "D (HintText) required; E (GrammarTag) required — same value on ALL rows"),
+			"ROLEPLAY"          => ("Two role-based names (e.g. Passenger, Check-In Agent)", 16, 40, "Use real-world role names — not Speaker A/B"),
+			_                   => ("Speaker A / Speaker B",    12, 30, "E (GrammarTag) required — same value on ALL rows")
+		};
+
+		return new ScriptPromptDataResponseDto
+		{
+			GrammarTagsInUse    = grammarTagsInUse,
+			ContextTagsInUse    = contextTagsInUse,
+			ApprovedGrammarTags = ApprovedGrammarTagList,
+			SpeakerLabels       = speakerLabels,
+			MinRows             = minRows,
+			MaxRows             = maxRows,
+			MandatoryColumns    = mandatoryColumns,
+			ActiveScriptCount   = activeScripts.Count,
+			FullPrompt          = fullPrompt
+		};
+	}
+
+	private bool IsPostgres => DatabaseProviderNames.IsPostgreSql(_dbContext.DatabaseProvider);
+
+	private static async Task EnsureConnectionOpenAsync(System.Data.IDbConnection connection, CancellationToken cancellationToken)
+	{
+		if (connection.State != System.Data.ConnectionState.Open)
+			await ((System.Data.Common.DbConnection)connection).OpenAsync(cancellationToken);
+	}
+
+	public async Task<long> DuplicateScriptAsync(long scriptId, string createdBy, CancellationToken cancellationToken = default)
+	{
+		var original = await _dbContext.Scripts.AsNoTracking()
+			.Where(s => s.ScriptId == scriptId && s.IsDeleted == false)
+			.FirstOrDefaultAsync(cancellationToken)
+			?? throw new KeyNotFoundException($"Script {scriptId} not found.");
+
+		var utterances = await _dbContext.Utterances.AsNoTracking()
+			.Where(u => u.ScriptId == scriptId && u.IsDeleted == false)
+			.OrderBy(u => u.SequenceId)
+			.ToListAsync(cancellationToken);
+
+		var duplicate = new Script
+		{
+			ScriptTitle          = $"{original.ScriptTitle} — Copy",
+			Category             = original.Category,
+			GrammarFocusTag      = original.GrammarFocusTag,
+			ContextTag           = original.ContextTag,
+			ComplexityLevel      = original.ComplexityLevel,
+			TargetAgeGroup       = original.TargetAgeGroup,
+			HintLanguage         = original.HintLanguage,
+			IsActive             = false,  // draft until admin activates
+			UploadedByUserId     = original.UploadedByUserId,
+			Version              = 1,
+			UtteranceCount       = original.UtteranceCount,
+			CreatedBy            = createdBy
+		};
+
+		_dbContext.Scripts.Add(duplicate);
+		await _dbContext.SaveChangesAsync(cancellationToken);
+
+		var newScriptId = duplicate.ScriptId;
+
+		// Copy utterances
+		foreach (var u in utterances)
+		{
+			_dbContext.Utterances.Add(new Utterance
+			{
+				ScriptId          = newScriptId,
+				SequenceId        = u.SequenceId,
+				SpeakerLabel      = u.SpeakerLabel,
+				EnglishText       = u.EnglishText,
+				HintText          = u.HintText,
+				GrammarTag        = u.GrammarTag,
+				ContextTag        = u.ContextTag,
+				FocusWord         = u.FocusWord,
+				PronunciationNote = u.PronunciationNote,
+				CreatedBy         = createdBy
+			});
+		}
+
+		await _dbContext.SaveChangesAsync(cancellationToken);
+
+		// Add version 1 record
+		_dbContext.ScriptVersions.Add(new ScriptVersion
+		{
+			ScriptId         = newScriptId,
+			VersionNumber    = 1,
+			VersionNotes     = $"Duplicated from script {scriptId}",
+			UploadedByUserId = original.UploadedByUserId,
+			CreatedBy        = createdBy
+		});
+
+		await _dbContext.SaveChangesAsync(cancellationToken);
+
+		return newScriptId;
+	}
 }

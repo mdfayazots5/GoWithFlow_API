@@ -13,4 +13,10 @@ public sealed class MemberScoreDto
 	public int MistakeCount { get; set; }
 
 	public decimal ListenerRating { get; set; }
+
+	/// <summary>
+	/// True when this member played a facilitator role (Interviewer, Tutor, Coach).
+	/// Facilitator members are excluded from the performance scoreboard.
+	/// </summary>
+	public bool IsFacilitator { get; set; }
 }

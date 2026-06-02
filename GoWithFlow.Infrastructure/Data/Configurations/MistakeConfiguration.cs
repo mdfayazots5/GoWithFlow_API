@@ -52,6 +52,17 @@ public sealed class MistakeConfiguration : IEntityTypeConfiguration<Mistake>
 		builder.Property(mistake => mistake.LastAttempt)
 			.HasColumnType("datetime2");
 
+		builder.Property(mistake => mistake.ReviewStage)
+			.HasColumnType("tinyint")
+			.HasDefaultValue((byte)0);
+
+		builder.Property(mistake => mistake.NextReviewDate)
+			.HasColumnType("datetime2");
+
+		builder.Property(mistake => mistake.ReviewIntervalDays)
+			.HasColumnType("int")
+			.HasDefaultValue(0);
+
 		ConfigureAuditColumns(builder);
 
 		builder.HasIndex(mistake => mistake.UserId)

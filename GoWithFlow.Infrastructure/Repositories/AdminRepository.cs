@@ -433,6 +433,175 @@ public sealed class AdminRepository : IAdminRepository
 		};
 	}
 
+	public async Task<long> InsertCohortAsync(CreateCohortRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspInsertCohort", cancellationToken);
+		command.Parameters.Add(CreateParameter("@CohortName", dto.CohortName));
+		command.Parameters.Add(CreateParameter("@Description", dto.Description));
+		command.Parameters.Add(CreateParameter("@CreatedBy", createdBy));
+		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
+
+		var result = await DbCommandHelper.ExecuteScalarAsync(command, cancellationToken);
+		return Convert.ToInt64(result);
+	}
+
+	public async Task<List<CohortResponseDto>> GetAllCohortsAsync(CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetAllCohorts", cancellationToken);
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+		var items = new List<CohortResponseDto>();
+
+		while (await reader.ReadAsync(cancellationToken))
+		{
+			items.Add(new CohortResponseDto
+			{
+				CohortId    = GetInt64(reader, "CohortId"),
+				CohortName  = GetString(reader, "CohortName"),
+				Description = GetNullableString(reader, "Description"),
+				IsActive    = GetBoolean(reader, "IsActive"),
+				MemberCount = GetInt32(reader, "MemberCount"),
+				DateCreated = GetDateTime(reader, "DateCreated")
+			});
+		}
+
+		return items;
+	}
+
+	public async Task AssignUserToCohortAsync(AssignUserToCohortRequestDto dto, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspAssignUserToCohort", cancellationToken);
+		command.Parameters.Add(CreateParameter("@UserId", dto.UserId));
+		command.Parameters.Add(CreateParameter("@CohortId", (object?)dto.CohortId ?? DBNull.Value));
+		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
+		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
+
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
+	}
+
+	public async Task<List<CohortMemberDto>> GetCohortMembersAsync(long cohortId, CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetCohortMembers", cancellationToken);
+		command.Parameters.Add(CreateParameter("@CohortId", cohortId));
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+		var items = new List<CohortMemberDto>();
+
+		while (await reader.ReadAsync(cancellationToken))
+		{
+			items.Add(new CohortMemberDto
+			{
+				UserId            = GetInt64(reader, "UserId"),
+				FullName          = GetString(reader, "FullName"),
+				MobileNumber      = GetString(reader, "MobileNumber"),
+				AgeGroup          = GetString(reader, "AgeGroup"),
+				IsActive          = GetBoolean(reader, "IsActive"),
+				DailyStreakCount  = GetInt32(reader, "DailyStreakCount"),
+				TotalSessionsPlayed = GetInt32(reader, "TotalSessionsPlayed"),
+				LastLoginDate     = GetNullableDateTime(reader, "LastLoginDate"),
+				SessionCount      = GetInt32(reader, "SessionCount"),
+				AvgFluencyScore   = GetDecimal(reader, "AvgFluencyScore"),
+				TotalMistakes     = GetInt32(reader, "TotalMistakes")
+			});
+		}
+
+		return items;
+	}
+
+	public async Task<CohortAnalyticsResponseDto?> GetCohortAnalyticsAsync(long cohortId, CancellationToken cancellationToken = default)
+	{
+		var cutoff         = DateTime.UtcNow.AddDays(-30);
+		var inactiveCutoff = DateTime.UtcNow.AddDays(-7);
+
+		// Cohort header via EF
+		var cohort = await _dbContext.Cohorts
+			.AsNoTracking()
+			.FirstOrDefaultAsync(c => c.CohortId == cohortId && c.IsDeleted == false, cancellationToken);
+
+		if (cohort is null) return null;
+
+		var memberIds = await _dbContext.Users
+			.AsNoTracking()
+			.Where(u => u.CohortId == cohortId && u.IsDeleted == false)
+			.Select(u => u.UserId)
+			.ToListAsync(cancellationToken);
+
+		var avgFluency = memberIds.Count == 0 ? 0m : await _dbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(va => memberIds.Contains(va.UserId) && va.DateCreated >= cutoff && va.IsDeleted == false)
+			.AverageAsync(va => (decimal?)va.OverallScore, cancellationToken) ?? 0m;
+
+		var inactiveCount = await _dbContext.Users
+			.AsNoTracking()
+			.CountAsync(u => u.CohortId == cohortId && u.IsDeleted == false &&
+				(u.LastLoginDate == null || u.LastLoginDate < inactiveCutoff), cancellationToken);
+
+		var topMistakes = await _dbContext.Mistakes
+			.AsNoTracking()
+			.Where(m => memberIds.Contains(m.UserId) && m.GrammarTag != null
+				&& m.DateCreated >= cutoff && m.IsDeleted == false)
+			.GroupBy(m => m.GrammarTag!)
+			.Select(g => new CohortGrammarMistakeDto { GrammarTag = g.Key, MistakeCount = g.Count() })
+			.OrderByDescending(x => x.MistakeCount)
+			.Take(5)
+			.ToListAsync(cancellationToken);
+
+		// Most improved: largest fluency delta (last 15 days vs prior 15 days)
+		CohortMostImprovedDto? mostImproved = null;
+		if (memberIds.Count > 0)
+		{
+			var p1Start = DateTime.UtcNow.AddDays(-15);
+			var p2Start = DateTime.UtcNow.AddDays(-30);
+			var currAvg = await _dbContext.VoiceAnalyses.AsNoTracking()
+				.Where(va => memberIds.Contains(va.UserId) && va.DateCreated >= p1Start && va.IsDeleted == false)
+				.GroupBy(va => va.UserId)
+				.Select(g => new { UserId = g.Key, Avg = g.Average(x => (decimal)x.OverallScore) })
+				.ToListAsync(cancellationToken);
+
+			var prevAvg = await _dbContext.VoiceAnalyses.AsNoTracking()
+				.Where(va => memberIds.Contains(va.UserId) && va.DateCreated >= p2Start && va.DateCreated < p1Start && va.IsDeleted == false)
+				.GroupBy(va => va.UserId)
+				.Select(g => new { UserId = g.Key, Avg = g.Average(x => (decimal)x.OverallScore) })
+				.ToListAsync(cancellationToken);
+
+			var best = currAvg
+				.Select(c => new {
+					c.UserId,
+					Delta = c.Avg - (prevAvg.FirstOrDefault(p => p.UserId == c.UserId)?.Avg ?? 0m)
+				})
+				.OrderByDescending(x => x.Delta)
+				.FirstOrDefault();
+
+			if (best is not null)
+			{
+				var bestUser = await _dbContext.Users.AsNoTracking()
+					.Where(u => u.UserId == best.UserId)
+					.Select(u => new { u.UserId, u.FullName })
+					.FirstOrDefaultAsync(cancellationToken);
+
+				if (bestUser is not null)
+				{
+					mostImproved = new CohortMostImprovedDto
+					{
+						UserId           = bestUser.UserId,
+						FullName         = bestUser.FullName,
+						ImprovementDelta = Math.Round(best.Delta, 1)
+					};
+				}
+			}
+		}
+
+		return new CohortAnalyticsResponseDto
+		{
+			CohortId        = cohort.CohortId,
+			CohortName      = cohort.CohortName,
+			Description     = cohort.Description,
+			MemberCount     = memberIds.Count,
+			AvgFluencyScore = Math.Round(avgFluency, 1),
+			InactiveCount   = inactiveCount,
+			TopGrammarMistakes = topMistakes,
+			MostImproved    = mostImproved
+		};
+	}
+
 	private async Task<DbCommand> CreateStoredProcedureCommandAsync(string storedProcedureName, CancellationToken cancellationToken)
 	{
 		var connection = _dbContext.Database.GetDbConnection();

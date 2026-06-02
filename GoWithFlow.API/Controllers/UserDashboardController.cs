@@ -26,6 +26,34 @@ public sealed class UserDashboardController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
 	}
 
+	[HttpGet(ApiRoutes.Dashboard.WeeklyReport)]
+	public async Task<IActionResult> GetWeeklyReportAsync(CancellationToken cancellationToken)
+	{
+		var response = await _userDashboardService.GetWeeklyReportAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.Dashboard.LearningPath)]
+	public async Task<IActionResult> GetGuidedLearningPathAsync(CancellationToken cancellationToken)
+	{
+		var response = await _userDashboardService.GetGuidedLearningPathAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.Dashboard.InterviewPerformance)]
+	public async Task<IActionResult> GetInterviewPerformanceDashboardAsync(CancellationToken cancellationToken)
+	{
+		var response = await _userDashboardService.GetInterviewPerformanceDashboardAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.Dashboard.PronunciationTimeline)]
+	public async Task<IActionResult> GetPronunciationTimelineAsync(CancellationToken cancellationToken)
+	{
+		var response = await _userDashboardService.GetPronunciationTimelineAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
 	private long GetUserId()
 	{
 		var claimValue = User.FindFirstValue("UserId") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);

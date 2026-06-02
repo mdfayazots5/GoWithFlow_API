@@ -228,20 +228,24 @@ public sealed class ScriptService : IScriptService
 		return ApiResponse<byte[]>.SuccessResult(fileBytes, script.ScriptTitle);
 	}
 
-	public Task<ApiResponse<byte[]>> GetSampleTemplateAsync(CancellationToken cancellationToken = default)
+	public Task<ApiResponse<byte[]>> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default)
 	{
-		if (_memoryCache.TryGetValue(CacheKeys.SampleTemplate, out byte[]? cachedTemplate) && cachedTemplate is not null)
+		var cacheKey = string.IsNullOrWhiteSpace(category)
+			? CacheKeys.SampleTemplate
+			: $"{CacheKeys.SampleTemplate}_{category.Trim().ToLowerInvariant().Replace(" ", "_")}";
+
+		if (_memoryCache.TryGetValue(cacheKey, out byte[]? cachedTemplate) && cachedTemplate is not null)
 		{
 			return Task.FromResult(ApiResponse<byte[]>.SuccessResult(cachedTemplate, "Sample template generated successfully."));
 		}
 
-		return BuildAndCacheSampleTemplateAsync();
+		return BuildAndCacheSampleTemplateAsync(category?.Trim(), cacheKey);
 	}
 
-	private async Task<ApiResponse<byte[]>> BuildAndCacheSampleTemplateAsync()
+	private async Task<ApiResponse<byte[]>> BuildAndCacheSampleTemplateAsync(string? category, string cacheKey)
 	{
-		var templateBytes = await _excelExportService.GenerateSampleScriptTemplateAsync();
-		_memoryCache.Set(CacheKeys.SampleTemplate, templateBytes, TimeSpan.FromMinutes(30));
+		var templateBytes = await _excelExportService.GenerateSampleScriptTemplateAsync(category);
+		_memoryCache.Set(cacheKey, templateBytes, TimeSpan.FromMinutes(30));
 
 		return ApiResponse<byte[]>.SuccessResult(templateBytes, "Sample template generated successfully.");
 	}
@@ -298,10 +302,13 @@ public sealed class ScriptService : IScriptService
 		{
 			"Grammar Drill",
 			"Roleplay",
-			"Interview",
-			"Vocabulary",
+			"Mock Interview",
+			"Interview",          // legacy alias
+			"Vocabulary Sprint",
+			"Vocabulary",         // legacy alias
 			"Fluency Drill",
-			"Repetition"
+			"Repractice Round",
+			"Repetition"          // legacy alias
 		};
 
 		if (string.IsNullOrWhiteSpace(dto.ScriptTitle))
@@ -344,5 +351,38 @@ public sealed class ScriptService : IScriptService
 		}
 
 		return errors;
+	}
+
+	public async Task<ApiResponse<List<ScriptAnalyticsItemDto>>> GetScriptAnalyticsAsync(string? categoryFilter, CancellationToken cancellationToken = default)
+	{
+		var result = await _scriptRepository.GetScriptAnalyticsAsync(categoryFilter, cancellationToken);
+		return ApiResponse<List<ScriptAnalyticsItemDto>>.SuccessResult(result, "Script analytics retrieved successfully.");
+	}
+
+	public async Task<ApiResponse<ScriptPromptDataResponseDto>> GetPromptDataForCategoryAsync(string category, CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(category))
+			return ApiResponse<ScriptPromptDataResponseDto>.FailureResult(new[] { "Category is required." }, "Validation failed.");
+
+		var result = await _scriptRepository.GetPromptDataForCategoryAsync(category, cancellationToken);
+		return ApiResponse<ScriptPromptDataResponseDto>.SuccessResult(result, "Prompt data retrieved successfully.");
+	}
+
+	public async Task<ApiResponse<bool>> RollbackScriptVersionAsync(long scriptId, int versionNumber, CancellationToken cancellationToken = default)
+	{
+		if (scriptId <= 0 || versionNumber <= 0)
+			return ApiResponse<bool>.FailureResult(new[] { "Invalid scriptId or versionNumber." }, "Validation failed.");
+
+		await _scriptRepository.RollbackScriptVersionAsync(scriptId, versionNumber, "Admin", cancellationToken);
+		return ApiResponse<bool>.SuccessResult(true, "Script rolled back successfully.");
+	}
+
+	public async Task<ApiResponse<long>> DuplicateScriptAsync(long scriptId, CancellationToken cancellationToken = default)
+	{
+		if (scriptId <= 0)
+			return ApiResponse<long>.FailureResult(new[] { "Invalid scriptId." }, "Validation failed.");
+
+		var newScriptId = await _scriptRepository.DuplicateScriptAsync(scriptId, "Admin", cancellationToken);
+		return ApiResponse<long>.SuccessResult(newScriptId, "Script duplicated successfully.");
 	}
 }

@@ -19,5 +19,15 @@ public interface IMistakeRepository
 
 	Task<List<GrammarProgressResponseDto>> GetGrammarProgressAsync(long userId, CancellationToken cancellationToken = default);
 
+	Task<List<GrammarProgressResponseDto>> GetGrammarProgressWithTrendAsync(long userId, CancellationToken cancellationToken = default);
+
 	Task<List<Mistake>> GetUnresolvedMistakesAsync(long userId, long sourceSessionId, CancellationToken cancellationToken = default);
+
+	Task<List<SpacedRepetitionDueItemDto>> GetMistakesDueForReviewAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task ScheduleMistakeReviewAsync(long mistakeId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
+
+	Task AdvanceMistakeReviewAsync(long mistakeId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
+
+	Task ResetMistakeReviewByGrammarTagAsync(long userId, string grammarTag, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
 }

@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Text.Json;
+using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.LiveSession;
 using GoWithFlow.Application.DTOs.Responses.LiveSession;
 using GoWithFlow.Application.DTOs.Responses.Script;
@@ -46,11 +47,13 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 			from turnState in _dbContext.TurnStates.AsNoTracking()
 			join activeMember in _dbContext.Users.AsNoTracking() on turnState.ActiveMemberId equals activeMember.UserId
 			join utterance in _dbContext.Utterances.AsNoTracking() on turnState.UtteranceId equals utterance.UtteranceId
+			join script in _dbContext.Scripts.AsNoTracking() on utterance.ScriptId equals script.ScriptId
 			where turnState.SessionId == sessionId
 				&& turnState.TurnStatus == "ACTIVE"
 				&& turnState.IsDeleted == false
 				&& activeMember.IsDeleted == false
 				&& utterance.IsDeleted == false
+				&& script.IsDeleted == false
 			orderby turnState.TurnIndex, turnState.TurnStateId
 			select new TurnStateResponseDto
 			{
@@ -75,7 +78,8 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				},
 				ReReadAllowed = turnState.ReReadAllowed,
 				ReReadCount = turnState.ReReadCount,
-				MaxReReads = turnState.MaxReReads
+				MaxReReads = turnState.MaxReReads,
+				IsFacilitatorTurn = FacilitatorRoles.IsFacilitator(script.Category, utterance.SpeakerLabel)
 			})
 			.FirstOrDefaultAsync(cancellationToken);
 	}
@@ -233,7 +237,8 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 			{
 				TotalTurns = script.UtteranceCount,
 				script.ScriptTitle,
-				script.GrammarFocusTag
+				script.GrammarFocusTag,
+				script.Category
 			}
 		).FirstOrDefaultAsync(cancellationToken);
 
@@ -248,6 +253,28 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		response.TotalMistakesAllMembers = await _dbContext.Mistakes
 			.AsNoTracking()
 			.CountAsync(mistake => mistake.SessionId == sessionId && mistake.IsDeleted == false, cancellationToken);
+
+		// Tag facilitator members based on their slot name and the script category.
+		// Facilitator members (Interviewer, Tutor, Coach) are not performance participants —
+		// their scores should not be shown on the session leaderboard.
+		if (response.MemberScores.Count > 0)
+		{
+			var members = await _dbContext.SessionMembers
+				.AsNoTracking()
+				.Where(m => m.SessionId == sessionId && m.IsDeleted == false)
+				.Select(m => new { m.UserId, m.SlotName })
+				.ToListAsync(cancellationToken);
+
+			var slotByUser = members.ToDictionary(m => m.UserId, m => m.SlotName ?? string.Empty);
+
+			foreach (var score in response.MemberScores)
+			{
+				if (slotByUser.TryGetValue(score.UserId, out var slotName))
+				{
+					score.IsFacilitator = FacilitatorRoles.IsFacilitator(sessionSummary.Category, slotName);
+				}
+			}
+		}
 
 		return response;
 	}
@@ -437,6 +464,80 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		}
 
 		return items;
+	}
+
+	public async Task<SessionReviewResponseDto?> GetSessionReviewAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
+	{
+		// Session → Script metadata
+		var sessionMeta = await (
+			from session in _dbContext.Sessions.AsNoTracking()
+			join script in _dbContext.Scripts.AsNoTracking() on session.ScriptId equals script.ScriptId
+			where session.SessionId == sessionId && session.IsDeleted == false && script.IsDeleted == false
+			select new
+			{
+				session.SessionId,
+				script.ScriptTitle,
+				script.Category,
+				script.GrammarFocusTag,
+				script.ScriptId
+			}
+		).FirstOrDefaultAsync(cancellationToken);
+
+		if (sessionMeta is null)
+			return null;
+
+		// All utterances for this script ordered by SequenceId
+		var utterances = await _dbContext.Utterances.AsNoTracking()
+			.Where(u => u.ScriptId == sessionMeta.ScriptId && u.IsDeleted == false)
+			.OrderBy(u => u.SequenceId)
+			.ToListAsync(cancellationToken);
+
+		// Voice analysis rows for this user + session (existing SP call)
+		var voiceAnalysisList = await GetVoiceAnalysisByUserIdAsync(userId, sessionId, cancellationToken);
+		var vaDictionary = voiceAnalysisList.ToDictionary(v => v.UtteranceId);
+
+		// Build per-turn review
+		var turns = new List<SessionReviewTurnDto>(utterances.Count);
+		var turnIndex = 1;
+		foreach (var utterance in utterances)
+		{
+			var isFacilitator = FacilitatorRoles.IsFacilitator(sessionMeta.Category, utterance.SpeakerLabel ?? string.Empty);
+			vaDictionary.TryGetValue(utterance.UtteranceId, out var va);
+
+			turns.Add(new SessionReviewTurnDto
+			{
+				TurnIndex             = turnIndex++,
+				SpeakerLabel          = utterance.SpeakerLabel ?? string.Empty,
+				IsFacilitatorTurn     = isFacilitator,
+				EnglishText           = utterance.EnglishText ?? string.Empty,
+				TranscribedText       = va?.TranscribedText,
+				FluencyScore          = va?.FluencyScore ?? 0,
+				ConfidenceScore       = va?.ConfidenceScore ?? 0,
+				SpeakingSpeedWpm      = va?.SpeakingSpeedWpm ?? 0,
+				OverallScore          = va?.OverallScore ?? 0,
+				HesitationWords       = va?.HesitationWords ?? new List<string>(),
+				GrammarErrors         = va?.GrammarErrors ?? new List<GrammarErrorDto>(),
+				PronunciationIssues   = va?.PronunciationIssues ?? new List<PronunciationIssueDto>(),
+				WasAnalyzed           = va is not null
+			});
+		}
+
+		// Average score across performance turns that were analyzed
+		var performanceTurns = turns.Where(t => !t.IsFacilitatorTurn && t.WasAnalyzed).ToList();
+		var avgScore = performanceTurns.Count > 0
+			? Math.Round(performanceTurns.Average(t => t.OverallScore), 2)
+			: 0m;
+
+		return new SessionReviewResponseDto
+		{
+			SessionId          = sessionId,
+			ScriptTitle        = sessionMeta.ScriptTitle,
+			Category           = sessionMeta.Category,
+			GrammarFocusTag    = sessionMeta.GrammarFocusTag,
+			TotalTurns         = utterances.Count,
+			AverageOverallScore = avgScore,
+			Turns              = turns
+		};
 	}
 
 	private static T? DeserializeJson<T>(string? json)

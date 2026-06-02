@@ -23,4 +23,10 @@ public sealed class TurnStateResponseDto
 	public int ReReadCount { get; set; }
 
 	public int MaxReReads { get; set; }
+
+	/// <summary>
+	/// True when the active speaker is in a facilitator role (Interviewer, Tutor, Coach).
+	/// Facilitator turns display text for read-aloud only — no voice analysis, no scoring.
+	/// </summary>
+	public bool IsFacilitatorTurn { get; set; }
 }

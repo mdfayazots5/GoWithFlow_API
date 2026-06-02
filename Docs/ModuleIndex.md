@@ -98,6 +98,46 @@ Logic source: `ProjectOverview.md` only.
 | preview | Project Documentation | Repository Structure |
 | docs | Project Documentation | Repository Structure |
 | structure | Project Documentation | Repository Structure |
+| interview performance | Phase 2 Features | Phase 2 Step 1 — Interview Performance Dashboard |
+| interview readiness | Phase 2 Features | Phase 2 Step 1 — Interview Performance Dashboard |
+| readiness score | Phase 2 Features | Phase 2 Step 1 — Interview Performance Dashboard |
+| pronunciation timeline | Phase 2 Features | Phase 2 Step 2 — Pronunciation Improvement Timeline |
+| problem word | Phase 2 Features | Phase 2 Step 2 — Pronunciation Improvement Timeline |
+| ipa reference | Phase 2 Features | Phase 2 Step 2 — Pronunciation Improvement Timeline |
+| script preview | Phase 2 Features | Phase 2 Step 3 — Session Preparation Mode |
+| prepare | Phase 2 Features | Phase 2 Step 3 — Session Preparation Mode |
+| session preparation | Phase 2 Features | Phase 2 Step 3 — Session Preparation Mode |
+| learning goal | Phase 2 Features | Phase 2 Step 4 — Learning Goals and Progress Tracking |
+| goal progress | Phase 2 Features | Phase 2 Step 4 — Learning Goals and Progress Tracking |
+| tblUserGoal | Phase 2 Features | Phase 2 Step 4 — Learning Goals and Progress Tracking |
+| grammar trend | Phase 2 Features | Phase 2 Step 5 — Cross-Session Grammar Error Trend Analysis |
+| grammar trends | Phase 2 Features | Phase 2 Step 5 — Cross-Session Grammar Error Trend Analysis |
+| trend label | Phase 2 Features | Phase 2 Step 5 — Cross-Session Grammar Error Trend Analysis |
+| filler phrase | Phase 2 Features | Phase 2 Step 6 — Filler Phrase Detection |
+| you know | Phase 2 Features | Phase 2 Step 6 — Filler Phrase Detection |
+| script analytics | Phase 2 Features | Phase 2 Step 7 — Admin Script Quality Analytics |
+| completion rate | Phase 2 Features | Phase 2 Step 7 — Admin Script Quality Analytics |
+| repractice conversion | Phase 2 Features | Phase 2 Step 7 — Admin Script Quality Analytics |
+| rollback | Phase 2 Features | Phase 2 Step 8 — Script Versioning Rollback and Duplication |
+| duplicate script | Phase 2 Features | Phase 2 Step 8 — Script Versioning Rollback and Duplication |
+| claude prompt | Phase 2 Features | Phase 2 Step 9 — Claude Prompt Helper |
+| copy prompt | Phase 2 Features | Phase 2 Step 9 — Claude Prompt Helper |
+| generate script | Phase 2 Features | Phase 2 Step 9 — Claude Prompt Helper |
+| spaced repetition | Phase 3 Features | Phase 3 Step 1 — Spaced Repetition for Grammar Mistakes |
+| review schedule | Phase 3 Features | Phase 3 Step 1 — Spaced Repetition for Grammar Mistakes |
+| due for review | Phase 3 Features | Phase 3 Step 1 — Spaced Repetition for Grammar Mistakes |
+| cohort | Phase 3 Features | Phase 3 Step 2 — Cohort Management |
+| cohort management | Phase 3 Features | Phase 3 Step 2 — Cohort Management |
+| batch training | Phase 3 Features | Phase 3 Step 2 — Cohort Management |
+| challenge | Phase 3 Features | Phase 3 Step 3 — Speaking Challenge Mode |
+| weekly challenge | Phase 3 Features | Phase 3 Step 3 — Speaking Challenge Mode |
+| leaderboard | Phase 3 Features | Phase 3 Step 3 — Speaking Challenge Mode |
+| certificate | Phase 3 Features | Phase 3 Step 4 — Completion Milestones and Certificates |
+| milestone | Phase 3 Features | Phase 3 Step 4 — Completion Milestones and Certificates |
+| grammar foundation | Phase 3 Features | Phase 3 Step 4 — Completion Milestones and Certificates |
+| audio archive | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
+| voice archive | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
+| record turns | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
 
 ## Module List
 
@@ -132,3 +172,11 @@ Logic source: `ProjectOverview.md` only.
 8. Backend Mistake Repractice Module
    - Section: `Backend Mistake Repractice Module`
    - Purpose: mistake persistence, mistake summary, grammar progress, repractice generation, repractice attempt tracking, and repractice completion APIs
+
+9. Phase 2 Features
+   - Section: `Phase 2 Feature Contracts (2026-06-01)`
+   - Purpose: Interview Performance Dashboard, Pronunciation Timeline, Session Preparation, Learning Goals, Grammar Trend Analysis, Filler Phrase Detection, Admin Script Analytics, Script Rollback/Duplication, Claude Prompt Helper
+
+10. Phase 3 Features
+    - Section: `Phase 3 Feature Contracts (2026-06-01)`
+    - Purpose: Spaced Repetition, Cohort Management, Speaking Challenge, Completion Certificates, Audio Archive

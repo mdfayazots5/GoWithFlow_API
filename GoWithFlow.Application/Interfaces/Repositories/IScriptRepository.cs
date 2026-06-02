@@ -30,4 +30,12 @@ public interface IScriptRepository
 	Task<long> InsertScriptVersionAsync(ScriptVersion scriptVersion, CancellationToken cancellationToken = default);
 
 	Task SoftDeleteScriptAsync(long scriptId, string deletedBy, string ipAddress, CancellationToken cancellationToken = default);
+
+	Task<List<ScriptAnalyticsItemDto>> GetScriptAnalyticsAsync(string? categoryFilter, CancellationToken cancellationToken = default);
+
+	Task<ScriptPromptDataResponseDto> GetPromptDataForCategoryAsync(string category, CancellationToken cancellationToken = default);
+
+	Task RollbackScriptVersionAsync(long scriptId, int versionNumber, string updatedBy, CancellationToken cancellationToken = default);
+
+	Task<long> DuplicateScriptAsync(long scriptId, string createdBy, CancellationToken cancellationToken = default);
 }

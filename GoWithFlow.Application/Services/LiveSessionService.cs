@@ -13,11 +13,9 @@ public sealed class LiveSessionService : ILiveSessionService
 {
 	private static readonly Dictionary<string, string> FeedbackTagMap = new(StringComparer.OrdinalIgnoreCase)
 	{
-		["Good"] = "Good",
-		["Hesitated"] = "Hesitated",
-		["Mistake"] = "Mistake",
-		["Unclear Pronunciation"] = "Unclear Pronunciation",
-		["UnclearPronunciation"] = "Unclear Pronunciation"
+		["Good"]       = "Good",
+		["Needs Work"] = "Needs Work",
+		["NeedsWork"]  = "Needs Work"
 	};
 
 	private readonly IUserRepository _userRepository;
@@ -25,19 +23,22 @@ public sealed class LiveSessionService : ILiveSessionService
 	private readonly ILiveSessionRepository _liveSessionRepository;
 	private readonly IUserService _userService;
 	private readonly IMistakeService _mistakeService;
+	private readonly IVocabularyService _vocabularyService;
 
 	public LiveSessionService(
 		IUserRepository userRepository,
 		ISessionRepository sessionRepository,
 		ILiveSessionRepository liveSessionRepository,
 		IUserService userService,
-		IMistakeService mistakeService)
+		IMistakeService mistakeService,
+		IVocabularyService vocabularyService)
 	{
 		_userRepository = userRepository;
 		_sessionRepository = sessionRepository;
 		_liveSessionRepository = liveSessionRepository;
 		_userService = userService;
 		_mistakeService = mistakeService;
+		_vocabularyService = vocabularyService;
 	}
 
 	public async Task<ApiResponse<TurnStateResponseDto>> GetCurrentTurnAsync(long sessionId, CancellationToken cancellationToken = default)
@@ -319,6 +320,8 @@ public sealed class LiveSessionService : ILiveSessionService
 
 		var completedSession = await _sessionRepository.GetSessionBySessionIdAsync(sessionId, cancellationToken);
 
+		long? vocabularyLearnerId = null;
+
 		if (completedSession is not null)
 		{
 			var activeMembers = await _liveSessionRepository.GetActiveSessionMembersBySessionIdAsync(sessionId, cancellationToken);
@@ -330,6 +333,18 @@ public sealed class LiveSessionService : ILiveSessionService
 				await _userService.UpsertStreakAsync(memberId, practiceMinutes, cancellationToken);
 				await _userService.CheckAndAwardBadgesAsync(memberId, cancellationToken);
 			}
+
+			// Vocabulary tracking: for VocabularySprint sessions, save FocusWords per Learner member
+			if (IsVocabularySprintSession(session))
+			{
+				var learnerSlotNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Learner" };
+				var learnerMembers = activeMembers.Where(m => learnerSlotNames.Contains(m.SlotName ?? string.Empty)).ToList();
+				foreach (var learner in learnerMembers)
+				{
+					await _vocabularyService.SaveSessionVocabularyAsync(sessionId, learner.UserId, cancellationToken);
+					vocabularyLearnerId ??= learner.UserId;
+				}
+			}
 		}
 
 		var summary = await _liveSessionRepository.GetSessionCompletionSummaryAsync(sessionId, cancellationToken);
@@ -337,6 +352,12 @@ public sealed class LiveSessionService : ILiveSessionService
 		if (summary is null)
 		{
 			return ApiResponse<SessionSummaryResponseDto>.FailureResult(new[] { "Session summary could not be generated." }, "Session completion failed.");
+		}
+
+		// Enrich summary with vocabulary data for VocabularySprint sessions
+		if (vocabularyLearnerId.HasValue)
+		{
+			summary.VocabularySummary = await _vocabularyService.GetSessionVocabularySummaryAsync(sessionId, vocabularyLearnerId.Value, cancellationToken);
 		}
 
 		return ApiResponse<SessionSummaryResponseDto>.SuccessResult(summary, "Session completed successfully.");
@@ -476,6 +497,23 @@ public sealed class LiveSessionService : ILiveSessionService
 		return (createdTurn, null);
 	}
 
+	public async Task<ApiResponse<SessionReviewResponseDto>> GetSessionReviewAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
+	{
+		if (sessionId <= 0 || userId <= 0)
+		{
+			return ApiResponse<SessionReviewResponseDto>.FailureResult(new[] { "SessionId and UserId must be greater than zero." }, "Validation failed.");
+		}
+
+		var review = await _liveSessionRepository.GetSessionReviewAsync(sessionId, userId, cancellationToken);
+
+		if (review is null)
+		{
+			return ApiResponse<SessionReviewResponseDto>.FailureResult(new[] { "Session review was not found." }, "Session review not found.");
+		}
+
+		return ApiResponse<SessionReviewResponseDto>.SuccessResult(review, "Session review retrieved successfully.");
+	}
+
 	private static string? NormalizeFeedbackTag(string feedbackTag)
 	{
 		if (string.IsNullOrWhiteSpace(feedbackTag))
@@ -510,6 +548,14 @@ public sealed class LiveSessionService : ILiveSessionService
 	private static string? SerializeJson<T>(T value)
 	{
 		return JsonSerializer.Serialize(value);
+	}
+
+	private static bool IsVocabularySprintSession(Session session)
+	{
+		// SessionMode matches the script category set at session creation time.
+		// Accepts both canonical and legacy names.
+		return string.Equals(session.SessionMode, "Vocabulary Sprint", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(session.SessionMode, "Vocabulary", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static int ResolvePracticeMinutes(Session session)

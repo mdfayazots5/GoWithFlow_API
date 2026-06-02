@@ -91,19 +91,54 @@ public sealed class ScriptController : ControllerBase
 
 	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
 	[HttpGet(ApiRoutes.Script.SampleTemplate)]
-	public async Task<IActionResult> GetSampleTemplateAsync(CancellationToken cancellationToken)
+	public async Task<IActionResult> GetSampleTemplateAsync([FromQuery] string? category, CancellationToken cancellationToken)
 	{
-		var response = await _scriptService.GetSampleTemplateAsync(cancellationToken);
+		var response = await _scriptService.GetSampleTemplateAsync(category, cancellationToken);
 
 		if (response.Success == false || response.Data is null)
 		{
 			return StatusCode(StatusCodes.Status400BadRequest, response);
 		}
 
+		var safeCategory = string.IsNullOrWhiteSpace(category) ? "Generic" : string.Concat(category.Trim().Split(Path.GetInvalidFileNameChars()));
+		var fileName = $"GoWithFlow_Template_{safeCategory}.xlsx";
+
 		return File(
 			response.Data,
 			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-			"GoWithFlow_ScriptTemplate.xlsx");
+			fileName);
+	}
+
+	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+	[HttpGet(ApiRoutes.Script.PromptData)]
+	public async Task<IActionResult> GetPromptDataAsync([FromQuery] string category, CancellationToken cancellationToken)
+	{
+		var response = await _scriptService.GetPromptDataForCategoryAsync(category, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+	[HttpGet(ApiRoutes.Script.Analytics)]
+	public async Task<IActionResult> GetScriptAnalyticsAsync([FromQuery] string? category, CancellationToken cancellationToken)
+	{
+		var response = await _scriptService.GetScriptAnalyticsAsync(category, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+	[HttpPost(ApiRoutes.Script.Rollback)]
+	public async Task<IActionResult> RollbackScriptVersionAsync(long scriptId, [FromQuery] int version, CancellationToken cancellationToken)
+	{
+		var response = await _scriptService.RollbackScriptVersionAsync(scriptId, version, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
+	}
+
+	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+	[HttpPost(ApiRoutes.Script.Duplicate)]
+	public async Task<IActionResult> DuplicateScriptAsync(long scriptId, CancellationToken cancellationToken)
+	{
+		var response = await _scriptService.DuplicateScriptAsync(scriptId, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
 	}
 
 	private long GetUserId()

@@ -67,9 +67,15 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
 
 		ConfigureAuditColumns(builder);
 
+		builder.Property(user => user.CohortId)
+			.HasColumnType("bigint");
+
 		builder.HasIndex(user => user.MobileNumber)
 			.IsUnique()
 			.HasDatabaseName("UK_tblUser_MobileNumber");
+
+		builder.HasIndex(user => user.CohortId)
+			.HasDatabaseName("IDX_tblUser_CohortId");
 	}
 
 	private static void ConfigureAuditColumns(EntityTypeBuilder<User> builder)

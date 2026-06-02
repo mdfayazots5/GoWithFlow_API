@@ -25,4 +25,8 @@ public interface IUserService
 	Task UpsertStreakAsync(long userId, int practiceMinutes, CancellationToken cancellationToken = default);
 
 	Task CheckAndAwardBadgesAsync(long userId, CancellationToken cancellationToken = default);
+
+	Task<ApiResponse<GoalProgressResponseDto>> SetGoalAsync(long userId, SetGoalRequestDto dto, CancellationToken cancellationToken = default);
+
+	Task<ApiResponse<GoalProgressResponseDto>> GetGoalProgressAsync(long userId, CancellationToken cancellationToken = default);
 }

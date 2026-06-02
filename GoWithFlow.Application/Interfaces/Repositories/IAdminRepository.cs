@@ -27,4 +27,14 @@ public interface IAdminRepository
 	Task<AdminUserFullReportDto?> GetUserFullReportAsync(long userId, CancellationToken cancellationToken = default);
 
 	Task<PagedResult<AdminSessionHistoryItemDto>> GetSessionHistoryAsync(AdminSessionHistoryFilterRequestDto dto, CancellationToken cancellationToken = default);
+
+	Task<long> InsertCohortAsync(CreateCohortRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default);
+
+	Task<List<CohortResponseDto>> GetAllCohortsAsync(CancellationToken cancellationToken = default);
+
+	Task AssignUserToCohortAsync(AssignUserToCohortRequestDto dto, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
+
+	Task<List<CohortMemberDto>> GetCohortMembersAsync(long cohortId, CancellationToken cancellationToken = default);
+
+	Task<CohortAnalyticsResponseDto?> GetCohortAnalyticsAsync(long cohortId, CancellationToken cancellationToken = default);
 }

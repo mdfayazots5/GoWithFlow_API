@@ -108,6 +108,263 @@ namespace GoWithFlow.Infrastructure.Data.Migrations
                     b.ToTable("tblAdminNote", (string)null);
                 });
 
+            modelBuilder.Entity("GoWithFlow.Domain.Entities.Cohort", b =>
+                {
+                    b.Property<long>("CohortId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("CohortId"));
+
+                    b.Property<string>("CohortName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("Comments")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasDefaultValue("Admin");
+
+                    b.Property<DateTime>("DateCreated")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.Property<DateTime?>("DateDeleted")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DeletedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("IPAddress")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasDefaultValue("127.0.0.1");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("LastUpdated")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("SortOrder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.Property<string>("Tag")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("CohortId")
+                        .HasName("PK_tblCohort_CohortId");
+
+                    b.HasIndex("IsActive")
+                        .HasDatabaseName("IDX_tblCohort_IsActive");
+
+                    b.ToTable("tblCohort", (string)null);
+                });
+
+            modelBuilder.Entity("GoWithFlow.Domain.Entities.ChallengeAttempt", b =>
+                {
+                    b.Property<long>("AttemptId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("AttemptId"));
+
+                    b.Property<DateTime>("AttemptDate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.Property<long>("ChallengeId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Comments")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasDefaultValue("System");
+
+                    b.Property<DateTime>("DateCreated")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.Property<DateTime?>("DateDeleted")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DeletedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<decimal>("FluencyScore")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("decimal(5,2)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<string>("IPAddress")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasDefaultValue("127.0.0.1");
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("LastUpdated")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("SortOrder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.Property<string>("Tag")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("AttemptId")
+                        .HasName("PK_tblChallengeAttempt_AttemptId");
+
+                    b.HasIndex("ChallengeId")
+                        .HasDatabaseName("IDX_tblChallengeAttempt_ChallengeId");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IDX_tblChallengeAttempt_UserId");
+
+                    b.HasIndex("ChallengeId", "UserId")
+                        .HasDatabaseName("IDX_tblChallengeAttempt_ChallengeId_User");
+
+                    b.ToTable("tblChallengeAttempt", (string)null);
+                });
+
+            modelBuilder.Entity("GoWithFlow.Domain.Entities.WeeklyChallenge", b =>
+                {
+                    b.Property<long>("ChallengeId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("ChallengeId"));
+
+                    b.Property<string>("Comments")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasDefaultValue("Admin");
+
+                    b.Property<DateTime>("DateCreated")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETDATE()");
+
+                    b.Property<DateTime?>("DateDeleted")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DeletedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("IPAddress")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasDefaultValue("127.0.0.1");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("LastUpdated")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("ScriptId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("SortOrder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.Property<string>("Tag")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime>("WeekEndDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("WeekStartDate")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("ChallengeId")
+                        .HasName("PK_tblWeeklyChallenge_ChallengeId");
+
+                    b.HasIndex("IsActive")
+                        .HasDatabaseName("IDX_tblWeeklyChallenge_IsActive");
+
+                    b.HasIndex("WeekStartDate")
+                        .HasDatabaseName("IDX_tblWeeklyChallenge_WeekStartDate");
+
+                    b.ToTable("tblWeeklyChallenge", (string)null);
+                });
+
             modelBuilder.Entity("GoWithFlow.Domain.Entities.DashboardMetric", b =>
                 {
                     b.Property<long>("DashboardMetricId")
@@ -365,6 +622,9 @@ namespace GoWithFlow.Infrastructure.Data.Migrations
                     b.Property<DateTime?>("LastUpdated")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("NextReviewDate")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("MistakeDetail")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
@@ -378,6 +638,16 @@ namespace GoWithFlow.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
                         .HasDefaultValue(0);
+
+                    b.Property<int>("ReviewIntervalDays")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.Property<byte>("ReviewStage")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint")
+                        .HasDefaultValue((byte)0);
 
                     b.Property<long>("ScriptId")
                         .HasColumnType("bigint");
@@ -1354,6 +1624,9 @@ namespace GoWithFlow.Infrastructure.Data.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
 
+                    b.Property<long?>("CohortId")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("CreatedBy")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -1460,6 +1733,9 @@ namespace GoWithFlow.Infrastructure.Data.Migrations
 
                     b.HasKey("UserId")
                         .HasName("PK_tblUser_UserId");
+
+                    b.HasIndex("CohortId")
+                        .HasDatabaseName("IDX_tblUser_CohortId");
 
                     b.HasIndex("MobileNumber")
                         .IsUnique()
@@ -2230,11 +2506,56 @@ namespace GoWithFlow.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("GoWithFlow.Domain.Entities.User", b =>
                 {
+                    b.HasOne("GoWithFlow.Domain.Entities.Cohort", "Cohort")
+                        .WithMany("Members")
+                        .HasForeignKey("CohortId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("FK_tblUser_CohortId_tblCohort_CohortId");
+
+                    b.Navigation("Cohort");
+
                     b.Navigation("RefreshTokens");
 
                     b.Navigation("UserBadges");
 
                     b.Navigation("UserStreaks");
+                });
+
+            modelBuilder.Entity("GoWithFlow.Domain.Entities.Cohort", b =>
+                {
+                    b.Navigation("Members");
+                });
+
+            modelBuilder.Entity("GoWithFlow.Domain.Entities.WeeklyChallenge", b =>
+                {
+                    b.HasOne("GoWithFlow.Domain.Entities.Script", "Script")
+                        .WithMany()
+                        .HasForeignKey("ScriptId")
+                        .IsRequired()
+                        .HasConstraintName("FK_tblWeeklyChallenge_ScriptId_tblScript_ScriptId");
+
+                    b.Navigation("Script");
+
+                    b.Navigation("Attempts");
+                });
+
+            modelBuilder.Entity("GoWithFlow.Domain.Entities.ChallengeAttempt", b =>
+                {
+                    b.HasOne("GoWithFlow.Domain.Entities.WeeklyChallenge", "Challenge")
+                        .WithMany("Attempts")
+                        .HasForeignKey("ChallengeId")
+                        .IsRequired()
+                        .HasConstraintName("FK_tblChallengeAttempt_ChallengeId_tblWeeklyChallenge_ChallengeId");
+
+                    b.HasOne("GoWithFlow.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .IsRequired()
+                        .HasConstraintName("FK_tblChallengeAttempt_UserId_tblUser_UserId");
+
+                    b.Navigation("Challenge");
+
+                    b.Navigation("User");
                 });
 #pragma warning restore 612, 618
         }

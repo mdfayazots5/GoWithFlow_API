@@ -106,6 +106,35 @@ public sealed class MistakeService : IMistakeService
 		return ApiResponse<List<GrammarProgressResponseDto>>.SuccessResult(result, "Grammar progress retrieved successfully.");
 	}
 
+	public async Task<ApiResponse<List<GrammarProgressResponseDto>>> GetGrammarProgressWithTrendAsync(long userId, CancellationToken cancellationToken = default)
+	{
+		if (userId <= 0)
+		{
+			return ApiResponse<List<GrammarProgressResponseDto>>.FailureResult(new[] { "UserId must be greater than zero." }, "Validation failed.");
+		}
+
+		var result = await _mistakeRepository.GetGrammarProgressWithTrendAsync(userId, cancellationToken);
+		return ApiResponse<List<GrammarProgressResponseDto>>.SuccessResult(result, "Grammar progress with trend retrieved successfully.");
+	}
+
+	public async Task<ApiResponse<SpacedRepetitionDueResponseDto>> GetDueForReviewAsync(long userId, CancellationToken cancellationToken = default)
+	{
+		if (userId <= 0)
+		{
+			return ApiResponse<SpacedRepetitionDueResponseDto>.FailureResult(new[] { "UserId must be greater than zero." }, "Validation failed.");
+		}
+
+		var items = await _mistakeRepository.GetMistakesDueForReviewAsync(userId, cancellationToken);
+
+		var response = new SpacedRepetitionDueResponseDto
+		{
+			DueCount = items.Count,
+			Items = items
+		};
+
+		return ApiResponse<SpacedRepetitionDueResponseDto>.SuccessResult(response, "Due reviews retrieved successfully.");
+	}
+
 	private static List<Mistake> BuildMistakesFromVoiceAnalysis(VoiceAnalysis voiceAnalysis)
 	{
 		var mistakes = new List<Mistake>();

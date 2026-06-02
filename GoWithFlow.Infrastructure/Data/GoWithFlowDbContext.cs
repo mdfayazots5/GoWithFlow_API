@@ -17,7 +17,13 @@ public sealed class GoWithFlowDbContext : DbContext
 
 	public DbSet<User> Users => Set<User>();
 
-public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+	public DbSet<Cohort> Cohorts => Set<Cohort>();
+
+	public DbSet<WeeklyChallenge> WeeklyChallenges => Set<WeeklyChallenge>();
+
+	public DbSet<ChallengeAttempt> ChallengeAttempts => Set<ChallengeAttempt>();
+
+	public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
 	public DbSet<AdminNote> AdminNotes => Set<AdminNote>();
 

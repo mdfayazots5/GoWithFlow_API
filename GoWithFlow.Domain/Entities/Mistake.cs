@@ -34,6 +34,12 @@ public sealed class Mistake : BaseAuditEntity
 
 	public DateTime? LastAttempt { get; set; }
 
+	public byte ReviewStage { get; set; }
+
+	public DateTime? NextReviewDate { get; set; }
+
+	public int ReviewIntervalDays { get; set; }
+
 	public User? User { get; set; }
 
 	public Session? Session { get; set; }

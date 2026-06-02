@@ -283,4 +283,137 @@ public sealed class MistakeRepository : IMistakeRepository
 		var ordinal = reader.GetOrdinal(columnName);
 		return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
 	}
+
+	private static byte GetByte(DbDataReader reader, string columnName)
+	{
+		var ordinal = reader.GetOrdinal(columnName);
+		// PostgreSQL SMALLINT maps to short, SQL Server TINYINT maps to byte — Convert handles both
+		return Convert.ToByte(reader.GetValue(ordinal));
+	}
+
+	public async Task<List<SpacedRepetitionDueItemDto>> GetMistakesDueForReviewAsync(long userId, CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetMistakesDueForReview", cancellationToken);
+		command.Parameters.Add(CreateParameter("@UserId", userId));
+
+		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+		var items = new List<SpacedRepetitionDueItemDto>();
+
+		while (await reader.ReadAsync(cancellationToken))
+		{
+			items.Add(new SpacedRepetitionDueItemDto
+			{
+				MistakeId = GetInt64(reader, "MistakeId"),
+				MistakeType = GetString(reader, "MistakeType"),
+				GrammarTag = GetNullableString(reader, "GrammarTag"),
+				UtteranceText = GetString(reader, "UtteranceText"),
+				CorrectionText = GetNullableString(reader, "CorrectionText"),
+				ReviewStage = GetByte(reader, "ReviewStage"),
+				NextReviewDate = GetDateTime(reader, "NextReviewDate"),
+				SessionName = GetString(reader, "SessionName"),
+				ScriptTitle = GetString(reader, "ScriptTitle")
+			});
+		}
+
+		return items;
+	}
+
+	public async Task ScheduleMistakeReviewAsync(long mistakeId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspScheduleMistakeReview", cancellationToken);
+		command.Parameters.Add(CreateParameter("@MistakeId", mistakeId));
+		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
+		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
+
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
+	}
+
+	public async Task AdvanceMistakeReviewAsync(long mistakeId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspAdvanceMistakeReview", cancellationToken);
+		command.Parameters.Add(CreateParameter("@MistakeId", mistakeId));
+		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
+		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
+
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
+	}
+
+	public async Task ResetMistakeReviewByGrammarTagAsync(long userId, string grammarTag, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
+	{
+		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspResetMistakeReview", cancellationToken);
+		command.Parameters.Add(CreateParameter("@UserId", userId));
+		command.Parameters.Add(CreateParameter("@GrammarTag", grammarTag));
+		command.Parameters.Add(CreateParameter("@UpdatedBy", updatedBy));
+		command.Parameters.Add(CreateParameter("@IPAddress", ipAddress));
+
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
+	}
+
+	public async Task<List<GrammarProgressResponseDto>> GetGrammarProgressWithTrendAsync(long userId, CancellationToken cancellationToken = default)
+	{
+		// Get base grammar progress first
+		var baseProgress = await GetGrammarProgressAsync(userId, cancellationToken);
+
+		if (baseProgress.Count == 0) return baseProgress;
+
+		var now          = DateTime.UtcNow;
+		var period1Start = now.AddDays(-28);   // current 4-week window
+		var period2Start = now.AddDays(-56);   // previous 4-week window
+
+		// Count mistakes per GrammarTag per session (for rate calculation)
+		var currentPeriod = await _dbContext.Mistakes.AsNoTracking()
+			.Where(m => m.UserId == userId && m.IsDeleted == false
+				&& !string.IsNullOrEmpty(m.GrammarTag)
+				&& m.FirstOccurrence >= period1Start)
+			.GroupBy(m => new { m.GrammarTag, m.SessionId })
+			.Select(g => new { g.Key.GrammarTag, g.Key.SessionId, Count = g.Count() })
+			.ToListAsync(cancellationToken);
+
+		var previousPeriod = await _dbContext.Mistakes.AsNoTracking()
+			.Where(m => m.UserId == userId && m.IsDeleted == false
+				&& !string.IsNullOrEmpty(m.GrammarTag)
+				&& m.FirstOccurrence >= period2Start && m.FirstOccurrence < period1Start)
+			.GroupBy(m => new { m.GrammarTag, m.SessionId })
+			.Select(g => new { g.Key.GrammarTag, g.Key.SessionId, Count = g.Count() })
+			.ToListAsync(cancellationToken);
+
+		// Calculate avg errors per session per tag per period
+		var currentAvg = currentPeriod
+			.GroupBy(x => x.GrammarTag!)
+			.ToDictionary(g => g.Key, g => (decimal)g.Count() / Math.Max(g.Select(x => x.SessionId).Distinct().Count(), 1));
+
+		var previousAvg = previousPeriod
+			.GroupBy(x => x.GrammarTag!)
+			.ToDictionary(g => g.Key, g => (decimal)g.Count() / Math.Max(g.Select(x => x.SessionId).Distinct().Count(), 1));
+
+		// Enrich each base progress item with trend
+		foreach (var item in baseProgress)
+		{
+			currentAvg.TryGetValue(item.GrammarTag, out var curr);
+			previousAvg.TryGetValue(item.GrammarTag, out var prev);
+
+			item.CurrentPeriodAvg  = Math.Round(curr, 2);
+			item.PreviousPeriodAvg = Math.Round(prev, 2);
+			item.TrendDelta        = Math.Round(curr - prev, 2);
+
+			if (prev == 0 && curr == 0)
+			{
+				item.TrendLabel = null;  // No data in either period
+			}
+			else if (prev > 0 && curr < prev * 0.90m)
+			{
+				item.TrendLabel = "Improving";
+			}
+			else if (prev > 0 && curr > prev * 1.10m)
+			{
+				item.TrendLabel = "Regressing";
+			}
+			else
+			{
+				item.TrendLabel = "Stable";
+			}
+		}
+
+		return baseProgress;
+	}
 }

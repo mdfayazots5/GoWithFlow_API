@@ -77,6 +77,13 @@ public sealed class LiveSessionController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
+	[HttpGet(ApiRoutes.LiveSession.Review)]
+	public async Task<IActionResult> GetSessionReviewAsync(long sessionId, CancellationToken cancellationToken)
+	{
+		var response = await _liveSessionService.GetSessionReviewAsync(sessionId, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
+	}
+
 	private long GetUserId()
 	{
 		var claimValue = User.FindFirstValue("UserId") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);

@@ -74,9 +74,9 @@
   - Expiry: 5 minutes
   - Max attempts: 3
 - API versioning:
-  - URL segment versioning at `/api/v{version}`
-  - default API version `1.0`
-  - reports supported/deprecated versions in response headers
+  - Route prefix: `/api` — `ApiRoutes.VersionPrefix = "api"` (no `/v1/` segment)
+  - All controller routes use `api/{resource}/...` pattern (e.g. `api/auth`, `api/users`, `api/sessions`)
+  - No URL-segment version number is used — routes do not include `/v1/` or any version fragment
 - Logging:
   - Serilog console sink
   - Serilog file sink at `logs/gwf-.txt`
@@ -710,8 +710,8 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 ### Module Scope
 
-- Self-service user APIs under `/api/v1/users`
-- Dedicated dashboard API under `/api/v1/dashboard`
+- Self-service user APIs under `/api/users`
+- Dedicated dashboard API under `/api/dashboard`
 - Profile read/update and avatar upload
 - Session detail drill-down for the authenticated user
 - Improvement dashboard composed from session analytics, weekly trends, grammar progress, repractice history, streaks, and badges
@@ -750,27 +750,35 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 ### API Surface
 
-#### GET /api/v1/dashboard
+#### GET /api/dashboard
 
 - Returns: user name, streak, today date, active session banner, pending repractice count, last 3 sessions, last 3 unresolved mistakes
+
+#### GET /api/dashboard/weekly-report
+
+- Returns: `WeeklyReportResponseDto` — this-week practice stats, fluency delta, weakest grammar tag, 2 recommended scripts. No new DB tables. See Phase 1 Step 3 contract.
+
+#### GET /api/dashboard/learning-path
+
+- Returns: `GuidedLearningPathResponseDto` — up to 3 personalized session recommendations. See Phase 1 Step 4 contract.
 - `activeSession` prefers latest unexpired session where `tblSession.Status` is `LOBBY` or `ACTIVE`
 - Dashboard fallback ignores `tblSessionMember.IsActive` — banner visible until `tblSession.RoomExpiresAt` passes
 - `ACTIVE` sessions preferred over `LOBBY`; null if neither
 
-#### GET /api/v1/users/profile
+#### GET /api/users/profile
 
 - Returns: profile fields plus computed totals (sessions, last-30-day average fluency, resolved mistakes)
 
-#### PUT /api/v1/users/profile
+#### PUT /api/users/profile
 
 - Request DTO: `UpdateProfileRequestDto`
 - Updates: full name, email, age group, preferred hint language, avatar URL
 
-#### POST /api/v1/users/profile/avatar
+#### POST /api/users/profile/avatar
 
 - Multipart form file; saves to `wwwroot/avatars`; updates `tblUser.AvatarUrl`; returns relative avatar URL
 
-#### GET /api/v1/users/sessions/{sessionId}/detail
+#### GET /api/users/sessions/{sessionId}/detail
 
 - Returns: session header, caller performance summary, caller mistake list, listener feedback received, all member scores
 
@@ -820,11 +828,11 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - `404` if `uspgetuserprofilebyuserid` returns no row for the userId
 - `500` if any SP call throws (e.g., type mismatch, missing function, DB unavailable)
 
-#### GET /api/v1/users/streak
+#### GET /api/users/streak
 
 - Returns: current streak, longest streak, last 30 streak rows
 
-#### GET /api/v1/users/badges
+#### GET /api/users/badges
 
 - Returns: all earned badges for the authenticated user
 
@@ -855,7 +863,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 ### Module Scope
 
-- API base route: `api/v1/admin`
+- API base route: `api/admin`
 - Authorization: `[Authorize(Roles = "ADMIN")]`
 - Controller: `AdminController`
 
@@ -992,7 +1000,7 @@ None.
 Empty sessions list returns early with `PagedResult { Items=[], TotalCount=0 }` without executing the member/fluency/mistake sub-queries.
 
 #### Notes on Known Drift Prevented
-- Route prefix drift: ProjectOverview previously documented routes as `/api/v1/admin/...` — corrected to `/api/admin/...` (no version segment; `ApiRoutes.VersionPrefix = "api"`)
+- Route prefix confirmed: all routes use `/api/...` prefix with no version segment (`ApiRoutes.VersionPrefix = "api"`)
 - Endpoint was added to `AdminController`, `IAdminService`, `AdminService`, `IAdminRepository`, `AdminRepository`, and all DTOs but ProjectOverview was not updated — corrected 2026-05-24
 - 404 root cause on first run: backend process was running a stale binary compiled before the endpoint was added; fix = restart API from Visual Studio
 
@@ -1004,7 +1012,7 @@ Empty sessions list returns early with `PagedResult { Items=[], TotalCount=0 }` 
 `/admin/users` — Angular standalone route `AdminUsersComponent`
 
 #### Request Contract
-Endpoint: `GET /api/v1/admin/users`
+Endpoint: `GET /api/admin/users`
 Query params:
 - `searchTerm` (string, optional): filter by name or mobile
 - `ageGroup` (string, optional): `"Child (6-12)"`, `"Teen (13-17)"`, `"Adult (18+)"`, or empty for all
@@ -1056,7 +1064,7 @@ Success (200):
 
 ### Module Scope
 
-- API base route: `api/v1/scripts`
+- API base route: `api/scripts`
 - Purpose: validate admin-uploaded Excel content, upload script metadata and utterances, expose script library and version history, generate sample `.xlsx` template
 
 ### Database Schema
@@ -1098,7 +1106,8 @@ Success (200):
 ### Excel Template Standard (Category-Wise)
 
 - Permanent reference document: `Docs/ExcelTemplateStandard.md` (Version 1.0, 2026-05-22)
-- Six registered categories: `Grammar Drill`, `Roleplay`, `Mock Interview`, `Vocabulary Sprint`, `Fluency Drill`, `Repractice Round`
+- Six registered categories (canonical names): `Grammar Drill`, `Roleplay`, `Mock Interview`, `Vocabulary Sprint`, `Fluency Drill`, `Repractice Round`
+- Legacy category aliases accepted in upload validation (backward compatible with existing DB data): `Interview` = `Mock Interview`, `Vocabulary` = `Vocabulary Sprint`, `Repetition` = `Repractice Round`
 - Each category defines: fixed speaker labels, mandatory columns (D/G/H), row count limits, content rules, metadata defaults, and sample data
 - Speaker labels by category: GrammarDrill → `Speaker A/B`; Roleplay → role-based; MockInterview → `Interviewer/Candidate`; VocabularySprint → `Tutor/Learner`; FluencyDrill → `Speaker A/B`; RepracticeRound → `Coach/Learner`
 - Column D (HintText) mandatory for: `Vocabulary Sprint`, `Repractice Round`
@@ -1110,13 +1119,17 @@ Success (200):
 
 ### API Surface
 
-- `POST /api/v1/scripts/validate` — ADMIN; validates Excel; returns parse result
-- `POST /api/v1/scripts/upload` — ADMIN; validates file, parses, inserts `tblScript`, bulk inserts `tblUtterance`, updates `UtteranceCount`, inserts `tblScriptVersion`; returns `ScriptId`, `ScriptTitle`, `Version`, `UtteranceCount`
-- `GET /api/v1/scripts` — authenticated; paginated script list
-- `GET /api/v1/scripts/{scriptId}` — authenticated; script metadata and ordered utterances
-- `PATCH /api/v1/scripts/status` — ADMIN; updates `tblScript.IsActive`
-- `GET /api/v1/scripts/{scriptId}/versions` — ADMIN; version history
-- `GET /api/v1/scripts/sample-template` — ADMIN; returns generated `.xlsx`
+- `POST /api/scripts/validate` — ADMIN; validates Excel; returns parse result
+- `POST /api/scripts/upload` — ADMIN; validates file, parses, inserts `tblScript`, bulk inserts `tblUtterance`, updates `UtteranceCount`, inserts `tblScriptVersion`; returns `ScriptId`, `ScriptTitle`, `Version`, `UtteranceCount`
+- `GET /api/scripts` — authenticated; paginated script list
+- `GET /api/scripts/{scriptId}` — authenticated; script metadata and ordered utterances
+- `PATCH /api/scripts/status` — ADMIN; updates `tblScript.IsActive`
+- `GET /api/scripts/{scriptId}/versions` — ADMIN; version history
+- `GET /api/scripts/sample-template?category={category}` — ADMIN; returns category-specific `.xlsx` template. When active scripts exist for the category, sample rows are the first 4 utterances of the most recently uploaded active script (DB-sourced). Falls back to static hardcoded samples when no scripts exist for that category. Each template includes a `ScriptTemplate` sheet (color-coded headers) and a `Guide` sheet.
+- `GET /api/scripts/prompt-data?category={category}` — ADMIN; returns `ScriptPromptDataResponseDto` with DB-sourced `grammarTagsInUse`, `contextTagsInUse`, `approvedGrammarTags` (static list), `speakerLabels`, `minRows`, `maxRows`, `mandatoryColumns`, `activeScriptCount`. Used by the upload wizard to build the category-specific Claude prompt shown to the admin.
+- `GET /api/scripts/analytics?category={category}` — ADMIN; per-script quality metrics (Phase 2 Step 7).
+- `POST /api/scripts/{scriptId}/rollback?version={n}` — ADMIN; rolls back to a prior version (Phase 2 Step 8).
+- `POST /api/scripts/{scriptId}/duplicate` — ADMIN; creates inactive copy with all utterances (Phase 2 Step 8).
 
 ### Admin Script Upload Wizard — Stable Flow Contract
 
@@ -1131,12 +1144,12 @@ Success (200):
 
 #### Request Contract
 
-Endpoint: `POST /api/v1/scripts/validate`
+Endpoint: `POST /api/scripts/validate`
 Headers: authenticated admin session; multipart form upload
 Body:
 - `file` (`File`, required): `.xlsx` only, max size `5 MB`
 
-Endpoint: `POST /api/v1/scripts/upload`
+Endpoint: `POST /api/scripts/upload`
 Headers: authenticated admin session; multipart form upload
 Body:
 - `file` (`File`, required): same validated `.xlsx` selected in step 1
@@ -1241,6 +1254,12 @@ Key queries:
 ### Migration State
 
 - `InitialCreate_Phase1`, `AddAdminModule_Phase2`, `AddScriptModule_Phase3`
+
+**Phase 2 additions:**
+- `GET /api/scripts/prompt-data` — see Phase 2 Step 9
+- `GET /api/scripts/analytics` — see Phase 2 Step 7
+- `POST /api/scripts/{id}/rollback` — see Phase 2 Step 8
+- `POST /api/scripts/{id}/duplicate` — see Phase 2 Step 8
 
 ---
 
@@ -1367,7 +1386,7 @@ Frontend sends numeric value; backend maps to stored string.
 
 **Request Contract:**
 ```
-POST /api/v1/sessions
+POST /api/sessions
 Authorization: Bearer {accessToken}
 Body (CreateSessionRequestDto):
   - SessionName (string, required, min 3 max 60)
@@ -1443,7 +1462,7 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 
 **Request Contract:**
 ```
-GET /api/v1/sessions/validate/{joinCode}
+GET /api/sessions/validate/{joinCode}
 Authorization: Bearer {accessToken}
 Path param: joinCode — normalized to uppercase, trimmed
 ```
@@ -1526,7 +1545,7 @@ HTTP 200 — ApiResponse<SessionPreviewResponseDto>
 
 **Request Contract:**
 ```
-POST /api/v1/sessions/join
+POST /api/sessions/join
 Authorization: Bearer {accessToken}
 Body (JoinSessionRequestDto):
   - JoinCode (string, required, exactly 6 chars)
@@ -1609,7 +1628,7 @@ HTTP 200 — ApiResponse<LobbyStateResponseDto>
 
 **Request Contract:**
 ```
-GET /api/v1/sessions/lobby/{sessionId}
+GET /api/sessions/lobby/{sessionId}
 Authorization: Bearer {accessToken}
 Path param: sessionId (long)
 ```
@@ -1647,7 +1666,7 @@ Path param: sessionId (long)
 
 **Request Contract:**
 ```
-PATCH /api/v1/sessions/ready
+PATCH /api/sessions/ready
 Authorization: Bearer {accessToken}
 Body (UpdateReadyStatusRequestDto):
   - SessionId (long, required, > 0)
@@ -1674,7 +1693,7 @@ Body (UpdateReadyStatusRequestDto):
 
 **Request Contract:**
 ```
-POST /api/v1/sessions/{sessionId}/start
+POST /api/sessions/{sessionId}/start
 Authorization: Bearer {accessToken}
 Path param: sessionId (long)
 ```
@@ -1699,7 +1718,7 @@ Path param: sessionId (long)
 - On success: hub immediately calls `GetCurrentTurnAsync(sessionId)` and broadcasts `SESSION_STARTED` to `session_{sessionId}`: `{ sessionId, firstSpeakerId }`
 - `firstSpeakerId` is `currentTurn.ActiveMemberId` from the newly created active turn, not a lobby-member sort derived in a second read path
 - **Host navigation**: host navigates in `emit('StartSession').then(...)` — immediately after the hub method resolves, NOT waiting for the `SESSION_STARTED` event. This prevents the Start button from getting stuck if the event is missed (connection drop between hub resolve and event delivery).
-- **Host fallback recovery**: if the hub invoke resolves late, rejects after the backend already changed state, or the event is missed, the lobby component polls `GET /api/v1/sessions/lobby/{sessionId}` for a short window; `status = ACTIVE` forces navigation to `/live-session/room/{sessionId}` and clears the `Starting...` state
+- **Host fallback recovery**: if the hub invoke resolves late, rejects after the backend already changed state, or the event is missed, the lobby component polls `GET /api/sessions/lobby/{sessionId}` for a short window; `status = ACTIVE` forces navigation to `/live-session/room/{sessionId}` and clears the `Starting...` state
 - **Router fallback**: live-session navigation first uses Angular `router.navigateByUrl('/live-session/room/{sessionId}')`; if Angular returns `false` or does not move the URL, the lobby component falls back to `window.location.assign('/live-session/room/{sessionId}')`
 - **Guest navigation**: guests still navigate on `SESSION_STARTED` event (they have no `.then()` path)
 - On failure: hub throws the first detailed service error from `ApiResponse.Errors` when present; it must not collapse the cause back to the generic message `Session start failed.`
@@ -1731,7 +1750,7 @@ Path param: sessionId (long)
 
 **Request Contract:**
 ```
-POST /api/v1/sessions/{sessionId}/leave
+POST /api/sessions/{sessionId}/leave
 Authorization: Bearer {accessToken}
 Path param: sessionId (long)
 ```
@@ -1766,7 +1785,7 @@ return activeMembers.Count >= 2 && activeMembers.All(m => m.IsReady);
 
 **SignalR / Realtime Events — Live Session Hub (`/hubs/live-session`):**
 - `OnDisconnectedAsync`: always calls `_liveSessionService.MarkMemberLeftAsync(sessionId, userId)` — best-effort DB update (IsActive=0, IsReady=0); also broadcasts `MEMBER_LEFT { userId, slotIndex }`
-- Frontend `confirmLeave()`: calls `POST /api/v1/sessions/{sessionId}/leave` then navigates. Navigation always happens (success or error). `OnDisconnectedAsync` acts as the safety net for browser-close/network-loss.
+- Frontend `confirmLeave()`: calls `POST /api/sessions/{sessionId}/leave` then navigates. Navigation always happens (success or error). `OnDisconnectedAsync` acts as the safety net for browser-close/network-loss.
 
 **Rejoin flow (after leave):**
 1. User navigates back to `/session/join` or dashboard
@@ -1799,7 +1818,7 @@ _dbContext.SessionMembers.AnyAsync(sm => sm.SessionId == sessionId && sm.UserId 
 
 **Notes on Known Drift Prevented:**
 - **Drift 1:** `GetLobbyStateBySessionIdAsync` LINQ was missing `&& sessionMember.IsActive == true` — left members appeared in lobby state, blocking rejoin and giving wrong CanStart. Fixed 2026-05-22.
-- **Drift 2:** `session-room.component.ts` `confirmLeave()` only called `router.navigate()` — no DB update on leave. Fixed 2026-05-22: now calls `POST /api/v1/sessions/{sessionId}/leave` before navigating.
+- **Drift 2:** `session-room.component.ts` `confirmLeave()` only called `router.navigate()` — no DB update on leave. Fixed 2026-05-22: now calls `POST /api/sessions/{sessionId}/leave` before navigating.
 - **Drift 3:** `LiveSessionHub.OnDisconnectedAsync` only broadcast `MEMBER_LEFT` but did not call `MarkMemberLeftAsync` — DB state not updated on browser close or network loss. Fixed 2026-05-22.
 - **Drift 4:** `uspUpdateSessionMemberLeft` previously did not reset `IsReady = 0`; leaving a lobby while ready preserved the flag — on rejoin the member appeared ready without toggling. Fixed in migration `FixMemberLeftSP_ResetIsReady`.
 - **Drift 5:** `LeaveSessionAsync` returned 400 "Session member was not found in the lobby" when `IsActive = 0`, which happens legitimately when `OnDisconnectedAsync` (SessionHub or LiveSessionHub) fires on a WebSocket drop/reconnect cycle BEFORE the user manually clicks Leave. Frontend received 400 but user was already left — idempotent path was missing. Fixed 2026-05-23: added `HasSessionMemberAsync` check; if member exists (any state) but not active → return 200 success. Only returns 400 when member has NO record at all in the session.
@@ -1812,7 +1831,7 @@ _dbContext.SessionMembers.AnyAsync(sm => sm.SessionId == sessionId && sm.UserId 
 
 **Request Contract:**
 ```
-POST /api/v1/sessions/{sessionId}/end
+POST /api/sessions/{sessionId}/end
 Authorization: Bearer {accessToken}
 Path param: sessionId (long)
 ```
@@ -1832,7 +1851,7 @@ Path param: sessionId (long)
 
 **Request Contract:**
 ```
-GET /api/v1/sessions/history?statusFilter=&pageNumber=1&pageSize=20
+GET /api/sessions/history?statusFilter=&pageNumber=1&pageSize=20
 Authorization: Bearer {accessToken}
 Query params:
   - statusFilter (string, optional): LOBBY | ACTIVE | PAUSED | COMPLETED | ABANDONED
@@ -1997,7 +2016,7 @@ Real-time events via SignalR at `/hubs/live-session`.
 
 **Request Contract:**
 ```
-GET /api/v1/turns/{sessionId}/current
+GET /api/turns/{sessionId}/current
 Authorization: Bearer {accessToken}
 Path param: sessionId (long)
 ```
@@ -2036,12 +2055,12 @@ ApiResponse<TurnStateResponseDto>
 **Purpose:** Active speaker marks current turn complete and the next turn is created.
 
 **Entry Points:**
-- REST: `POST /api/v1/turns/{sessionId}/shift`
+- REST: `POST /api/turns/{sessionId}/shift`
 - SignalR hub: `CompleteTurn(sessionId, memberId, turnIndex, score)`
 
 **Request Contract:**
 ```
-POST /api/v1/turns/{sessionId}/shift
+POST /api/turns/{sessionId}/shift
 Authorization: Bearer {accessToken}
 Body (TurnShiftRequestDto):
   - SessionId (long, > 0)
@@ -2080,8 +2099,8 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 
 **Frontend Transition Contract:**
 - `TURN_SHIFT` is a partial event, not a full `TurnStateResponseDto`
-- The active speaker must submit turn completion through hub method `CompleteTurn`, not the REST `POST /api/v1/turns/{sessionId}/shift` endpoint, so every connected client receives `TURN_SHIFT` without needing a manual page reload
-- After receiving `TURN_SHIFT`, the live-session room must refresh `GET /api/v1/turns/{sessionId}/current` to hydrate the canonical state for all clients
+- The active speaker must submit turn completion through hub method `CompleteTurn`, not the REST `POST /api/turns/{sessionId}/shift` endpoint, so every connected client receives `TURN_SHIFT` without needing a manual page reload
+- After receiving `TURN_SHIFT`, the live-session room must refresh `GET /api/turns/{sessionId}/current` to hydrate the canonical state for all clients
 - The room may optimistically swap `activeMemberId`, `turnIndex`, and `utterance`; `activeSlotIndex` is optional in the temporary client-side transition because the canonical current-turn reload runs immediately afterward
 - The shared frontend `TurnState` model should still include `activeSlotIndex` to match the backend contract, but the live room must not depend on that field in the optimistic `TURN_SHIFT` patch path
 
@@ -2105,7 +2124,7 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 
 **Request Contract:**
 ```
-POST /api/v1/turns/{sessionId}/voice-analysis
+POST /api/turns/{sessionId}/voice-analysis
 Authorization: Bearer {accessToken}
 Body (SaveVoiceAnalysisRequestDto):
   - SessionId (long, > 0)
@@ -2180,12 +2199,12 @@ ApiResponse<VoiceAnalysisResponseDto>
 **Purpose:** Non-speaker session members tag the active speaker's performance during a turn.
 
 **Entry Points:**
-- REST: `POST /api/v1/turns/{sessionId}/listener-feedback`
+- REST: `POST /api/turns/{sessionId}/listener-feedback`
 - SignalR hub: `SubmitListenerFeedback(sessionId, tag, targetTurnIndex)`
 
 **Request Contract:**
 ```
-POST /api/v1/turns/{sessionId}/listener-feedback
+POST /api/turns/{sessionId}/listener-feedback
 Authorization: Bearer {accessToken}
 Body (ListenerFeedbackRequestDto):
   - SessionId (long, > 0)
@@ -2212,7 +2231,7 @@ Body (ListenerFeedbackRequestDto):
 
 **Frontend Transition Contract:**
 - Listener quick-feedback buttons must call hub method `SubmitListenerFeedback(sessionId, tag, targetTurnIndex)` so all clients receive `LISTENER_TAG` immediately
-- REST `POST /api/v1/turns/{sessionId}/listener-feedback` remains valid as a data endpoint, but using it directly in the live room bypasses the realtime broadcast and leaves other clients stale until reload
+- REST `POST /api/turns/{sessionId}/listener-feedback` remains valid as a data endpoint, but using it directly in the live room bypasses the realtime broadcast and leaves other clients stale until reload
 
 **Failure Cases:**
 - Invalid feedback tag → `"FeedbackTag is invalid."`
@@ -2228,12 +2247,12 @@ Body (ListenerFeedbackRequestDto):
 **Purpose:** Active speaker requests to re-read the current turn's utterance. Capped at 2.
 
 **Entry Points:**
-- REST: `POST /api/v1/turns/{sessionId}/re-read`
+- REST: `POST /api/turns/{sessionId}/re-read`
 - SignalR hub: `RequestReRead(sessionId, requesterId)`
 
 **Request Contract:**
 ```
-POST /api/v1/turns/{sessionId}/re-read
+POST /api/turns/{sessionId}/re-read
 Authorization: Bearer {accessToken}
 Path param: sessionId (long)
 ```
@@ -2262,12 +2281,12 @@ Path param: sessionId (long)
 **Purpose:** Ends the live session, extracts mistakes, updates streaks and badges, returns per-member summary.
 
 **Entry Points:**
-- REST: `POST /api/v1/sessions/{sessionId}/complete`
+- REST: `POST /api/sessions/{sessionId}/complete`
 - SignalR hub: `EndSession(sessionId)`
 
 **Request Contract:**
 ```
-POST /api/v1/sessions/{sessionId}/complete
+POST /api/sessions/{sessionId}/complete
 Authorization: Bearer {accessToken}
 Path param: sessionId (long)
 ```
@@ -2326,8 +2345,8 @@ ApiResponse<SessionSummaryResponseDto>
 2. Frontend connects to `/hubs/live-session?sessionId={id}&access_token={token}`
 3. Hub `OnConnectedAsync` calls `GetActiveSessionMemberByUserIdAsync` to resolve slot and fullName for the connection
 4. Frontend calls `JoinLiveSession(sessionId, userId)` → broadcasts `MEMBER_JOINED`: `{ userId, name, slotIndex }`
-5. Frontend calls `GET /api/v1/turns/{sessionId}/current` to load the first turn
-6. On each `TURN_SHIFT`, every connected client reloads `GET /api/v1/turns/{sessionId}/current` before deciding whether to render speaker or listener UI
+5. Frontend calls `GET /api/turns/{sessionId}/current` to load the first turn
+6. On each `TURN_SHIFT`, every connected client reloads `GET /api/turns/{sessionId}/current` before deciding whether to render speaker or listener UI
 
 **Precondition for live hub connection (UPDATED — page-refresh reconnect supported):**
 - `ResolveConnectionMetadataAsync` first checks `GetActiveSessionMemberByUserIdAsync` (`IsActive = 1`)
@@ -2500,7 +2519,7 @@ Subscribers: active session members inside the live room
 ### Recovery / Fallback Logic
 - `main.ts` imports `@angular/compiler` so JIT-required dependencies do not hard-fail bootstrap
 - Child live-session route resolves the room through a static component reference inside the lazy child route file
-- `SessionRoomComponent.retryLoad()` re-runs `GET /api/v1/turns/{sessionId}/current` after transient API failure
+- `SessionRoomComponent.retryLoad()` re-runs `GET /api/turns/{sessionId}/current` after transient API failure
 - Session preference toggle states use `ngClass` string switching for `bg-white/15`, `bg-white/5`, `text-white/40`, and `translate-x-0.5` style utilities instead of `[class.*]` bindings
 - Session preference toggle thumbs use explicit `left-0.5` anchoring plus inline transform distance instead of class-only translation so the knob stays visually aligned in rendered HTML
 
@@ -2527,11 +2546,12 @@ sessionResult: VoiceSessionResult | null
 ```
 - `'recording'` → `VoiceRecorderComponent` shown. User taps mic to start/stop.
 - `'feedback'` → `VoiceFeedbackComponent` shown with word-level scoring. User taps "Done Speaking".
-- Reset on each `ngOnChanges(turnState)` → `resetPhase()`.
+- Reset only when `turnIndex` changes in `ngOnChanges(changes: SimpleChanges)`.
 
 **Turn Start:**
-1. `ngOnChanges(turnState)` → `words.set(...)` → `resetPhase()` → `analysisPhase = 'recording'`, `sessionResult = null`
-2. User taps mic inside `VoiceRecorderComponent` → `VoiceRecognitionEngine.startSession()` begins
+1. `ngOnChanges(changes: SimpleChanges)` → checks `changes['turnState'].previousValue?.turnIndex !== currentTurnIndex`. Only if the turn index changed: `resetPhase()` → `analysisPhase = 'recording'`, `sessionResult = null`. Same-turn re-inputs (e.g. server API confirmation of an already-set optimistic state) are ignored — phase and auto-start are NOT reset.
+2. `words.set(...)` always updates (text could theoretically differ between optimistic and server, safe to always sync)
+3. User taps mic inside `VoiceRecorderComponent` → `VoiceRecognitionEngine.startSession()` begins
 
 **Recording Phase — VoiceRecognitionEngine flow:**
 1. `requestMicPermission()` — `navigator.mediaDevices.getUserMedia` before recognition starts
@@ -2551,7 +2571,7 @@ sessionResult: VoiceSessionResult | null
 - Sets `sessionResult = result`, `analysisPhase = 'feedback'`
 - Calls `VoiceBroadcastService.stopBroadcast()`
 - Maps `VoiceSessionResult` → voice analysis payload
-- POST `/api/v1/turns/{sessionId}/voice-analysis` — non-blocking (`.subscribe()` no handler)
+- POST `/api/turns/{sessionId}/voice-analysis` — non-blocking (`.subscribe()` no handler)
 
 **onDoneSpeaking() — Turn Submission:**
 - Guard: `if (isSubmitting()) return`
@@ -2588,6 +2608,7 @@ sessionResult: VoiceSessionResult | null
 - Old system: no silence detection → recording ran forever. Fixed: `AudioActivityDetector` VAD + 8s fallback timeout.
 - Old system: no mic permission pre-check → silent failure on first use. Fixed: `requestMicPermission()` before engine starts.
 - `defaultVoiceStarter` and `autoSubmitOnStop` session prefs no longer active — new flow requires explicit user tap for both start and confirm.
+- **Drift 5 (2026-06-01): Non-host speaker gets double bell + "no data detected" on auto-start** — `handleTurnShift()` in `SessionRoomComponent` did two back-to-back `turnState.set()` calls for the same turn: (1) an optimistic update immediately on `TURN_SHIFT` event, (2) the API-confirmed state when `loadCurrentTurn()` returned. Each `turnState.set()` triggered `ngOnChanges()` in `SpeakerScreenComponent`. The second firing reset `analysisPhase = 'recording'` mid-recording and re-armed `_pendingAutoStart`, causing a second `voiceRecorder.startRecording()` call ~700ms later. The second `startSession()` wiped `allFinalTranscripts = []`, started a competing `SpeechRecognition` instance (playing a second browser bell sound), and eventually resolved with empty transcript data. Host user was unaffected because their turn loaded via `initSession()` (single `loadCurrentTurn` path, no `TURN_SHIFT`). **Three-part fix applied 2026-06-01:** (a) **`updateState()` guard in `SessionRoomComponent`**: `turnState.set()` only fires when `turnIndex` or `sessionId` actually changes — same-turn API confirmation is a no-op on the signal. (b) **`ngOnChanges` turnIndex guard in `SpeakerScreenComponent`**: `SimpleChanges` added; `resetPhase()` and auto-start are only triggered when `ts.previousValue?.turnIndex !== currentTurnIndex`, not on every input reference change. (c) **`startSession()` active-session guard in `VoiceRecognitionEngine`**: if `state$ !== 'idle'`, `stopSession()` is called before starting a new one — prevents transcript wipe and competing recognition instances if the double-start ever occurs.
 
 ### Frontend Voice Recognition Engine — Stable Contract
 
@@ -2796,11 +2817,158 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 | Protocol drift | WebRTC ICE candidates dropped before `setRemoteDescription` — candidate queue added | `voice-broadcast.service.ts` |
 | Cleanup drift | `destroy()` called `closePeerConnections()` twice — resolved by listener-first ordering + `isBroadcasting` guard | `voice-broadcast.service.ts` |
 
-### Migration State
+---
 
-- `InitialCreate_Phase1`, `AddAdminModule_Phase2`, `AddScriptModule_Phase3`, `AddSessionModule_Phase4`, `AddLiveSessionModule_Phase5`, `AddUserModule_Phase7`
+## Backend Live Session Module — Phase 0 Workflow Fixes (2026-06-01)
+
+### Facilitator Role Awareness — Stable Contract
+
+**Purpose:** Distinguish facilitator turns (Interviewer, Tutor, Coach) from performance turns. Facilitator turns are read-aloud only — no voice analysis, no scoring, no listener feedback, no re-read button.
+
+**Facilitator Role Mapping:**
+
+| Category (canonical) | Facilitator Speaker Label | Performer Speaker Label |
+|---|---|---|
+| Mock Interview / Interview | Interviewer | Candidate |
+| Vocabulary Sprint / Vocabulary | Tutor | Learner |
+| Repractice Round / Repetition | Coach | Learner |
+| Grammar Drill, Roleplay, Fluency Drill | — (both speakers perform) | Both |
+
+**Implementation:**
+- `GoWithFlow.Application.Common.FacilitatorRoles` — static helper, `IsFacilitator(category, speakerLabel)`. Handles both canonical and legacy category names.
+- `TurnStateResponseDto.IsFacilitatorTurn` (bool) — computed in `LiveSessionRepository.GetCurrentTurnAsync` by joining `tblScript` via `utterance.ScriptId` and calling `FacilitatorRoles.IsFacilitator(script.Category, utterance.SpeakerLabel)`.
+- `MemberScoreDto.IsFacilitator` (bool) — tagged in `GetSessionCompletionSummaryAsync` after loading session members' slot names. Enables the session report to exclude facilitators from the performance scoreboard.
+- Frontend `TurnState.isFacilitatorTurn` (bool) — mapped from API response.
+- `SpeakerScreenComponent`: when `isFacilitatorTurn = true`, renders a "Read Aloud" mode UI (text display + "Done Reading — Next Turn" button). No voice recorder, no voice analysis call, no score. Calls `onSkip()` which submits `CompleteTurn` with score 0.
+- `SpeakerScreenComponent.showReReadButton`: also checks `!isFacilitatorTurn` — ensures re-read button never appears on facilitator turns.
+- `SessionReportComponent.scoreboard`: filters `MemberScores` to `!isFacilitator` for performance leaderboard. Facilitator names shown in a separate "Facilitator" section below the leaderboard.
+- `handleTurnShift()` in `SessionRoomComponent`: optimistic update sets `isFacilitatorTurn: false` (safe default — the canonical `loadCurrentTurn()` call immediately follows and sets the correct value).
 
 ---
+
+### Listener Feedback — Simplified Contract (Phase 0 Step 2)
+
+**Change:** Reduced from 4 tags to 2 tags. Automatic voice analysis already captures hesitation, grammar errors, and pronunciation issues at higher accuracy than human listener tags.
+
+**Valid FeedbackTag values (current):**
+- `"Good"` — social positive signal. Peer encouragement.
+- `"Needs Work"` — gentle concern flag. Alias `"NeedsWork"` accepted server-side.
+
+**Removed tags:** `"Hesitated"`, `"Mistake"`, `"Unclear Pronunciation"` — all direct duplicates of automatic voice analysis.
+
+**Facilitator turn suppression:** Listener feedback buttons are hidden entirely when `turnState.isFacilitatorTurn = true`. Facilitator turns (Interviewer, Tutor, Coach) are not performance turns — listener feedback on them is meaningless.
+
+**Files changed:**
+- `ListenerFeedbackTagType.cs` — enum reduced to `Good = 1`, `NeedsWork = 2`
+- `ListenerFeedbackRequestValidator.cs` — `ValidTags` now `["Good", "Needs Work"]`
+- `LiveSessionService.FeedbackTagMap` — maps only `Good` and `Needs Work / NeedsWork`
+- `ListenerScreenComponent` — `feedbackActions` reduced to 2 buttons; feedback section wrapped in `@if (!turnState.isFacilitatorTurn)`
+
+---
+
+### Re-Read Button Restriction (Phase 0 Step 3)
+
+Handled structurally by the facilitator turn UI: facilitator turns render "Read Aloud" mode only — no recording phase, no feedback phase, so the re-read button is never reached. Additionally, `showReReadButton` getter in `SpeakerScreenComponent` explicitly checks `!this.turnState.isFacilitatorTurn`.
+
+### Migration State
+
+- `InitialCreate_Phase1`, `AddAdminModule_Phase2`, `AddScriptModule_Phase3`, `AddSessionModule_Phase4`, `AddLiveSessionModule_Phase5`, `AddUserModule_Phase7`, `AddVocabularyModule_Phase8`
+
+---
+
+---
+
+## Phase 1 Feature Contracts (2026-06-01)
+
+### Phase 1 Step 1 — Post-Session Review
+
+**Purpose:** Users can revisit their completed session with a full per-turn transcript, inline grammar error annotations, hesitation flags, pronunciation issues, and per-turn scores.
+
+**Entry Points:** `/session/review/:sessionId` (Angular route). "Review" icon button on session history list.
+
+**API Endpoint:** `GET /api/turns/{sessionId}/review`
+- Auth: UserOrAdmin + ActiveUser
+- Returns: `SessionReviewResponseDto` with `SessionId`, `ScriptTitle`, `Category`, `GrammarFocusTag`, `TotalTurns`, `AverageOverallScore`, `Turns: List<SessionReviewTurnDto>`
+- Each `SessionReviewTurnDto`: `TurnIndex`, `SpeakerLabel`, `IsFacilitatorTurn`, `EnglishText`, `TranscribedText`, `FluencyScore`, `ConfidenceScore`, `SpeakingSpeedWpm`, `OverallScore`, `HesitationWords`, `GrammarErrors`, `PronunciationIssues`, `WasAnalyzed`
+
+**Data source:** `tblUtterance` (all turns), `tblVoiceAnalysis` (per-user voice analysis joined by UtteranceId), `tblScript` (session metadata via `tblSession.ScriptId`).
+
+**Implementation:**
+- `ILiveSessionRepository.GetSessionReviewAsync(sessionId, userId)` — EF LINQ query building `SessionReviewResponseDto`. Calls existing `GetVoiceAnalysisByUserIdAsync(userId, sessionId)` and joins by `UtteranceId`.
+- `ILiveSessionService.GetSessionReviewAsync(sessionId, userId)` — validation wrapper
+- `LiveSessionController.GetSessionReviewAsync` — `GET /api/turns/{sessionId}/review`
+- Frontend: `SessionReviewComponent` (`/session/review/:sessionId`), `live-session.service.getSessionReview()`, `SessionReview` model, route added to `session.routes.ts`
+- Session history: "Review" icon button (FileText icon) added alongside chevron
+
+**Facilitator turns:** `WasAnalyzed = false`, score = 0. Only performance turns (non-facilitator) are scored. `AverageOverallScore` calculated from analyzed performance turns only.
+
+---
+
+### Phase 1 Step 2 — Vocabulary Retention Tracker
+
+**Purpose:** Tracks FocusWords introduced in VocabularySprint sessions per user. Shows vocabulary bank, correct production rate, and words due for review (not seen in 7+ days).
+
+**DB Table:** `tblUserVocabulary`
+- Key columns: `UserId`, `FocusWord NVARCHAR(64)`, `SourceSessionId`, `DateIntroduced`, `WasProducedCorrectly BIT`, `TimesEncountered INT`
+- Unique constraint: `(UserId, FocusWord, SourceSessionId)` — prevents duplicates per session
+- Indexes: `IDX_tblUserVocabulary_UserId`, `IDX_tblUserVocabulary_UserId_FocusWord`
+- Migration: `20260601000001_AddVocabularyModule_Phase8.cs` (raw SQL `migrationBuilder.Sql()` — no EF entity mapping)
+- PostgreSQL equivalent: `Docs/PostgreSQLMigration/17_add_vocabulary_module.sql`
+
+**API Endpoint:** `GET /api/vocabulary/bank`
+- Returns: `VocabularyBankResponseDto` with `TotalWords`, `DueForReviewCount`, `Words: List<VocabularyBankItemDto>`
+- Each word: `FocusWord`, `DateIntroduced`, `TimesEncountered`, `TimesCorrect`, `CorrectRate` (%), `IsDueForReview` (not seen in 7+ days)
+
+**Hook:** `LiveSessionService.CompleteSessionAsync` — if `session.SessionMode` is `Vocabulary Sprint` or `Vocabulary`, calls `IVocabularyService.SaveSessionVocabularyAsync(sessionId, learnerId)` for each Learner member.
+
+**Word correctness determination:** Learner voice analysis `OverallScore >= 60` → `WasProducedCorrectly = true`.
+
+**Session summary enrichment:** `SessionSummaryResponseDto.VocabularySummary` (type: `SessionVocabularySummaryDto`) populated for VocabularySprint sessions only.
+
+**Services/Repository:**
+- `IVocabularyRepository`, `VocabularyRepository` — raw ADO.NET queries on `tblUserVocabulary` (MERGE upsert for SQL Server)
+- `IVocabularyService`, `VocabularyService` — hooks session completion and provides bank data
+- `VocabularyController` — `GET /api/vocabulary/bank`
+- Frontend: `VocabularyBankComponent` at `/user/vocabulary`, `user.service.getVocabularyBank()`
+
+---
+
+### Phase 1 Step 3 — Weekly Learning Report
+
+**Purpose:** Dismissible card on user dashboard showing this-week practice stats, improvement delta vs. last week, and 2 recommended scripts.
+
+**API Endpoint:** `GET /api/dashboard/weekly-report`
+- Returns: `WeeklyReportResponseDto` with `SessionsThisWeek`, `PracticeMinutesThisWeek`, `ErrorsDetectedThisWeek`, `ErrorsResolvedThisWeek`, `TopImprovementMetric`, `WeakestGrammarTag`, `RecommendedScript1Id/Title`, `RecommendedScript2Id/Title`, `IsReengagement`, `LastSessionDate`
+- Week boundary: Monday 00:00 UTC to Sunday 23:59 UTC
+- No new DB tables. All data from: `tblSession`, `tblSessionMember`, `tblVoiceAnalysis`, `tblMistake`, `tblScript`
+
+**Implementation:**
+- `UserRepository.GetWeeklyReportAsync(userId)` — EF LINQ queries (no SPs)
+- `UserDashboardService.GetWeeklyReportAsync(userId)`
+- `UserDashboardController.GetWeeklyReportAsync` — `GET /api/dashboard/weekly-report`
+- Frontend: `UserDashboardComponent` loads on `ngOnInit`. Shown once per calendar week (tracked in `localStorage` key `gwf_weekly_report_{year}-W{week}`). Dismiss sets the key to `'dismissed'` — not shown again until next week.
+
+---
+
+### Phase 1 Step 4 — Guided Learning Path
+
+**Purpose:** Shows 2–3 personalized next-session recommendations on the dashboard based on mistake history, recent performance, and category variety.
+
+**API Endpoint:** `GET /api/dashboard/learning-path`
+- Returns: `GuidedLearningPathResponseDto` with `Recommendations: List<LearningPathRecommendationDto>`
+- Each recommendation: `ScriptId`, `ScriptTitle`, `Category`, `ComplexityLevel`, `ReasonText`, `RecommendationType` (`repractice` | `low_score` | `variety`)
+
+**Recommendation logic (priority order):**
+1. `repractice`: Unresolved mistakes exist → RepracticeRound script matching top GrammarTag
+2. `low_score`: Last sessions in a category average < 65 → repeat that category
+3. `variety`: User hasn't tried a category in 14+ days → suggest it
+4. Fallback: most recently uploaded active script
+
+**Implementation:**
+- `UserRepository.GetGuidedLearningPathAsync(userId)` — EF LINQ queries
+- `UserDashboardService.GetGuidedLearningPathAsync(userId)`
+- `UserDashboardController.GetGuidedLearningPathAsync` — `GET /api/dashboard/learning-path`
+- Frontend: `UserDashboardComponent` loads learning path on `ngOnInit`. Panel displayed above "Recent Sessions" when recommendations exist. Each card links to `/scripts` with `scriptId` query param.
 
 ## Backend Mistake Repractice Module
 
@@ -2836,36 +3004,36 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 
 - All endpoints require authentication. `UserId` always sourced from JWT — not from request body.
 
-#### GET /api/v1/mistakes
+#### GET /api/mistakes
 
 - Returns paginated mistakes; supports `MistakeType` and `IsResolved` filters
 
-#### GET /api/v1/mistakes/summary
+#### GET /api/mistakes/summary
 
 - Returns: total, resolved, pending, improvement-percentage for authenticated user
 
-#### GET /api/v1/mistakes/grammar-progress
+#### GET /api/mistakes/grammar-progress
 
 - Returns: grammar-tag level progress with resolved counts and progress-bar percentages
 
-#### POST /api/v1/repractice/generate
+#### POST /api/repractice/generate
 
 - Loads unresolved mistakes for authenticated user and source session; creates one repractice session with one repractice utterance per mistake
 
-#### GET /api/v1/repractice/{repracticeSessionId}
+#### GET /api/repractice/{repracticeSessionId}
 
 - Validates ownership against authenticated user; returns session metadata + ordered repractice utterances
 
-#### GET /api/v1/repractice/history
+#### GET /api/repractice/history
 
 - Returns paginated repractice history
 
-#### PATCH /api/v1/repractice/attempt
+#### PATCH /api/repractice/attempt
 
 - Updates: `AttemptCount`, `BestScore`, `LastScore`, linked mistake `PracticeCount`
 - Resolves both repractice utterance and linked mistake after 2 consecutive scores > 80
 
-#### POST /api/v1/repractice/{repracticeSessionId}/complete
+#### POST /api/repractice/{repracticeSessionId}/complete
 
 - Validates ownership; recalculates improvement percent; marks session `COMPLETED`; re-runs badge evaluation
 
@@ -2899,3 +3067,459 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - `InitialCreate_Phase1`, `AddAdminModule_Phase2`, `AddScriptModule_Phase3`, `AddSessionModule_Phase4`, `AddLiveSessionModule_Phase5`, `AddUserModule_Phase7`, `AddMistakeModule_Phase6`
 - `AddMistakeModule_Phase6` creates only `tblMistake`, `tblRepracticeSession`, `tblRepracticeUtterance`
 - `tblUserBadge` and `tblUserStreak` are in `AddUserModule_Phase7`
+
+**Phase 2 PostgreSQL Migrations (applied to Supabase 2026-06-01):**
+- `17_add_vocabulary_module.sql` → `tbluservocabulary` (lowercase identifiers, `INSERT ON CONFLICT` upsert)
+- `18_add_learning_goal_module.sql` → `tblusergoal` (lowercase identifiers, boolean columns, `NOW()`)
+- Note: PostgreSQL uses lowercase unquoted table/column names. All raw SQL in `VocabularyRepository` and Goal methods in `UserRepository` are provider-aware (SQL Server branch uses `dbo.` prefix + `GETDATE()` + `MERGE`; PostgreSQL branch uses `public.` prefix + `NOW()` + `INSERT ON CONFLICT`).
+
+---
+
+## Phase 2 Feature Contracts (2026-06-01)
+
+### Phase 2 Step 1 — Interview Performance Dashboard
+
+**Purpose:** Dedicated MockInterview performance analytics view for users, showing Interview Readiness Score, session timeline, grammar weaknesses, and professional vocabulary performance.
+
+**Entry Points:** `/user/interview-performance` (Angular route). "Interview Performance" quick-link card on Improvement Tracker page.
+
+**API Endpoint:** `GET /api/dashboard/interview-performance`
+- Auth: UserOrAdmin + ActiveUser
+- Returns: `InterviewPerformanceDashboardResponseDto`
+  - `HasData`: bool — false if no completed MockInterview sessions exist
+  - `InterviewReadinessScore` (0–100): composite from last 5 sessions (40% fluency, 25% confidence, 20% error rate, 15% answer speed)
+  - `ReadinessTrend`: Improving / Stable / Declining
+  - `TotalMockSessions`: int
+  - `SessionTimeline`: last 10 sessions with per-session readiness score, fluency, confidence, mistake count
+  - `TopGrammarErrors`: top 3 grammar error tags from Candidate turns
+  - `FocusWordPerformance`: professional vocabulary correct/stumbled rates
+  - `AnswerLengthTrend`: Improving / Stable / Declining (based on WPM)
+  - `AvgAnswerSpeedWpm`: average Candidate answer speed
+  - `RecommendedScriptId/Title/Reason`: next script targeting weakest grammar tag
+
+**Data source:** `tblVoiceAnalysis` + `tblUtterance` (SpeakerLabel = "Candidate") + `tblMistake` + `tblSession` (Category = "Mock Interview" or "Interview").
+
+**Implementation:**
+- `IUserRepository.GetInterviewPerformanceDashboardAsync(userId)` — EF LINQ
+- `IUserDashboardService.GetInterviewPerformanceDashboardAsync(userId)`
+- `UserDashboardController.GetInterviewPerformanceDashboardAsync` — `GET /api/dashboard/interview-performance`
+- Frontend: `InterviewPerformanceComponent` at `/user/interview-performance`
+- Quick-link card added to `ImprovementTrackerComponent`
+
+---
+
+### Phase 2 Step 2 — Pronunciation Improvement Timeline
+
+**Purpose:** Shows per-word pronunciation problem history across all sessions — problem word list, per-session dot timeline, IPA references, and "practice this" script links.
+
+**Entry Points:** `/user/pronunciation-timeline`. Link card on Improvement Tracker.
+
+**API Endpoint:** `GET /api/dashboard/pronunciation-timeline`
+- Auth: UserOrAdmin + ActiveUser
+- Returns: `PronunciationTimelineResponseDto`
+  - `HasData`: bool
+  - `ProblemWords`: top 20 words from `tblVoiceAnalysis.PronunciationJson`, ordered by frequency
+  - `TopPersistentWords`: words with issues in 3+ of last 10 sessions (top 5) — each with `PracticeScriptId/Title` linking to a script where the word is a FocusWord
+
+**Implementation:**
+- `IUserRepository.GetPronunciationTimelineAsync(userId)` — parses `PronunciationJson` from last 300 turns (in memory), builds word → session map, joins `tblUtterance.PronunciationNote` for IPA
+- `UserDashboardController.GetPronunciationTimelineAsync` — `GET /api/dashboard/pronunciation-timeline`
+- Frontend: `PronunciationTimelineComponent` at `/user/pronunciation-timeline`
+
+---
+
+### Phase 2 Step 3 — Session Preparation Mode
+
+**Purpose:** Full-page read-only script preview allowing users to read through all utterances before joining a session.
+
+**Entry Points:** `/scripts/prepare/:scriptId` — "Prepare" icon button (BookMarked icon) added to each script card in the Script Library.
+
+**Data:** Uses existing `GET /api/scripts/{scriptId}` endpoint — no new backend work.
+
+**Implementation:**
+- `ScriptService.getScriptDetail(scriptId)` added to Angular `ScriptService`
+- `ScriptPrepareComponent` at `/scripts/prepare/:scriptId` — shows metadata, full utterance list with HintText and GrammarTag/FocusWord; facilitator turns (Interviewer/Tutor/Coach) displayed as shaded
+- Route added to `SCRIPTS_ROUTES`
+- "Prepare" `BookMarked` icon button added to script library card actions
+
+---
+
+### Phase 2 Step 4 — Learning Goals and Progress Tracking
+
+**Purpose:** Users set a practice goal (interview/grammar/vocabulary/fluency), a timeline (2/4/8 weeks), and see progress tracking on their dashboard.
+
+**DB Table:** `tblUserGoal`
+- Key columns: `UserId`, `GoalType NVARCHAR(64)`, `TimelineWeeks INT`, `StartDate`, `TargetDate`, `DetectedLevel NVARCHAR(32)`, `StartingScore DECIMAL(5,2)`, `IsActive BIT`
+- Migration: `20260601000002_AddLearningGoal_Phase9.cs` (raw SQL — no EF entity mapping)
+- PostgreSQL equivalent: `Docs/PostgreSQLMigration/18_add_learning_goal_module.sql`
+
+**API Endpoints:**
+- `POST /api/users/goal` — set/replace active goal; auto-detects level from last 5 sessions
+- `GET /api/users/goal` — returns `GoalProgressResponseDto` with sessions completed, score movement, trend, estimated weeks remaining, recommended plan
+
+**Goal level detection:** avg FluencyScore last 5 sessions — < 55 = Beginner, 55–74 = Intermediate, 75+ = Advanced.
+
+**Implementation:**
+- `IUserRepository.SetUserGoalAsync` + `GetGoalProgressAsync` — raw ADO.NET (no EF entity)
+- `IUserService.SetGoalAsync` + `GetGoalProgressAsync`
+- `UserController` — `POST/GET /api/users/goal`
+- Frontend: `LearningGoalsComponent` at `/user/goals`
+- Dashboard: goal progress panel added (progress bar, sessions/target, trend, weeks remaining). "Set a Learning Goal →" link shown when no active goal.
+
+---
+
+### Phase 2 Step 5 — Cross-Session Grammar Error Trend Analysis
+
+**Purpose:** Adds 4-week rolling trend (Improving / Stable / Regressing) to each grammar tag in the grammar progress view.
+
+**API Endpoint:** `GET /api/mistakes/grammar-trends`
+- Auth: UserOrAdmin + ActiveUser
+- Returns: `List<GrammarProgressResponseDto>` — same shape as grammar-progress but with added fields:
+  - `TrendLabel`: Improving / Stable / Regressing / null (insufficient data)
+  - `CurrentPeriodAvg`: avg errors/session in the current 4-week window
+  - `PreviousPeriodAvg`: avg errors/session in the previous 4-week window
+  - `TrendDelta`: current minus previous (positive = more errors = regressing)
+
+**Trend logic:** Improving if current < previous × 0.90; Regressing if current > previous × 1.10; Stable otherwise.
+
+**Implementation:**
+- `IMistakeRepository.GetGrammarProgressWithTrendAsync(userId)` — calls existing SP + EF LINQ trend enrichment
+- `IMistakeService.GetGrammarProgressWithTrendAsync`
+- `MistakeController.GetGrammarProgressWithTrendAsync` — `GET /api/mistakes/grammar-trends`
+- Frontend: `ImprovementTrackerComponent` loads trend data from `grammar-trends` endpoint; grammar cards show trend badge (colour-coded); Regressing items get amber border
+
+---
+
+### Phase 2 Step 6 — Filler Phrase Detection
+
+**Purpose:** Extends hesitation detection from single words (um, uh, er) to full multi-word filler phrases (you know, I mean, basically, kind of, sort of, you see, to be honest, at the end of the day). "like" and "actually" flagged only when used 3+ times in a single turn.
+
+**No backend changes.** Detection is entirely frontend-side, in the voice analysis engine.
+
+**Files changed:**
+- `Frontend/src/app/core/services/voice/transcript-normalizer.ts` — new `detectFillerPhrases(rawText: string): string[]` method with single-word + multi-word + frequency-gated detection
+- `Frontend/src/app/core/services/voice/voice-recognition.engine.ts` — `detectHesitations(transcript)` now delegates entirely to `TranscriptNormalizer.detectFillerPhrases()`; old `hesitationPatterns` array removed
+
+**Confidence penalty:** Unchanged — each detected filler/phrase counts as one hesitation unit, max 25 point total penalty.
+
+**Post-Session Review display:** Filler phrases appear inline in transcript alongside single-word hesitations (same display path — stored in `HesitationWords` CSV field in `tblVoiceAnalysis`).
+
+---
+
+### Phase 2 Step 7 — Admin Script Quality Analytics
+
+**Purpose:** Admin view showing per-script performance metrics: session count, completion rate, avg fluency, avg mistakes, avg duration, re-read rate, repractice conversion rate, last used date. Scripts unused 60+ days flagged as inactive.
+
+**Entry Points:** `/admin/script-analytics` — "Analytics" button added to admin scripts page header.
+
+**API Endpoint:** `GET /api/scripts/analytics?category={optional}`
+- Auth: AdminOnly
+- Returns: `List<ScriptAnalyticsItemDto>` — per-script metrics
+
+**Data joins:** `tblScript` → `tblSession` → `tblVoiceAnalysis`, `tblMistake`, `tblTurnState`, `tblRepracticeSession`
+
+**Implementation:**
+- `IScriptRepository.GetScriptAnalyticsAsync(categoryFilter)` — EF LINQ aggregation
+- `IScriptService.GetScriptAnalyticsAsync(categoryFilter)`
+- `ScriptController.GetScriptAnalyticsAsync` — `GET /api/scripts/analytics`
+- Frontend: `AdminScriptAnalyticsComponent` at `/admin/script-analytics` — sortable table with category filter and summary stat cards
+
+---
+
+### Phase 2 Step 8 — Script Versioning Rollback and Duplication
+
+**Purpose:** Admins can roll back a script to a previous version, and duplicate an existing script as a draft starting point.
+
+**API Endpoints:**
+- `POST /api/scripts/{scriptId}/rollback?version={versionNumber}` — rolls back to a prior version, increments current version number with a "Rolled back to version N" note
+- `POST /api/scripts/{scriptId}/duplicate` — creates a new inactive copy of the script with all utterances; returns the new `ScriptId`
+
+**Implementation:**
+- `IScriptRepository.RollbackScriptVersionAsync` + `DuplicateScriptAsync` — EF Core
+- `IScriptService.RollbackScriptVersionAsync` + `DuplicateScriptAsync`
+- `ScriptController` — new endpoints
+- `ScriptService.getVersionHistory()` + `ScriptService.rollbackScriptVersion()` + `ScriptService.duplicateScript()` added to Angular service
+- Admin Scripts side panel: "Version History" section shows all versions with rollback buttons; "Duplicate" button added alongside Activate/Deactivate
+
+---
+
+### Phase 2 Step 9 — Claude Prompt Helper with DB-Connected Data (Script Upload UI)
+
+**Purpose:** When an admin downloads a category-specific Excel template, a pre-built, copy-ready Claude prompt appears — enriched with live data from the database (actual grammar tags and context tags already in use for that category). The admin copies the prompt, pastes into claude.ai, and uploads the resulting JSON via the existing wizard.
+
+**Backend:**
+- `GET /api/scripts/prompt-data?category=` — new endpoint returning `ScriptPromptDataResponseDto`
+  - `grammarTagsInUse`: distinct GrammarFocusTag values from `tblScript` for this category
+  - `contextTagsInUse`: distinct ContextTag values from `tblScript` for this category
+  - `approvedGrammarTags`: static approved list from ExcelTemplateStandard §9.3
+  - `speakerLabels`, `minRows`, `maxRows`, `mandatoryColumns`: static category rules
+  - `activeScriptCount`: total active scripts in this category
+- `GET /api/scripts/sample-template?category=` — now pulls first 4 utterances from most recent active script in that category (DB-sourced samples). Falls back to hardcoded samples if category has no scripts.
+
+**DB migrations applied 2026-06-01:**
+- `tbluservocabulary` (migration 17, fixed to lowercase identifiers) — applied to Supabase
+- `tblusergoal` (migration 18, fixed to lowercase identifiers) — applied to Supabase
+- Both `VocabularyRepository` and `UserRepository` Goal methods updated to be provider-aware (PostgreSQL lowercase table/column names, `NOW()` vs `GETDATE()`, boolean vs int, `INSERT ON CONFLICT` vs `MERGE`, `LIMIT 1` vs `TOP 1`)
+
+**Frontend:**
+- `ScriptService.getPromptData(category)` — calls new endpoint
+- Upload wizard: clicking a category button → fetches prompt data from DB → shows "Loading..." state → populates prompt panel with DB-enriched content
+- `buildClaudePrompt(category)` uses DB data (grammar tags in use, context tags in use, active script count) when available; falls back to static defaults
+- Prompt includes a distinct-content reminder when active scripts already exist in the category
+
+**Workflow:**
+1. Admin clicks category button → template downloads + DB prompt data fetched
+2. Prompt panel shows: category rules, actual tags in use in the platform, approved tag list
+3. "Copy Prompt" → paste into claude.ai → Claude returns JSON consistent with existing content
+4. Upload JSON-based Excel via existing wizard
+
+**Files changed:**
+- `ExcelExportService.cs` — sample rows now from DB (first 4 utterances of latest active script)
+- `ScriptRepository.cs` — `GetPromptDataForCategoryAsync()` added
+- `ScriptService.cs` — `GetPromptDataForCategoryAsync()` added
+- `ScriptController.cs` — `GET /api/scripts/prompt-data` added
+- `VocabularyRepository.cs` — full provider-aware rewrite (SQL Server + PostgreSQL)
+- `UserRepository.cs` Goal methods — provider-aware SQL (deactivate + insert + select)
+- `script-upload.component.ts` — prompt data fetching + DB-enriched prompt builder
+- `ExcelTemplateStandard.md §10` — updated to document DB-connected workflow
+
+---
+
+## Phase 3 Feature Contracts (2026-06-01)
+
+### Phase 3 Step 1 — Spaced Repetition for Grammar Mistakes
+
+**Purpose:** Extend RepracticeRound to schedule follow-up reviews after a mistake is resolved, using increasing intervals. Prevents regression by re-surfacing resolved mistakes before they are forgotten.
+
+**Entry Points:** "Grammar reviews due" banner on user dashboard at `/user/dashboard`. Links to `/user/my-mistakes`.
+
+**API Endpoint:** `GET /api/mistakes/due-for-review`
+- Auth: UserOrAdmin + ActiveUser
+- Returns: `SpacedRepetitionDueResponseDto`
+  - `DueCount` (int): number of reviews currently due
+  - `Items` (array): list of `SpacedRepetitionDueItemDto`
+
+**SpacedRepetitionDueItemDto fields:**
+- `MistakeId` (long)
+- `MistakeType` (string)
+- `GrammarTag` (string?)
+- `UtteranceText` (string)
+- `CorrectionText` (string?)
+- `ReviewStage` (byte: 1–4)
+- `NextReviewDate` (DateTime)
+- `SessionName` (string)
+- `ScriptTitle` (string)
+
+**Database Schema Changes:**
+`tblMistake` gets 3 new columns:
+- `ReviewStage TINYINT NOT NULL DEFAULT(0)` — 0=not scheduled, 1–4=active review stages, 5=long-term retained (no more reviews needed)
+- `NextReviewDate DATETIME2 NULL` — next review due date; NULL when stage 0 or stage 5
+- `ReviewIntervalDays INT NOT NULL DEFAULT(0)` — current interval in days
+
+**Review Interval Schedule:**
+| Stage | After | Days until next |
+|-------|-------|----------------|
+| 0 → 1 | RepracticeRound completed | +1 day |
+| 1 → 2 | Review session passed | +3 days |
+| 2 → 3 | Review session passed | +7 days |
+| 3 → 4 | Review session passed | +14 days |
+| 4 → 5 | Review session passed | +30 days (retained) |
+
+**Stored Procedures:**
+- `uspScheduleMistakeReview(@MistakeId, @UpdatedBy, @IPAddress)` — sets stage 1, interval 1, NextReviewDate = +1 day. Only runs if IsResolved=1 and ReviewStage=0.
+- `uspAdvanceMistakeReview(@MistakeId, @UpdatedBy, @IPAddress)` — advances stage and sets next interval date.
+- `uspResetMistakeReview(@UserId, @GrammarTag, @UpdatedBy, @IPAddress)` — resets all resolved stage 1–4 mistakes with matching GrammarTag back to stage 1 (+1 day). Called when same grammar mistake recurs.
+- `uspGetMistakesDueForReview(@UserId)` — returns all IsResolved=1, ReviewStage 1–4, NextReviewDate <= NOW() mistakes with session/script name joins.
+
+**Business Rules:**
+- On `POST /api/repractice/{id}/complete`: after marking COMPLETED, `ScheduleMistakeReviewAsync` is called for all resolved RepracticeUtterances' MistakeIds in the session.
+- Dashboard "Reviews Due Today" banner only shown when DueCount > 0.
+- Review interval resets to stage 1 (+1 day) when the user makes the same GrammarTag mistake again in a new session (via `uspResetMistakeReview`).
+
+**Migration:** `20260601000004_AddSpacedRepetition_Phase11.cs` (SQL Server) + `20_add_spaced_repetition.sql` (PostgreSQL)
+
+**Files changed:**
+- `Mistake.cs` — added `ReviewStage`, `NextReviewDate`, `ReviewIntervalDays` properties
+- `MistakeConfiguration.cs` — EF config for new columns
+- `IMistakeRepository.cs` — added 4 new methods
+- `MistakeRepository.cs` — implemented 4 new methods + `GetByte` helper
+- `IMistakeService.cs` — added `GetDueForReviewAsync`
+- `MistakeService.cs` — implemented `GetDueForReviewAsync`
+- `IRepracticeRepository.cs` — added `GetResolvedMistakeIdsBySessionAsync`
+- `RepracticeRepository.cs` — implemented `GetResolvedMistakeIdsBySessionAsync`
+- `RepracticeService.cs` — calls `ScheduleMistakeReviewAsync` after session completion
+- `SpacedRepetitionDueResponseDto.cs` — new DTO
+- `ApiRoutes.cs` — added `DueForReview = "due-for-review"`
+- `MistakeController.cs` — added `GET /api/mistakes/due-for-review` endpoint
+- `user-dashboard.component.ts` — "Reviews Due Today" banner, loads via `MistakeService.getDueForReview()`
+- `mistake.service.ts` — added `getDueForReview()`
+
+---
+
+### Phase 3 Step 2 — Cohort Management (B2B)
+
+**Purpose:** Admin-level feature to group users into cohorts (training batches) and view collective analytics. Enables B2B training use cases with batch reporting and group performance tracking.
+
+**Entry Points:** `/admin/cohorts` — `AdminCohortsComponent`. Nav item "Cohorts" in admin bottom nav.
+
+**New DB Table:** `tblCohort`
+- `CohortId BIGINT IDENTITY(1,1) PK`
+- `CohortName NVARCHAR(128) NOT NULL`
+- `Description NVARCHAR(256) NULL`
+- `IsActive BIT NOT NULL DEFAULT(1)`
+- Standard audit columns
+
+**DB Change on tblUser:** `CohortId BIGINT NULL FK → tblCohort(CohortId) ON DELETE SET NULL`
+
+**API Endpoints (all ADMIN only):**
+- `GET /api/admin/cohorts` — list all cohorts with member counts
+- `POST /api/admin/cohorts` — create a new cohort (`{ cohortName, description }`)
+- `PATCH /api/admin/cohorts/assign` — assign or unassign a user (`{ userId, cohortId }`)
+- `GET /api/admin/cohorts/{cohortId}/members` — list cohort members with session stats
+- `GET /api/admin/cohorts/{cohortId}/analytics` — cohort-level analytics (avg fluency, inactive count, top grammar mistakes, most improved member)
+
+**Stored Procedures:** `uspInsertCohort`, `uspGetAllCohorts`, `uspAssignUserToCohort`, `uspGetCohortMembers`. Analytics uses EF queries (provider-safe).
+
+**Migration:** `20260601000005_AddCohortManagement_Phase12.cs` (SQL Server) + `21_add_cohort_management.sql` (PostgreSQL)
+
+**Files changed:**
+- `Cohort.cs` — new domain entity
+- `User.cs` — added `CohortId?`, `Cohort?` navigation
+- `CohortConfiguration.cs` — new EF config
+- `UserConfiguration.cs` — added CohortId column + FK
+- `GoWithFlowDbContext.cs` — added `DbSet<Cohort> Cohorts`
+- `IAdminRepository.cs` — 5 new cohort methods
+- `AdminRepository.cs` — implemented 5 new cohort methods
+- `IAdminService.cs` — 5 new cohort methods
+- `AdminService.cs` — implemented 5 new cohort methods
+- `CohortRequestDto.cs`, `CohortResponseDto.cs` — new DTOs
+- `ApiRoutes.cs` — 5 new cohort routes
+- `AdminController.cs` — 5 new cohort endpoints
+- `admin.service.ts` — 5 new cohort API methods
+- `admin-cohorts.component.ts` — new admin cohorts management page
+- `admin.routes.ts` — added `/admin/cohorts` route
+- `admin-layout.component.html` — added Cohorts nav item
+
+---
+
+### Phase 3 Step 3 — Speaking Challenge Mode
+
+**Purpose:** Weekly competitive practice mode where admin designates one script as the week's challenge. Users compete for the highest fluency score. Top 20% earn a "Weekly Champion" badge.
+
+**Entry Points:**
+- Dashboard "Weekly Challenge" banner (shown when active challenge exists)
+- Admin: "Set Challenge" button on each script in the admin scripts detail panel
+
+**New DB Tables:**
+- `tblWeeklyChallenge`: `ChallengeId PK`, `ScriptId FK`, `WeekStartDate`, `WeekEndDate`, `IsActive BIT`
+- `tblChallengeAttempt`: `AttemptId PK`, `ChallengeId FK`, `UserId FK`, `FluencyScore DECIMAL(5,2)`, `AttemptDate`
+
+**API Endpoints:**
+- `GET /api/challenge/active` — returns active challenge + user's best score + top 10 leaderboard (auth: UserOrAdmin)
+- `POST /api/challenge/attempt` — submit a challenge attempt score (auth: UserOrAdmin)
+- `POST /api/challenge/set-weekly` — admin sets current week's challenge script (auth: AdminOnly)
+
+**Business Rules:**
+- Only one active challenge at a time — `uspSetWeeklyChallenge` deactivates previous before creating new
+- Leaderboard shows top 10 by best score per user for the current week's challenge
+- `uspAwardChallengeBadge` awards `WEEKLY_CHAMPION` badge to top 20% of participants
+- Challenge week: Monday 00:00 → Sunday 23:59:59
+
+**Migration:** `20260601000006_AddSpeakingChallenge_Phase13.cs` (SQL Server) + `22_add_speaking_challenge.sql` (PostgreSQL)
+
+**Files changed:**
+- `WeeklyChallenge.cs`, `ChallengeAttempt.cs` — new domain entities
+- `WeeklyChallengeConfiguration.cs`, `ChallengeAttemptConfiguration.cs` — EF configurations
+- `GoWithFlowDbContext.cs` — `WeeklyChallenges`, `ChallengeAttempts` DbSets
+- `IChallengeRepository.cs`, `ChallengeRepository.cs` — challenge repository (SP + EF provider-aware)
+- `IChallengeService.cs`, `ChallengeService.cs` — challenge service
+- `ChallengeRequestDto.cs`, `ChallengeResponseDto.cs` — DTOs
+- `ApiRoutes.cs` — Challenge routes
+- `ChallengeController.cs` — 3 endpoints
+- `Program.cs` — service registrations
+- `challenge.service.ts` — frontend challenge API service
+- `user-dashboard.component.ts` — Weekly Challenge banner
+- `admin-scripts.component.ts` — "Set Challenge" button
+
+---
+
+### Phase 3 Step 4 — Completion Milestones and Certificates
+
+**Purpose:** Six category-specific achievement certificates evaluated after every session completion. Displayed on user profile with downloadable PNG.
+
+**Certificate BadgeCodes (extend tblUserBadge — same table/API):**
+| BadgeCode | Criteria |
+|-----------|----------|
+| `GRAMMAR_FOUNDATION` | 10 GrammarDrill sessions across 5+ distinct GrammarFocusTags |
+| `INTERVIEW_READY` | avg Candidate FluencyScore ≥ 75 across 5+ completed MockInterview sessions |
+| `VOCABULARY_BUILDER` | 100 FocusWords in vocabulary bank (tblUserVocabulary, correctcount > 0) |
+| `FLUENCY_MILESTONE` | 8 FluencyDrill sessions with avg SpeakingSpeedWpm between 80–120 |
+| `GRAMMAR_CORRECTOR` | 10 distinct GrammarTag mistake types fully resolved |
+| `SCENARIO_MASTER` | 10 Roleplay sessions across 5+ distinct ContextTags with avg FluencyScore ≥ 70 |
+
+**Backend: `uspCheckAndAwardMilestoneBadge(@UserId, @CreatedBy, @IPAddress)`**
+- Called by `UserRepository.CheckAndAwardBadgesAsync` after the existing `uspCheckAndAwardBadge` call
+- Evaluates all 6 criteria; inserts badges for newly qualified criteria only (NOT EXISTS guard prevents duplicates)
+
+**Frontend: Profile Certificates Section**
+- Loads badges via `GET /api/users/badges`
+- Filters for `CERTIFICATE_CODES` set: only earned milestone badges shown
+- Each certificate card has a "Download" button
+- Download generates a Canvas-based PNG with GoWithFlow branding, user name, certificate title, earned date
+
+**Migration:** `20260601000007_AddMilestoneCertificates_Phase14.cs` (SQL Server) + `23_add_milestone_certificates.sql` (PostgreSQL)
+
+**Files changed:**
+- `UserRepository.cs` — calls `uspCheckAndAwardMilestoneBadge` after existing badge check
+- `profile.component.ts` — certificates section + Canvas PNG download
+
+---
+
+### Phase 3 Step 5 — Live Session Audio Archive (Opt-In)
+
+**Purpose:** Users can opt in to record their own voice turns during a session for personal review. Audio is stored per-turn, accessible for playback in the Post-Session Review screen, and auto-deleted after 90 days.
+
+**Consent:** Stored in `localStorage` (`gwf_audio_archive_consent = 'true'|'false'`). Toggle visible in the Lobby screen before session starts. Default: OFF.
+
+**Privacy Rules:**
+- Only the user who opted in can access their own clips
+- No other user, admin, or backend process can retrieve another user's clips
+- Auto-deletion: 90 days (via `ExpiresAt` column; server-side cleanup uses `ExpiresAt <= GETDATE()` filter)
+
+**New DB Table:** `tblAudioArchive`
+- `ArchiveId BIGINT PK`, `SessionId FK`, `UserId FK`, `TurnIndex INT`, `StorageKey NVARCHAR(512)`, `DurationSecs INT`, `ExpiresAt DATETIME2`
+- `StorageKey` = relative path within the configured storage root (e.g. `{userId}/{sessionId}/turn_1_1234567890.webm`)
+
+**API Endpoints (UserOrAdmin + ActiveUser):**
+- `POST /api/users/audio-archive` (multipart/form-data: `file`, `sessionId`, `turnIndex`) — uploads clip
+- `GET /api/users/sessions/{sessionId}/audio-archive` — returns clip list for the session
+- `DELETE /api/users/audio-archive/{archiveId}` — soft-deletes clip
+
+**File Storage:** Configured via `AudioArchive:StoragePath` in `appsettings.json`. Default: `audio-archive/` relative to app root. Files served as static files via `UseStaticFiles()`.
+
+**Configuration required (appsettings.json):**
+```json
+"AudioArchive": {
+  "StoragePath": "audio-archive"
+}
+```
+
+**Frontend flow:**
+1. **Lobby**: "Record my voice turns" toggle → saves to `localStorage`
+2. **SpeakerScreenComponent**: on each turn change, calls `voiceEngine.enableAudioCapture(consent)`. After recording completes, if consent is on and `voiceEngine.lastAudioBlob` is set, uploads clip via `AudioArchiveService.uploadClip()`
+3. **VoiceRecognitionEngine**: new `enableAudioCapture(enabled)` + `lastAudioBlob` — when enabled, runs `MediaRecorder` in parallel to `SpeechRecognition`. Blob available after `stopSession()`
+4. **SessionReviewComponent**: loads clips via `getSessionClips(sessionId)`, shows play button next to user's own turns with archived audio
+
+**Migration:** `20260601000008_AddAudioArchive_Phase15.cs` (SQL Server) + `24_add_audio_archive.sql` (PostgreSQL)
+
+**Files changed:**
+- `voice-recognition.engine.ts` — `enableAudioCapture()`, `lastAudioBlob`, `MediaRecorder` parallel capture
+- `lobby.component.ts` + `lobby.component.html` — audio archive consent toggle
+- `speaker-screen.component.ts` — upload clip after recording completes
+- `audio-archive.service.ts` — new Angular service
+- `IAudioArchiveRepository.cs`, `AudioArchiveRepository.cs` — repository
+- `IAudioArchiveService.cs`, `AudioArchiveService.cs` — service
+- `UserController.cs` — 3 new endpoints
+- `ApiRoutes.cs` — 3 new user audio archive routes
+- `Program.cs` — service registrations
+- `session-review.component.ts` — load clips + play buttons

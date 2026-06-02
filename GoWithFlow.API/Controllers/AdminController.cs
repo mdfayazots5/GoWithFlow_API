@@ -116,6 +116,41 @@ public sealed class AdminController : ControllerBase
 			$"GoWithFlow_AdminReports_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx");
 	}
 
+	[HttpGet(ApiRoutes.Admin.Cohorts)]
+	public async Task<IActionResult> GetAllCohortsAsync(CancellationToken cancellationToken)
+	{
+		var response = await _adminService.GetAllCohortsAsync(cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpPost(ApiRoutes.Admin.Cohorts)]
+	public async Task<IActionResult> CreateCohortAsync([FromBody] GoWithFlow.Application.DTOs.Requests.Admin.CreateCohortRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.CreateCohortAsync(dto, GetAdminDisplayName(), "127.0.0.1", cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status201Created);
+	}
+
+	[HttpPatch(ApiRoutes.Admin.CohortAssign)]
+	public async Task<IActionResult> AssignUserToCohortAsync([FromBody] GoWithFlow.Application.DTOs.Requests.Admin.AssignUserToCohortRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.AssignUserToCohortAsync(dto, GetAdminDisplayName(), "127.0.0.1", cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.Admin.CohortMembers)]
+	public async Task<IActionResult> GetCohortMembersAsync(long cohortId, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.GetCohortMembersAsync(cohortId, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.Admin.CohortAnalytics)]
+	public async Task<IActionResult> GetCohortAnalyticsAsync(long cohortId, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.GetCohortAnalyticsAsync(cohortId, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
+	}
+
 	private long GetAdminUserId()
 	{
 		var claimValue = User.FindFirstValue("UserId") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -126,6 +161,11 @@ public sealed class AdminController : ControllerBase
 		}
 
 		throw new UnauthorizedAccessException("Admin user claim is missing.");
+	}
+
+	private string GetAdminDisplayName()
+	{
+		return User.FindFirstValue("FullName") ?? User.Identity?.Name ?? "Admin";
 	}
 
 	private IActionResult BuildActionResult<T>(GoWithFlow.Application.Common.ApiResponse<T> response, int successStatusCode, int? failureStatusCode = null)

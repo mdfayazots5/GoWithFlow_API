@@ -43,6 +43,20 @@ public sealed class MistakeController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
+	[HttpGet(ApiRoutes.Mistake.GrammarTrends)]
+	public async Task<IActionResult> GetGrammarProgressWithTrendAsync(CancellationToken cancellationToken)
+	{
+		var response = await _mistakeService.GetGrammarProgressWithTrendAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpGet(ApiRoutes.Mistake.DueForReview)]
+	public async Task<IActionResult> GetDueForReviewAsync(CancellationToken cancellationToken)
+	{
+		var response = await _mistakeService.GetDueForReviewAsync(GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
 	private long GetUserId()
 	{
 		var claimValue = User.FindFirstValue("UserId") ?? User.FindFirstValue(ClaimTypes.NameIdentifier);

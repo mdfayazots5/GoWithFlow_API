@@ -30,7 +30,11 @@ public sealed class User : BaseAuditEntity
 
 	public bool IsActive { get; set; } = true;
 
+	public long? CohortId { get; set; }
+
 	public DateTime RegistrationDate { get; set; }
+
+	public Cohort? Cohort { get; set; }
 
 	public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
 

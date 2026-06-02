@@ -27,4 +27,9 @@ public interface ILiveSessionService
 	/// Called from LiveSessionHub on reconnect before tracking the connection.
 	/// </summary>
 	Task ReactivateMemberAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
+
+	/// <summary>
+	/// Returns the full post-session review transcript with per-turn voice analysis for the caller.
+	/// </summary>
+	Task<ApiResponse<SessionReviewResponseDto>> GetSessionReviewAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
 }

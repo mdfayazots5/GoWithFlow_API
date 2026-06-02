@@ -15,18 +15,26 @@ public static class ApiRoutes
 
 	public static class User
 	{
-		public const string Base = VersionPrefix + "/users";
-		public const string Profile = "profile";
-		public const string Avatar = "profile/avatar";
+		public const string Base          = VersionPrefix + "/users";
+		public const string Profile       = "profile";
+		public const string Avatar        = "profile/avatar";
 		public const string SessionDetail = "sessions/{sessionId:long}/detail";
-		public const string Progress = "progress";
-		public const string Streak = "streak";
-		public const string Badges = "badges";
+		public const string Progress      = "progress";
+		public const string Streak        = "streak";
+		public const string Badges        = "badges";
+		public const string Goal          = "goal";
+		public const string AudioArchive        = "audio-archive";
+		public const string AudioArchiveById    = "audio-archive/{archiveId:long}";
+		public const string SessionAudioArchive = "sessions/{sessionId:long}/audio-archive";
 	}
 
 	public static class Dashboard
 	{
-		public const string Base = VersionPrefix + "/dashboard";
+		public const string Base                 = VersionPrefix + "/dashboard";
+		public const string WeeklyReport         = "weekly-report";
+		public const string LearningPath         = "learning-path";
+		public const string InterviewPerformance  = "interview-performance";
+		public const string PronunciationTimeline = "pronunciation-timeline";
 	}
 
 	public static class Admin
@@ -42,18 +50,27 @@ public static class ApiRoutes
 		public const string UserReport     = "reports/users/{userId:long}";
 		public const string ExportReports  = "reports/export";
 		public const string SessionHistory = "sessions/history";
+		public const string Cohorts           = "cohorts";
+		public const string CohortDetail      = "cohorts/{cohortId:long}";
+		public const string CohortAssign      = "cohorts/assign";
+		public const string CohortMembers     = "cohorts/{cohortId:long}/members";
+		public const string CohortAnalytics   = "cohorts/{cohortId:long}/analytics";
 	}
 
 	public static class Script
 	{
-		public const string Base = VersionPrefix + "/scripts";
-		public const string Validate = "validate";
-		public const string Upload = "upload";
-		public const string Detail = "{scriptId:long}";
-		public const string Status = "status";
-		public const string Versions = "{scriptId:long}/versions";
+		public const string Base           = VersionPrefix + "/scripts";
+		public const string Validate       = "validate";
+		public const string Upload         = "upload";
+		public const string Detail         = "{scriptId:long}";
+		public const string Status         = "status";
+		public const string Versions       = "{scriptId:long}/versions";
 		public const string SampleTemplate = "sample-template";
-		public const string Download = "{scriptId:long}/download";
+		public const string Download       = "{scriptId:long}/download";
+		public const string Analytics      = "analytics";
+		public const string Rollback       = "{scriptId:long}/rollback";
+		public const string Duplicate      = "{scriptId:long}/duplicate";
+		public const string PromptData     = "prompt-data";
 	}
 
 	public static class Session
@@ -78,13 +95,30 @@ public static class ApiRoutes
 		public const string VoiceAnalysis = "{sessionId:long}/voice-analysis";
 		public const string ListenerFeedback = "{sessionId:long}/listener-feedback";
 		public const string ReRead = "{sessionId:long}/re-read";
+		public const string Review = "{sessionId:long}/review";
+	}
+
+	public static class Challenge
+	{
+		public const string Base    = VersionPrefix + "/challenge";
+		public const string Active  = "active";
+		public const string Attempt = "attempt";
+		public const string SetWeekly = "set-weekly";
+	}
+
+	public static class Vocabulary
+	{
+		public const string Base = VersionPrefix + "/vocabulary";
+		public const string Bank = "bank";
 	}
 
 	public static class Mistake
 	{
-		public const string Base = VersionPrefix + "/mistakes";
-		public const string Summary = "summary";
-		public const string GrammarProgress = "grammar-progress";
+		public const string Base              = VersionPrefix + "/mistakes";
+		public const string Summary           = "summary";
+		public const string GrammarProgress   = "grammar-progress";
+		public const string GrammarTrends     = "grammar-trends";
+		public const string DueForReview      = "due-for-review";
 	}
 
 	public static class Repractice
