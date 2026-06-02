@@ -776,7 +776,9 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 #### POST /api/users/profile/avatar
 
-- Multipart form file; saves to `wwwroot/avatars`; updates `tblUser.AvatarUrl`; returns relative avatar URL
+- Multipart form file; validates type (jpg/jpeg/png/webp) and size (max `MaxFileSizeMB` from `FileStorageSettings`)
+- **Phase 10 (R2):** uploads to `gwf-avatars` bucket; key pattern `avatars/{userId}/{timestampMs}.{ext}`; saves R2 object key (not URL) to `tblUser.AvatarUrl`; returns presigned URL (1440-minute expiry)
+- `GET /api/users/profile` — if `AvatarUrl` is an R2 key (does not start with `/` or `http`), a fresh presigned URL is generated on every fetch; old URL-style values returned as-is (backwards compatible)
 
 #### GET /api/users/sessions/{sessionId}/detail
 
@@ -847,7 +849,8 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 - Dashboard: `UserDashboardController`, `IUserDashboardService`, `UserDashboardService`
 - User: `UserController`, `IUserService`, `UserService`, `IUserRepository`, `UserRepository`
-- `FileStorageSettings` controls avatar directory and max upload size
+- `FileStorageSettings.MaxFileSizeMB` is still used for avatar upload size validation (2 MB default); disk path fields are unused after Phase 10
+- `IWebHostEnvironment` is NO LONGER injected into `UserService` — removed in Phase 10
 - Session completion in `LiveSessionService` calls streak upsert and badge evaluation
 - **Important:** PostgreSQL SPs are NOT managed via EF migrations. Apply `Docs/PostgreSQLMigration/*.sql` scripts directly to Supabase when SP changes are needed.
 
@@ -904,6 +907,11 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 > Note: Routes use `api/admin/...` prefix (no `/v1/` version segment — `ApiRoutes.VersionPrefix = "api"`).
 
 - `GET /api/admin/dashboard` — global totals, recent activities, top grammar mistakes
+  - Response fields: `topGrammarMistakes[].grammarTag`, `topGrammarMistakes[].userCount`, `topGrammarMistakes[].percentage`
+  - Frontend mapping: `getDashboard()` in `AdminService` maps these to `{ tag, count, percentage }` before passing to component. Template uses `area.tag` and `area.count`. Direct passthrough of raw API object breaks the display — always map.
+  - Notes on Drift: Bug fixed 2026-06-02 — service was passing `topGrammarMistakes` items raw to `weakAreas`; template reads `area.tag` / `area.count` but API returns `grammarTag` / `userCount`. Fix: added `.map()` in `getDashboard()` to rename fields.
+- `POST /api/admin/users` — create new user; `PUT /api/admin/users/{userId}` — update user
+  - Notes on Drift: Bug fixed 2026-06-02 — stale async race condition in `AdminUsersComponent.openEditModal()`: `getUserDetail` async callback could fire after user closed edit modal and opened "Add User" modal, patching the reset form with old user data. Fix: guard in callback checks `editingUserId() !== user.id` and returns early if the modal context has changed.
 - `GET /api/admin/users` — paginated admin user list
 - `GET /api/admin/users/{userId}` — full user profile with averages and recent sessions
 - `PATCH /api/admin/users/status` — updates `tblUser.IsActive`
@@ -911,7 +919,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - `GET /api/admin/users/{userId}/notes` — active admin notes for target user
 - `GET /api/admin/reports` — paginated user report summaries; `ImprovementPercent = (resolved / total) * 100`
 - `GET /api/admin/reports/users/{userId}` — user header, session history, mistake breakdown, weekly scores
-- `GET /api/admin/reports/export` — exports summary rows as Excel bytes via `ClosedXML`
+- `GET /api/admin/reports/export` — generates Excel in-memory via `ClosedXML`; **Phase 10 (R2):** uploads to `gwf-exports` bucket; key `exports/{userId}/{yyyyMMdd_HHmmss}.xlsx`; returns `ApiResponse<string>` where `Data` = presigned URL (30-minute expiry); controller no longer streams bytes
 - `POST /api/admin/users` — create new user
 - `PUT /api/admin/users/{userId}` — update user profile
 - `GET /api/admin/sessions/history` — paginated admin session history with filters
@@ -1072,7 +1080,7 @@ Success (200):
 #### tblScript
 
 - Primary key: `ScriptId BIGINT IDENTITY(1,1)`
-- Business columns: `ScriptTitle NVARCHAR(128) NOT NULL`, `Category NVARCHAR(64) NOT NULL`, `GrammarFocusTag NVARCHAR(64) NOT NULL`, `ContextTag NVARCHAR(64) NOT NULL`, `ComplexityLevel TINYINT NOT NULL`, `TargetAgeGroup NVARCHAR(32) NOT NULL`, `HintLanguage NVARCHAR(32) NOT NULL`, `IsActive BIT NOT NULL DEFAULT(1)`, `UploadedDate DATETIME2 NOT NULL DEFAULT(GETDATE())`, `UploadedByUserId BIGINT NOT NULL`, `Version INT NOT NULL DEFAULT(1)`, `UtteranceCount INT NOT NULL DEFAULT(0)`
+- Business columns: `ScriptTitle NVARCHAR(128) NOT NULL`, `Category NVARCHAR(64) NOT NULL`, `GrammarFocusTag NVARCHAR(64) NOT NULL`, `ContextTag NVARCHAR(64) NOT NULL`, `ComplexityLevel TINYINT NOT NULL`, `TargetAgeGroup NVARCHAR(32) NOT NULL`, `HintLanguage NVARCHAR(32) NOT NULL`, `IsActive BIT NOT NULL DEFAULT(1)`, `UploadedDate DATETIME2 NOT NULL DEFAULT(GETDATE())`, `UploadedByUserId BIGINT NOT NULL`, `Version INT NOT NULL DEFAULT(1)`, `UtteranceCount INT NOT NULL DEFAULT(0)`, `ExcelStorageKey NVARCHAR(256) NULL` *(Phase 10 — R2 object key for original uploaded Excel)*
 - Constraints: `PK_tblScript_ScriptId`, `FK_tblScript_UploadedByUserId_tblUser_UserId`, `IDX_tblScript_GrammarFocusTag`, `IDX_tblScript_Category`, `IDX_tblScript_IsActive`
 
 #### tblUtterance
@@ -1120,12 +1128,14 @@ Success (200):
 ### API Surface
 
 - `POST /api/scripts/validate` — ADMIN; validates Excel; returns parse result
-- `POST /api/scripts/upload` — ADMIN; validates file, parses, inserts `tblScript`, bulk inserts `tblUtterance`, updates `UtteranceCount`, inserts `tblScriptVersion`; returns `ScriptId`, `ScriptTitle`, `Version`, `UtteranceCount`
+- `POST /api/scripts/upload` — ADMIN; validates file, parses, inserts `tblScript`, bulk inserts `tblUtterance`, updates `UtteranceCount`, inserts `tblScriptVersion`; **Phase 10:** uploads original Excel to `gwf-scripts` bucket (`scripts/{scriptId}/v{version}.xlsx`), saves key to `tblScript.ExcelStorageKey`; returns `ScriptId`, `ScriptTitle`, `Version`, `UtteranceCount`, `ExcelDownloadUrl` (presigned, 60 min)
 - `GET /api/scripts` — authenticated; paginated script list
 - `GET /api/scripts/{scriptId}` — authenticated; script metadata and ordered utterances
 - `PATCH /api/scripts/status` — ADMIN; updates `tblScript.IsActive`
 - `GET /api/scripts/{scriptId}/versions` — ADMIN; version history
-- `GET /api/scripts/sample-template?category={category}` — ADMIN; returns category-specific `.xlsx` template. When active scripts exist for the category, sample rows are the first 4 utterances of the most recently uploaded active script (DB-sourced). Falls back to static hardcoded samples when no scripts exist for that category. Each template includes a `ScriptTemplate` sheet (color-coded headers) and a `Guide` sheet.
+- `GET /api/scripts/{scriptId}/download` — ADMIN; generates Excel in-memory from current utterances via `ClosedXML`; returns `File()` bytes (not R2 — this is a live regeneration endpoint)
+- `GET /api/scripts/{scriptId}/excel-download` — ADMIN; **Phase 10:** returns presigned URL for original uploaded Excel from R2 (`tblScript.ExcelStorageKey`); returns `ApiResponse<string>`
+- `GET /api/scripts/sample-template?category={category}` — ADMIN; **Phase 10:** uploads generated template to `gwf-scripts/scripts/sample/template_v1.xlsx` if not already present; returns presigned URL (60-min) as `ApiResponse<string>`. Previously returned `File()` bytes.
 - `GET /api/scripts/prompt-data?category={category}` — ADMIN; returns `ScriptPromptDataResponseDto` with DB-sourced `grammarTagsInUse`, `contextTagsInUse`, `approvedGrammarTags` (static list), `speakerLabels`, `minRows`, `maxRows`, `mandatoryColumns`, `activeScriptCount`. Used by the upload wizard to build the category-specific Claude prompt shown to the admin.
 - `GET /api/scripts/analytics?category={category}` — ADMIN; per-script quality metrics (Phase 2 Step 7).
 - `POST /api/scripts/{scriptId}/rollback?version={n}` — ADMIN; rolls back to a prior version (Phase 2 Step 8).
@@ -1176,6 +1186,7 @@ Success (`POST /upload`):
 - `ScriptTitle` (`string`)
 - `Version` (`number`)
 - `UtteranceCount` (`number`)
+- `ExcelDownloadUrl` (`string`, nullable) — presigned R2 URL for the original uploaded Excel (60-minute expiry) *(Phase 10)*
 
 Error responses:
 - Validation or upload failure body shape: `[VERIFY]`
@@ -2185,6 +2196,7 @@ Real-time events via SignalR at `/hubs/live-session`.
   - `PronunciationJson NVARCHAR(512) NULL` (stored as JSON)
   - `OverallScore DECIMAL(5,2) NOT NULL DEFAULT(0)`
   - `RecordedAt DATETIME2 NOT NULL DEFAULT(GETDATE())`
+  - `AudioStorageKey NVARCHAR(256) NULL` *(Phase 10 — R2 key for audio blob; set only when frontend sends `AudioBase64`; key pattern `sessions/{sessionId}/turns/{turnIndex}/{userId}.ogg`)*
 - Constraints: `PK_tblVoiceAnalysis_VoiceAnalysisId`, FKs to `tblSession`, `tblUser`, `tblUtterance`, `IDX_tblVoiceAnalysis_SessionId`, `IDX_tblVoiceAnalysis_UserId`
 
 #### tblListenerFeedback
@@ -2361,6 +2373,7 @@ Body (SaveVoiceAnalysisRequestDto):
       - ExpectedPhonetic (string)
       - IssueNote (string)
   - OverallScore (decimal)
+  - AudioBase64 (string, optional) — *(Phase 10)* Base64-encoded audio blob; when provided, audio is uploaded to `gwf-audio` R2 bucket and key saved to `tblVoiceAnalysis.AudioStorageKey`; invalid Base64 is silently skipped (does not fail the voice analysis save)
 ```
 
 **Response Contract:**
@@ -3247,6 +3260,12 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 #### POST /api/repractice/generate
 
 - Loads unresolved mistakes for authenticated user and source session; creates one repractice session with one repractice utterance per mistake
+- Request body: `{ sourceSessionId: long }` — must be > 0 (FluentValidation: `GreaterThan(0)`)
+- Frontend: `MyMistakesComponent` at `/user/my-mistakes`
+  - "Practice All Mistakes" button passes `+mistakes()[0].sessionId` — uses the first loaded mistake's sessionId
+  - Individual row "practice" button passes `+mistake.sessionId` — uses that specific mistake's sessionId
+  - `Mistake.sessionId` is type `string` in the frontend model; coerced to `number` with unary `+` before passing to `RepracticeService.generateRepracticeSession(sourceSessionId: number)`
+- Notes on Drift: Bug fixed 2026-06-02 — both button handlers were sending `0` as `sourceSessionId` (button called `startPractice()` with no args defaulting to `0`; row buttons hardcoded `startPractice(0)`). API validation rejected `SourceSessionId <= 0`. Fix: read `sessionId` from loaded mistake records.
 
 #### GET /api/repractice/{repracticeSessionId}
 
@@ -3732,21 +3751,16 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 
 **New DB Table:** `tblAudioArchive`
 - `ArchiveId BIGINT PK`, `SessionId FK`, `UserId FK`, `TurnIndex INT`, `StorageKey NVARCHAR(512)`, `DurationSecs INT`, `ExpiresAt DATETIME2`
-- `StorageKey` = relative path within the configured storage root (e.g. `{userId}/{sessionId}/turn_1_1234567890.webm`)
+- **Phase 10 (R2):** `StorageKey` now stores the R2 object key (e.g. `sessions/{sessionId}/turns/{turnIndex}/{userId}_{timestamp}.webm`). Previous disk-path format (`{userId}/{sessionId}/turn_1_xxx.webm`) is backwards-compatible — `IsR2Key()` detects by checking the value does not start with `/` or `http`.
 
 **API Endpoints (UserOrAdmin + ActiveUser):**
-- `POST /api/users/audio-archive` (multipart/form-data: `file`, `sessionId`, `turnIndex`) — uploads clip
-- `GET /api/users/sessions/{sessionId}/audio-archive` — returns clip list for the session
-- `DELETE /api/users/audio-archive/{archiveId}` — soft-deletes clip
+- `POST /api/users/audio-archive` (multipart/form-data: `file`, `sessionId`, `turnIndex`) — **Phase 10:** uploads to `gwf-audio` R2 bucket; saves R2 key to `tblAudioArchive.StorageKey`; returns presigned URL in `AudioUrl`
+- `GET /api/users/sessions/{sessionId}/audio-archive` — returns clip list; **Phase 10:** `AudioUrl` is generated as a fresh presigned URL (120-min expiry) for each R2-backed clip
+- `DELETE /api/users/audio-archive/{archiveId}` — soft-deletes DB record; **Phase 10:** also calls `IStorageService.DeleteAsync` to remove the R2 object
 
-**File Storage:** Configured via `AudioArchive:StoragePath` in `appsettings.json`. Default: `audio-archive/` relative to app root. Files served as static files via `UseStaticFiles()`.
-
-**Configuration required (appsettings.json):**
-```json
-"AudioArchive": {
-  "StoragePath": "audio-archive"
-}
-```
+**File Storage (Phase 10 — R2 only):**
+- Old `AudioArchive:StoragePath` config key is no longer read; `IConfiguration` is no longer injected into `AudioArchiveService`
+- Storage handled entirely by `IStorageService` / `CloudflareR2StorageService`
 
 **Frontend flow:**
 1. **Lobby**: "Record my voice turns" toggle → saves to `localStorage`
@@ -3767,3 +3781,136 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - `ApiRoutes.cs` — 3 new user audio archive routes
 - `Program.cs` — service registrations
 - `session-review.component.ts` — load clips + play buttons
+
+---
+
+## Phase 10 — Cloudflare R2 Storage Integration (2026-06-02)
+
+### Summary
+
+Replaces all local `wwwroot` disk storage with Cloudflare R2 (S3-compatible, free-egress object storage). No files are written to the server disk after this phase. All file access is via time-limited presigned URLs generated by the API.
+
+### R2 Bucket Design
+
+| Bucket | Contents | Key Pattern |
+|---|---|---|
+| `gwf-audio` | Voice recordings + audio archive clips | `sessions/{sessionId}/turns/{turnIndex}/{userId}.ogg` / `.webm` |
+| `gwf-avatars` | User profile images | `avatars/{userId}/{timestampMs}.{ext}` |
+| `gwf-scripts` | Original uploaded Excel files + sample template | `scripts/{scriptId}/v{version}.xlsx` / `scripts/sample/template_v1.xlsx` |
+| `gwf-exports` | Admin-generated report Excel files | `exports/{requestedByUserId}/{yyyyMMdd_HHmmss}.xlsx` |
+
+All buckets are **private**. Files are never served via public R2 URLs. All access is via presigned URLs.
+
+### Account Details
+
+- Account ID: `20d4a61f73b1845cd3322d589b62820b`
+- S3 Endpoint: `https://20d4a61f73b1845cd3322d589b62820b.r2.cloudflarestorage.com`
+- Token Name: `R2 Account Token`
+- Credentials stored in: `appsettings.json` and `appsettings.Development.json` under `CloudflareR2` section
+
+### Configuration Block (appsettings.json)
+
+```json
+"CloudflareR2": {
+  "AccountEndpoint": "https://20d4a61f73b1845cd3322d589b62820b.r2.cloudflarestorage.com",
+  "AccessKeyId": "<stored in appsettings>",
+  "SecretAccessKey": "<stored in appsettings>",
+  "Buckets": {
+    "Audio": "gwf-audio",
+    "Avatars": "gwf-avatars",
+    "Scripts": "gwf-scripts",
+    "Exports": "gwf-exports"
+  },
+  "PresignedUrlExpiryMinutes": {
+    "Audio": 120,
+    "Avatars": 1440,
+    "Scripts": 60,
+    "Exports": 30
+  }
+}
+```
+
+### New Infrastructure
+
+#### Settings Model
+- `GoWithFlow.Application/Settings/CloudflareR2Settings.cs` — `CloudflareR2Settings`, `BucketSettings`, `PresignedExpirySettings`
+
+#### Custom Exception
+- `GoWithFlow.Domain/Exceptions/StorageException.cs` — `Bucket` + `ObjectKey` properties; caught by `ExceptionMiddleware` → HTTP 502 `"File storage operation failed. Please try again."`
+
+#### Storage Interface
+- `GoWithFlow.Application/Interfaces/Services/IStorageService.cs`
+  - `UploadAsync(stream, bucketName, objectKey, contentType)` → returns objectKey
+  - `GetPresignedUrlAsync(bucketName, objectKey, expiryMinutes)` → returns time-limited URL (never log — contains credentials in query string)
+  - `DeleteAsync(bucketName, objectKey)` — swallows 404 (object already gone)
+  - `ExistsAsync(bucketName, objectKey)` → bool
+
+#### Storage Key Builder
+- `GoWithFlow.Application/Helpers/StorageKeyBuilder.cs` — centralised key construction; never build keys inline
+  - `VoiceRecording(sessionId, turnIndex, userId, ext="ogg")`
+  - `UserAvatar(userId, ext="jpg")`
+  - `ScriptExcel(scriptId, version)`
+  - `ReportExport(requestedByUserId)`
+  - `SampleTemplate()`
+  - `AudioArchiveClip(sessionId, turnIndex, userId)`
+  - `IsR2Key(value)` — returns true if value does not start with `/` or `http` (used to distinguish R2 keys from old disk paths)
+
+#### Bucket Constants
+- `GoWithFlow.Application/Constants/StorageBuckets.cs` — `StorageBucket` enum + `BucketResolver.Resolve(bucket, settings)`
+
+#### R2 Service Implementation
+- `GoWithFlow.Infrastructure/ExternalServices/CloudflareR2StorageService.cs`
+- SDK: `AWSSDK.S3` v3.7.x (R2 is S3-compatible; no Cloudflare-specific SDK needed)
+- `AmazonS3Config.ForcePathStyle = true`, `SignatureVersion = "4"`, `UseChunkEncoding = false` on uploads
+- `GetPreSignedURL` is synchronous — wrapped in `Task.FromResult`
+
+### DB Changes (applied to Supabase PostgreSQL 2026-06-02)
+
+```sql
+ALTER TABLE public.tblscript ADD COLUMN IF NOT EXISTS excelstoragkey VARCHAR(256) NULL;
+ALTER TABLE public.tblvoiceanalysis ADD COLUMN IF NOT EXISTS audiostoragkey VARCHAR(256) NULL;
+-- tblUser.avatarurl already existed — now stores R2 key instead of URL path
+```
+
+EF entity column name mapping (via `ApplyProviderConventions`):
+- `ExcelStorageKey` (C#) → `excelstoragekey` (PostgreSQL)  [excel + storage + key = 15 chars]
+- `AudioStorageKey` (C#) → `audiostoragekey` (PostgreSQL)  [audio + storage + key = 15 chars]
+- **Drift fixed 2026-06-02 (migration 27):** original Phase 10 migration created `excelstoragkey` / `audiostoragkey` (14 chars each — missing trailing 'e' from "storage"). EF `ApplyProviderConventions` lowercases property names fully producing the 15-char names. Any query including Script or VoiceAnalysis threw PG 42703. Fixed by `ALTER TABLE ... RENAME COLUMN` in migration 27. Source migration `AddR2StorageKeys_Phase10.sql` updated with correct names.
+
+New repository methods added via EF Core:
+- `IScriptRepository.UpdateScriptExcelKeyAsync(scriptId, key)` + `GetScriptExcelKeyAsync(scriptId)`
+- `ILiveSessionRepository.UpdateVoiceAnalysisAudioKeyAsync(voiceAnalysisId, key)`
+
+### Services Updated
+
+| Service | Change |
+|---|---|
+| `UserService` | `UploadAvatarAsync` → uploads to `gwf-avatars`; saves R2 key to DB; returns presigned URL. `GetProfileAsync` → detects R2 key and generates fresh presigned URL on each profile fetch. `IWebHostEnvironment` removed. |
+| `ScriptService` | `UploadScriptAsync` → buffers Excel in memory; uploads to `gwf-scripts` after insert; saves key to `ExcelStorageKey`. `GetSampleTemplateAsync` → uploads template to R2 on first call (checks `ExistsAsync`); returns presigned URL string (was `byte[]`). `GetExcelDownloadUrlAsync` → new method, returns presigned URL for stored original Excel. |
+| `AdminService` | `ExportReportsAsExcelAsync` → generates Excel via `ClosedXML`; uploads to `gwf-exports`; returns presigned URL string (was `byte[]`). |
+| `LiveSessionService` | `SaveVoiceAnalysisAsync` → after UPSERT, if `AudioBase64` is present in request: decodes, uploads to `gwf-audio`, saves key to `AudioStorageKey`. Invalid Base64 silently skipped. |
+| `AudioArchiveService` | `UploadClipAsync` → uploads to `gwf-audio`; saves R2 key to `StorageKey`; returns presigned URL. `GetSessionClipsAsync` → fetches items; replaces each R2-backed `AudioUrl` with a fresh presigned URL. `DeleteClipAsync` → soft-deletes DB record + calls `DeleteAsync` on R2. `IConfiguration` injection removed. |
+
+### Controller Changes
+
+| Controller | Endpoint | Change |
+|---|---|---|
+| `AdminController` | `GET /api/admin/reports/export` | Returns `ApiResponse<string>` (presigned URL); removed `File()` response |
+| `ScriptController` | `GET /api/scripts/sample-template` | Returns `ApiResponse<string>` (presigned URL); removed `File()` response |
+| `ScriptController` | `GET /api/scripts/{scriptId}/excel-download` | **New endpoint** — returns presigned URL for original uploaded Excel |
+| `ApiRoutes.Script` | `ExcelDownload` | **New route constant** `"{scriptId:long}/excel-download"` |
+
+Note: `GET /api/scripts/{scriptId}/download` still returns `File()` bytes — this endpoint generates Excel **in-memory from current utterances** via `ClosedXML` (not R2). It is intentionally kept as a live-regeneration endpoint.
+
+### Key Rules (Never Drift)
+
+1. **Store key, not URL** — only R2 object keys are saved to the database. URLs are generated fresh per-request and never persisted.
+2. **All buckets are private** — presigned URLs are the only valid access path. Never make buckets public.
+3. **Key builder is the single source** — never construct R2 keys inline. Always use `StorageKeyBuilder.*`.
+4. **`AudioBase64` is optional** — voice analysis save never fails due to missing or invalid audio. Audio upload is fire-and-forget after the DB write.
+5. **Backwards compatibility** — `AvatarUrl` and `AudioUrl` values that start with `/` or `http` are treated as old disk paths and returned as-is. Only R2 keys (detected via `IsR2Key()`) trigger presigned URL generation.
+
+### Migration SQL Files
+
+- `GoWithFlow.Infrastructure/Migrations/PostgreSQL/AddR2StorageKeys_Phase10.sql`
+- `GoWithFlow.Infrastructure/Migrations/SqlServer/AddR2StorageKeys_Phase10.sql`

@@ -19,4 +19,12 @@ public static class StorageKeyBuilder
 
     public static string SampleTemplate()
         => "scripts/sample/template_v1.xlsx";
+
+    public static string AudioArchiveClip(long sessionId, int turnIndex, long userId)
+        => $"sessions/{sessionId}/turns/{turnIndex}/{userId}_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.webm";
+
+    public static bool IsR2Key(string? value)
+        => !string.IsNullOrEmpty(value)
+           && !value.StartsWith('/')
+           && !value.StartsWith("http", StringComparison.OrdinalIgnoreCase);
 }

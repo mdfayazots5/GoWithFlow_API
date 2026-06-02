@@ -149,6 +149,15 @@ Logic source: `ProjectOverview.md` only.
 | audio archive | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
 | voice archive | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
 | record turns | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
+| r2 | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| cloudflare | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| storage | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| presigned | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| bucket | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| s3 | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| IStorageService | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| excelstoragkey | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| audiostoragkey | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
 
 ## Module List
 
@@ -195,3 +204,7 @@ Logic source: `ProjectOverview.md` only.
 10. Phase 3 Features
     - Section: `Phase 3 Feature Contracts (2026-06-01)`
     - Purpose: Spaced Repetition, Cohort Management, Speaking Challenge, Completion Certificates, Audio Archive
+
+11. Phase 10 Storage
+    - Section: `Phase 10 — Cloudflare R2 Storage Integration`
+    - Purpose: IStorageService, CloudflareR2StorageService, bucket design, presigned URLs, all file upload/download flows, DB column changes, backwards compatibility rules
