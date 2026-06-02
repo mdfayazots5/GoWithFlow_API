@@ -1,12 +1,13 @@
 using GoWithFlow.Application.Common;
+using GoWithFlow.Application.Constants;
 using GoWithFlow.Application.DTOs.Requests.User;
 using GoWithFlow.Application.DTOs.Responses;
 using GoWithFlow.Application.DTOs.Responses.User;
+using GoWithFlow.Application.Helpers;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
 using GoWithFlow.Application.Settings;
 using GoWithFlow.Domain.Enums;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
@@ -23,17 +24,20 @@ public sealed class UserService : IUserService
 	};
 
 	private readonly IUserRepository _userRepository;
-	private readonly IWebHostEnvironment _webHostEnvironment;
+	private readonly IStorageService _storageService;
 	private readonly FileStorageSettings _fileStorageSettings;
+	private readonly CloudflareR2Settings _r2Settings;
 
 	public UserService(
 		IUserRepository userRepository,
-		IWebHostEnvironment webHostEnvironment,
-		IOptions<FileStorageSettings> fileStorageOptions)
+		IStorageService storageService,
+		IOptions<FileStorageSettings> fileStorageOptions,
+		IOptions<CloudflareR2Settings> r2Options)
 	{
-		_userRepository = userRepository;
-		_webHostEnvironment = webHostEnvironment;
+		_userRepository     = userRepository;
+		_storageService     = storageService;
 		_fileStorageSettings = fileStorageOptions.Value;
+		_r2Settings         = r2Options.Value;
 	}
 
 	public async Task<ApiResponse<UserProfileResponseDto>> GetProfileAsync(long userId, CancellationToken cancellationToken = default)
@@ -48,6 +52,19 @@ public sealed class UserService : IUserService
 		if (profile is null)
 		{
 			return ApiResponse<UserProfileResponseDto>.FailureResult(new[] { "User profile was not found." }, "User profile not found.");
+		}
+
+		// If AvatarUrl is an R2 key (doesn't start with "/" or "http"), generate a presigned URL.
+		// Old-style URL paths are returned as-is for backwards compatibility.
+		if (!string.IsNullOrEmpty(profile.AvatarUrl)
+			&& !profile.AvatarUrl.StartsWith('/')
+			&& !profile.AvatarUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+		{
+			profile.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+				_r2Settings.Buckets.Avatars,
+				profile.AvatarUrl,
+				_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+				cancellationToken);
 		}
 
 		return ApiResponse<UserProfileResponseDto>.SuccessResult(profile, "User profile retrieved successfully.");
@@ -121,38 +138,30 @@ public sealed class UserService : IUserService
 			return ApiResponse<string>.FailureResult(new[] { "User account was not found." }, "Avatar upload failed.");
 		}
 
-		var webRootPath = string.IsNullOrWhiteSpace(_webHostEnvironment.WebRootPath)
-			? Path.Combine(_webHostEnvironment.ContentRootPath, "wwwroot")
-			: _webHostEnvironment.WebRootPath;
-		var normalizedAvatarPath = (_fileStorageSettings.AvatarPath ?? "wwwroot/avatars/").Trim();
-		var relativeAvatarPath = normalizedAvatarPath.TrimStart('~', '/', '\\').Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
-		var avatarDirectoryPath = Path.IsPathRooted(relativeAvatarPath)
-			? relativeAvatarPath
-			: Path.Combine(_webHostEnvironment.ContentRootPath, relativeAvatarPath);
-		Directory.CreateDirectory(avatarDirectoryPath);
+		var normalizedExtension = fileExtension.TrimStart('.').ToLowerInvariant();
+		var objectKey  = StorageKeyBuilder.UserAvatar(userId, normalizedExtension);
+		var bucket     = _r2Settings.Buckets.Avatars;
+		var contentType = file.ContentType;
 
-		var fileName = $"{userId}_{Guid.NewGuid():N}{fileExtension.ToLowerInvariant()}";
-		var physicalFilePath = Path.Combine(avatarDirectoryPath, fileName);
+		await using var stream = file.OpenReadStream();
+		await _storageService.UploadAsync(stream, bucket, objectKey, contentType, cancellationToken);
 
-		await using (var fileStream = new FileStream(physicalFilePath, FileMode.Create))
-		{
-			await file.CopyToAsync(fileStream, cancellationToken);
-		}
-
-		var avatarUrl = $"/avatars/{fileName}";
-
+		// Save the R2 object key to DB — never the presigned URL
 		await _userRepository.UpdateUserProfileAsync(
 			userId,
 			existingUser.FullName,
 			existingUser.Email,
 			existingUser.AgeGroup,
 			existingUser.PreferredHintLanguage,
-			avatarUrl,
+			objectKey,
 			existingUser.FullName,
 			"127.0.0.1",
 			cancellationToken);
 
-		return ApiResponse<string>.SuccessResult(avatarUrl, "Avatar uploaded successfully.");
+		var presignedUrl = await _storageService.GetPresignedUrlAsync(
+			bucket, objectKey, _r2Settings.PresignedUrlExpiryMinutes.Avatars, cancellationToken);
+
+		return ApiResponse<string>.SuccessResult(presignedUrl, "Avatar uploaded successfully.");
 	}
 
 	public async Task<ApiResponse<SessionDetailResponseDto>> GetSessionDetailAsync(long sessionId, long userId, CancellationToken cancellationToken = default)
@@ -186,26 +195,26 @@ public sealed class UserService : IUserService
 			return ApiResponse<ImprovementDataResponseDto>.FailureResult(new[] { "User profile was not found." }, "Improvement data not found.");
 		}
 
-		var recentSessions = await _userRepository.GetImprovementSessionsAsync(userId, cancellationToken);
-		var weeklyScores = await _userRepository.GetWeeklyFluencyScoresAsync(userId, cancellationToken);
-		var grammarProgress = await _userRepository.GetGrammarProgressAsync(userId, cancellationToken);
+		var recentSessions    = await _userRepository.GetImprovementSessionsAsync(userId, cancellationToken);
+		var weeklyScores      = await _userRepository.GetWeeklyFluencyScoresAsync(userId, cancellationToken);
+		var grammarProgress   = await _userRepository.GetGrammarProgressAsync(userId, cancellationToken);
 		var repracticeHistory = await _userRepository.GetRepracticeHistoryAsync(userId, 1, 10, cancellationToken);
-		var badges = await _userRepository.GetBadgesAsync(userId, cancellationToken);
-		var streakData = await _userRepository.GetStreakDataAsync(userId, cancellationToken);
+		var badges            = await _userRepository.GetBadgesAsync(userId, cancellationToken);
+		var streakData        = await _userRepository.GetStreakDataAsync(userId, cancellationToken);
 
 		var response = new ImprovementDataResponseDto
 		{
 			RecentSessions = recentSessions,
-			WeeklyScores = weeklyScores,
+			WeeklyScores   = weeklyScores,
 			GrammarProgress = grammarProgress,
 			RepracticeHistory = repracticeHistory,
-			BadgesEarned = badges,
-			StatsHeader = new ImprovementStatsHeaderDto
+			BadgesEarned   = badges,
+			StatsHeader    = new ImprovementStatsHeaderDto
 			{
 				SessionsCompleted = profile.TotalSessions,
-				AvgScoreThisWeek = weeklyScores.FirstOrDefault()?.AvgFluencyScore ?? 0,
-				MistakesResolved = profile.TotalMistakesFixed,
-				CurrentStreak = streakData.CurrentStreak
+				AvgScoreThisWeek  = weeklyScores.FirstOrDefault()?.AvgFluencyScore ?? 0,
+				MistakesResolved  = profile.TotalMistakesFixed,
+				CurrentStreak     = streakData.CurrentStreak
 			}
 		};
 
@@ -282,14 +291,13 @@ public sealed class UserService : IUserService
 		if (dto.TimelineWeeks is not (2 or 4 or 8))
 			return ApiResponse<GoalProgressResponseDto>.FailureResult(new[] { "TimelineWeeks must be 2, 4, or 8." }, "Validation failed.");
 
-		// Auto-detect level from last 5 session FluencyScores
 		var recentSessions = await _userRepository.GetImprovementSessionsAsync(userId, cancellationToken);
 		var last5Avg = recentSessions.Take(5).Any()
 			? recentSessions.Take(5).Average(s => s.FluencyScore)
 			: 0m;
 
-		var detectedLevel = last5Avg < 55 ? "Beginner" : last5Avg < 75 ? "Intermediate" : "Advanced";
-		var startingScore = Math.Round(last5Avg, 1);
+		var detectedLevel  = last5Avg < 55 ? "Beginner" : last5Avg < 75 ? "Intermediate" : "Advanced";
+		var startingScore  = Math.Round(last5Avg, 1);
 
 		await _userRepository.SetUserGoalAsync(userId, dto.GoalType.ToLowerInvariant(), dto.TimelineWeeks, detectedLevel, startingScore, cancellationToken);
 
@@ -311,7 +319,7 @@ public sealed class UserService : IUserService
 		return ageGroup switch
 		{
 			AgeGroupType.Child => "Child (6-12)",
-			AgeGroupType.Teen => "Teen (13-17)",
+			AgeGroupType.Teen  => "Teen (13-17)",
 			AgeGroupType.Adult => "Adult (18+)",
 			_ => throw new ArgumentOutOfRangeException(nameof(ageGroup), ageGroup, "Unsupported age group.")
 		};

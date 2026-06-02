@@ -9,4 +9,6 @@ public sealed class ScriptUploadResponseDto
 	public int Version { get; set; }
 
 	public int UtteranceCount { get; set; }
+
+	public string? ExcelDownloadUrl { get; set; }
 }

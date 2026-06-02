@@ -57,6 +57,9 @@ public sealed class VoiceAnalysisConfiguration : IEntityTypeConfiguration<VoiceA
 			.HasColumnType("datetime2")
 			.HasDefaultValueSql("GETDATE()");
 
+		builder.Property(voiceAnalysis => voiceAnalysis.AudioStorageKey)
+			.HasMaxLength(256);
+
 		ConfigureAuditColumns(builder);
 
 		builder.HasIndex(voiceAnalysis => voiceAnalysis.SessionId)

@@ -19,9 +19,11 @@ public interface IScriptService
 
 	Task<ApiResponse<List<ScriptVersionResponseDto>>> GetVersionHistoryAsync(long scriptId, CancellationToken cancellationToken = default);
 
-	Task<ApiResponse<byte[]>> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default);
+	Task<ApiResponse<string>> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<byte[]>> DownloadScriptAsync(long scriptId, CancellationToken cancellationToken = default);
+
+	Task<ApiResponse<string>> GetExcelDownloadUrlAsync(long scriptId, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<List<ScriptAnalyticsItemDto>>> GetScriptAnalyticsAsync(string? categoryFilter, CancellationToken cancellationToken = default);
 

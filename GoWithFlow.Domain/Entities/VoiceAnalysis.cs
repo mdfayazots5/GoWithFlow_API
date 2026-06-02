@@ -36,6 +36,8 @@ public sealed class VoiceAnalysis : BaseAuditEntity
 
 	public DateTime RecordedAt { get; set; }
 
+	public string? AudioStorageKey { get; set; }
+
 	public Session? Session { get; set; }
 
 	public User? User { get; set; }

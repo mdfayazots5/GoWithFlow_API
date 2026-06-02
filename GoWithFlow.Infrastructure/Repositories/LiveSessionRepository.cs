@@ -584,6 +584,15 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		return reader.GetInt32(reader.GetOrdinal(columnName));
 	}
 
+	public async Task UpdateVoiceAnalysisAudioKeyAsync(long voiceAnalysisId, string audioStorageKey, CancellationToken cancellationToken = default)
+	{
+		var entity = await _dbContext.VoiceAnalyses.FindAsync(new object[] { voiceAnalysisId }, cancellationToken);
+		if (entity is null) return;
+
+		entity.AudioStorageKey = audioStorageKey;
+		await _dbContext.SaveChangesAsync(cancellationToken);
+	}
+
 	private static byte GetByte(DbDataReader reader, string columnName)
 	{
 		return reader.GetByte(reader.GetOrdinal(columnName));

@@ -2,10 +2,13 @@ using System.Text.Json;
 using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.LiveSession;
 using GoWithFlow.Application.DTOs.Responses.LiveSession;
+using GoWithFlow.Application.Helpers;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
+using GoWithFlow.Application.Settings;
 using GoWithFlow.Domain.Entities;
 using GoWithFlow.Domain.Enums;
+using Microsoft.Extensions.Options;
 
 namespace GoWithFlow.Application.Services;
 
@@ -24,6 +27,8 @@ public sealed class LiveSessionService : ILiveSessionService
 	private readonly IUserService _userService;
 	private readonly IMistakeService _mistakeService;
 	private readonly IVocabularyService _vocabularyService;
+	private readonly IStorageService _storageService;
+	private readonly CloudflareR2Settings _r2Settings;
 
 	public LiveSessionService(
 		IUserRepository userRepository,
@@ -31,14 +36,18 @@ public sealed class LiveSessionService : ILiveSessionService
 		ILiveSessionRepository liveSessionRepository,
 		IUserService userService,
 		IMistakeService mistakeService,
-		IVocabularyService vocabularyService)
+		IVocabularyService vocabularyService,
+		IStorageService storageService,
+		IOptions<CloudflareR2Settings> r2Options)
 	{
-		_userRepository = userRepository;
-		_sessionRepository = sessionRepository;
+		_userRepository        = userRepository;
+		_sessionRepository     = sessionRepository;
 		_liveSessionRepository = liveSessionRepository;
-		_userService = userService;
-		_mistakeService = mistakeService;
-		_vocabularyService = vocabularyService;
+		_userService           = userService;
+		_mistakeService        = mistakeService;
+		_vocabularyService     = vocabularyService;
+		_storageService        = storageService;
+		_r2Settings            = r2Options.Value;
 	}
 
 	public async Task<ApiResponse<TurnStateResponseDto>> GetCurrentTurnAsync(long sessionId, CancellationToken cancellationToken = default)
@@ -172,6 +181,25 @@ public sealed class LiveSessionService : ILiveSessionService
 			// Insert path: first recording for this turn
 			voiceAnalysisId = await _liveSessionRepository.InsertVoiceAnalysisAsync(voiceAnalysis, cancellationToken);
 			saveMessage = "Voice analysis saved successfully.";
+		}
+
+		// Optional: upload audio blob to R2 if provided by the frontend
+		if (!string.IsNullOrWhiteSpace(dto.AudioBase64))
+		{
+			try
+			{
+				var audioBytes = Convert.FromBase64String(dto.AudioBase64);
+				var audioKey   = StorageKeyBuilder.VoiceRecording(dto.SessionId, dto.TurnIndex, userId);
+				var bucket     = _r2Settings.Buckets.Audio;
+
+				await using var audioStream = new MemoryStream(audioBytes);
+				await _storageService.UploadAsync(audioStream, bucket, audioKey, "audio/ogg", cancellationToken);
+				await _liveSessionRepository.UpdateVoiceAnalysisAudioKeyAsync(voiceAnalysisId, audioKey, cancellationToken);
+			}
+			catch (FormatException)
+			{
+				// Invalid Base64 — skip audio upload, do not fail the voice analysis save
+			}
 		}
 
 		return ApiResponse<VoiceAnalysisResponseDto>.SuccessResult(

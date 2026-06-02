@@ -104,16 +104,7 @@ public sealed class AdminController : ControllerBase
 	public async Task<IActionResult> ExportReportsAsExcelAsync([FromQuery] AdminReportFilterRequestDto dto, CancellationToken cancellationToken)
 	{
 		var response = await _adminService.ExportReportsAsExcelAsync(dto, cancellationToken);
-
-		if (response.Success == false || response.Data is null)
-		{
-			return StatusCode(StatusCodes.Status400BadRequest, response);
-		}
-
-		return File(
-			response.Data,
-			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-			$"GoWithFlow_AdminReports_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx");
+		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
 	[HttpGet(ApiRoutes.Admin.Cohorts)]

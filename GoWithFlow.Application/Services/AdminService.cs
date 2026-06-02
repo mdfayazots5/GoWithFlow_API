@@ -2,10 +2,13 @@ using System.Security.Cryptography;
 using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.Admin;
 using GoWithFlow.Application.DTOs.Responses.Admin;
+using GoWithFlow.Application.Helpers;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
+using GoWithFlow.Application.Settings;
 using GoWithFlow.Domain.Entities;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 
 namespace GoWithFlow.Application.Services;
 
@@ -15,17 +18,23 @@ public sealed class AdminService : IAdminService
 	private readonly IUserRepository _userRepository;
 	private readonly IMemoryCache _memoryCache;
 	private readonly IExcelExportService _excelExportService;
+	private readonly IStorageService _storageService;
+	private readonly CloudflareR2Settings _r2Settings;
 
 	public AdminService(
 		IAdminRepository adminRepository,
 		IUserRepository userRepository,
 		IMemoryCache memoryCache,
-		IExcelExportService excelExportService)
+		IExcelExportService excelExportService,
+		IStorageService storageService,
+		IOptions<CloudflareR2Settings> r2Options)
 	{
-		_adminRepository = adminRepository;
-		_userRepository = userRepository;
-		_memoryCache = memoryCache;
+		_adminRepository    = adminRepository;
+		_userRepository     = userRepository;
+		_memoryCache        = memoryCache;
 		_excelExportService = excelExportService;
+		_storageService     = storageService;
+		_r2Settings         = r2Options.Value;
 	}
 
 	public async Task<ApiResponse<AdminDashboardResponseDto>> GetDashboardSummaryAsync(CancellationToken cancellationToken = default)
@@ -163,22 +172,34 @@ public sealed class AdminService : IAdminService
 		return ApiResponse<AdminUserFullReportDto>.SuccessResult(report, "Admin user full report retrieved successfully.");
 	}
 
-	public async Task<ApiResponse<byte[]>> ExportReportsAsExcelAsync(AdminReportFilterRequestDto dto, CancellationToken cancellationToken = default)
+	public async Task<ApiResponse<string>> ExportReportsAsExcelAsync(AdminReportFilterRequestDto dto, CancellationToken cancellationToken = default)
 	{
 		NormalizeReportFilter(dto);
 
 		var exportFilter = new AdminReportFilterRequestDto
 		{
-			FromDate = dto.FromDate,
-			ToDate = dto.ToDate,
-			UserId = dto.UserId,
+			FromDate   = dto.FromDate,
+			ToDate     = dto.ToDate,
+			UserId     = dto.UserId,
 			PageNumber = 1,
-			PageSize = 10000
+			PageSize   = 10000
 		};
 
 		var workbookBytes = await _excelExportService.GenerateUserReportExcelAsync(exportFilter);
 
-		return ApiResponse<byte[]>.SuccessResult(workbookBytes, "Admin reports exported successfully.");
+		// Determine requestedByUserId from filter or use 0 as default for key construction
+		var requestedById = dto.UserId ?? 0;
+		var objectKey     = StorageKeyBuilder.ReportExport(requestedById);
+		var bucket        = _r2Settings.Buckets.Exports;
+
+		await using var stream = new MemoryStream(workbookBytes);
+		await _storageService.UploadAsync(stream, bucket, objectKey,
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", cancellationToken);
+
+		var presignedUrl = await _storageService.GetPresignedUrlAsync(
+			bucket, objectKey, _r2Settings.PresignedUrlExpiryMinutes.Exports, cancellationToken);
+
+		return ApiResponse<string>.SuccessResult(presignedUrl, "Admin reports exported successfully.");
 	}
 
 	public async Task<ApiResponse<AdminCreateUserResponseDto>> CreateUserAsync(AdminCreateUserRequestDto dto, CancellationToken cancellationToken = default)

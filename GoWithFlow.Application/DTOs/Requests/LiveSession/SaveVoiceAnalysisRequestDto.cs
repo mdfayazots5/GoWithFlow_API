@@ -29,4 +29,9 @@ public sealed class SaveVoiceAnalysisRequestDto
 	public List<PronunciationIssueDto> PronunciationIssues { get; set; } = new();
 
 	public decimal OverallScore { get; set; }
+
+	/// <summary>
+	/// Optional Base64-encoded audio blob. When provided, audio is uploaded to R2 for repractice playback.
+	/// </summary>
+	public string? AudioBase64 { get; set; }
 }

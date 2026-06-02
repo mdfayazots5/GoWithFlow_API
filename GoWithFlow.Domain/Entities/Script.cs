@@ -28,5 +28,7 @@ public sealed class Script : BaseAuditEntity
 
 	public int UtteranceCount { get; set; }
 
+	public string? ExcelStorageKey { get; set; }
+
 	public ICollection<Utterance> Utterances { get; set; } = new List<Utterance>();
 }

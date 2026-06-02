@@ -773,4 +773,24 @@ public sealed class ScriptRepository : IScriptRepository
 
 		return newScriptId;
 	}
+
+	public async Task UpdateScriptExcelKeyAsync(long scriptId, string excelStorageKey, CancellationToken cancellationToken = default)
+	{
+		var script = await _dbContext.Scripts.FindAsync(new object[] { scriptId }, cancellationToken);
+		if (script is null) return;
+
+		script.ExcelStorageKey = excelStorageKey;
+		await _dbContext.SaveChangesAsync(cancellationToken);
+	}
+
+	public async Task<string?> GetScriptExcelKeyAsync(long scriptId, CancellationToken cancellationToken = default)
+	{
+		var script = await _dbContext.Scripts
+			.AsNoTracking()
+			.Where(s => s.ScriptId == scriptId)
+			.Select(s => s.ExcelStorageKey)
+			.FirstOrDefaultAsync(cancellationToken);
+
+		return script;
+	}
 }

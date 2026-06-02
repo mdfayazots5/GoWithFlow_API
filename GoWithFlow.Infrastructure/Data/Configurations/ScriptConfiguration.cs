@@ -53,6 +53,9 @@ public sealed class ScriptConfiguration : IEntityTypeConfiguration<Script>
 		builder.Property(script => script.UtteranceCount)
 			.HasDefaultValue(0);
 
+		builder.Property(script => script.ExcelStorageKey)
+			.HasMaxLength(256);
+
 		ConfigureAuditColumns(builder);
 
 		builder.HasIndex(script => script.GrammarFocusTag)

@@ -14,6 +14,7 @@ using GoWithFlow.Application.Mappings;
 using GoWithFlow.Application.Services;
 using GoWithFlow.Application.Settings;
 using GoWithFlow.Application.Validators;
+using GoWithFlow.Infrastructure.ExternalServices;
 using GoWithFlow.Infrastructure.Data;
 using GoWithFlow.Infrastructure.ExternalServices;
 using GoWithFlow.Infrastructure.Repositories;
@@ -60,6 +61,7 @@ builder.Host.UseSerilog((context, services, configuration) =>
 
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("JwtSettings"));
 builder.Services.Configure<FileStorageSettings>(builder.Configuration.GetSection("FileStorage"));
+builder.Services.Configure<CloudflareR2Settings>(builder.Configuration.GetSection("CloudflareR2"));
 builder.Services.AddSingleton(new DatabaseProviderSettings(databaseProvider));
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddMemoryCache();
@@ -284,6 +286,7 @@ builder.Services.AddScoped<IAudioArchiveService, AudioArchiveService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddScoped<IExcelParserService, ExcelParserService>();
 builder.Services.AddScoped<IExcelExportService, ExcelExportService>();
+builder.Services.AddScoped<IStorageService, CloudflareR2StorageService>();
 
 var app = builder.Build();
 

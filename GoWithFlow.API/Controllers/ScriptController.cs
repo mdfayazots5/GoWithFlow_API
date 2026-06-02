@@ -94,19 +94,15 @@ public sealed class ScriptController : ControllerBase
 	public async Task<IActionResult> GetSampleTemplateAsync([FromQuery] string? category, CancellationToken cancellationToken)
 	{
 		var response = await _scriptService.GetSampleTemplateAsync(category, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
 
-		if (response.Success == false || response.Data is null)
-		{
-			return StatusCode(StatusCodes.Status400BadRequest, response);
-		}
-
-		var safeCategory = string.IsNullOrWhiteSpace(category) ? "Generic" : string.Concat(category.Trim().Split(Path.GetInvalidFileNameChars()));
-		var fileName = $"GoWithFlow_Template_{safeCategory}.xlsx";
-
-		return File(
-			response.Data,
-			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-			fileName);
+	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]
+	[HttpGet(ApiRoutes.Script.ExcelDownload)]
+	public async Task<IActionResult> GetExcelDownloadUrlAsync(long scriptId, CancellationToken cancellationToken)
+	{
+		var response = await _scriptService.GetExcelDownloadUrlAsync(scriptId, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
 	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]

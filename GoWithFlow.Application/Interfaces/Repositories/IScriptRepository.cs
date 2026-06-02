@@ -38,4 +38,8 @@ public interface IScriptRepository
 	Task RollbackScriptVersionAsync(long scriptId, int versionNumber, string updatedBy, CancellationToken cancellationToken = default);
 
 	Task<long> DuplicateScriptAsync(long scriptId, string createdBy, CancellationToken cancellationToken = default);
+
+	Task UpdateScriptExcelKeyAsync(long scriptId, string excelStorageKey, CancellationToken cancellationToken = default);
+
+	Task<string?> GetScriptExcelKeyAsync(long scriptId, CancellationToken cancellationToken = default);
 }

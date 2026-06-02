@@ -67,4 +67,6 @@ public interface ILiveSessionRepository
 	/// recording show WasAnalyzed = false. Returns null if the session or its script is not found.
 	/// </summary>
 	Task<SessionReviewResponseDto?> GetSessionReviewAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
+
+	Task UpdateVoiceAnalysisAudioKeyAsync(long voiceAnalysisId, string audioStorageKey, CancellationToken cancellationToken = default);
 }

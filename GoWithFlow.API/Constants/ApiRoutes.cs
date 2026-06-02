@@ -68,6 +68,7 @@ public static class ApiRoutes
 		public const string Versions       = "{scriptId:long}/versions";
 		public const string SampleTemplate = "sample-template";
 		public const string Download       = "{scriptId:long}/download";
+		public const string ExcelDownload  = "{scriptId:long}/excel-download";
 		public const string Analytics      = "analytics";
 		public const string Rollback       = "{scriptId:long}/rollback";
 		public const string Duplicate      = "{scriptId:long}/duplicate";

@@ -1,15 +1,18 @@
 using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.Script;
 using GoWithFlow.Application.DTOs.Responses.Script;
+using GoWithFlow.Application.Helpers;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
+using GoWithFlow.Application.Settings;
 using GoWithFlow.Domain.Entities;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Caching.Memory;
 
 namespace GoWithFlow.Application.Services;
 
@@ -22,19 +25,25 @@ public sealed class ScriptService : IScriptService
 	private readonly IExcelParserService _excelParserService;
 	private readonly IMemoryCache _memoryCache;
 	private readonly IExcelExportService _excelExportService;
+	private readonly IStorageService _storageService;
+	private readonly CloudflareR2Settings _r2Settings;
 
 	public ScriptService(
 		IUserRepository userRepository,
 		IScriptRepository scriptRepository,
 		IExcelParserService excelParserService,
 		IMemoryCache memoryCache,
-		IExcelExportService excelExportService)
+		IExcelExportService excelExportService,
+		IStorageService storageService,
+		IOptions<CloudflareR2Settings> r2Options)
 	{
-		_userRepository = userRepository;
-		_scriptRepository = scriptRepository;
+		_userRepository     = userRepository;
+		_scriptRepository   = scriptRepository;
 		_excelParserService = excelParserService;
-		_memoryCache = memoryCache;
+		_memoryCache        = memoryCache;
 		_excelExportService = excelExportService;
+		_storageService     = storageService;
+		_r2Settings         = r2Options.Value;
 	}
 
 	public async Task<ApiResponse<ExcelValidationResponseDto>> ValidateExcelAsync(IFormFile file, CancellationToken cancellationToken = default)
@@ -51,12 +60,12 @@ public sealed class ScriptService : IScriptService
 
 		var response = new ExcelValidationResponseDto
 		{
-			IsValid = parseResult.IsValid,
-			TotalRows = parseResult.TotalRows,
+			IsValid    = parseResult.IsValid,
+			TotalRows  = parseResult.TotalRows,
 			ValidCount = parseResult.ValidCount,
 			ErrorCount = parseResult.ErrorCount,
-			ErrorRows = parseResult.ErrorRows,
-			ValidRows = parseResult.ValidRows
+			ErrorRows  = parseResult.ErrorRows,
+			ValidRows  = parseResult.ValidRows
 		};
 
 		return ApiResponse<ExcelValidationResponseDto>.SuccessResult(response, "Excel validation completed successfully.");
@@ -79,8 +88,15 @@ public sealed class ScriptService : IScriptService
 			return ApiResponse<ScriptUploadResponseDto>.FailureResult(new[] { "UploadedByUserId is invalid." }, "Script upload failed.");
 		}
 
-		await using var stream = file.OpenReadStream();
-		var parseResult = await _excelParserService.ParseAndValidateAsync(stream);
+		// Buffer file into memory so the stream can be read twice (parse + R2 upload)
+		byte[] fileBytes;
+		await using (var bufferStream = new MemoryStream())
+		{
+			await file.CopyToAsync(bufferStream, cancellationToken);
+			fileBytes = bufferStream.ToArray();
+		}
+
+		var parseResult = await _excelParserService.ParseAndValidateAsync(new MemoryStream(fileBytes));
 
 		if (parseResult.IsValid == false)
 		{
@@ -92,22 +108,22 @@ public sealed class ScriptService : IScriptService
 		}
 
 		var existingScriptId = await _scriptRepository.CheckScriptTitleExistsAsync(dto.ScriptTitle.Trim(), cancellationToken);
-		var latestVersion = await _scriptRepository.GetLatestVersionByTitleAsync(dto.ScriptTitle.Trim(), cancellationToken);
-		var versionNumber = latestVersion + 1;
+		var latestVersion    = await _scriptRepository.GetLatestVersionByTitleAsync(dto.ScriptTitle.Trim(), cancellationToken);
+		var versionNumber    = latestVersion + 1;
 
 		var script = new Script
 		{
-			ScriptTitle = dto.ScriptTitle.Trim(),
-			Category = dto.Category.Trim(),
+			ScriptTitle     = dto.ScriptTitle.Trim(),
+			Category        = dto.Category.Trim(),
 			GrammarFocusTag = dto.GrammarFocusTag.Trim(),
-			ContextTag = dto.ContextTag.Trim(),
+			ContextTag      = dto.ContextTag.Trim(),
 			ComplexityLevel = dto.ComplexityLevel,
-			TargetAgeGroup = dto.TargetAgeGroup.Trim(),
-			HintLanguage = dto.HintLanguage.Trim(),
+			TargetAgeGroup  = dto.TargetAgeGroup.Trim(),
+			HintLanguage    = dto.HintLanguage.Trim(),
 			UploadedByUserId = uploadedByUserId,
-			Version = versionNumber,
-			CreatedBy = uploadedByUser.FullName,
-			IPAddress = "127.0.0.1"
+			Version         = versionNumber,
+			CreatedBy       = uploadedByUser.FullName,
+			IPAddress       = "127.0.0.1"
 		};
 
 		var scriptId = await _scriptRepository.InsertScriptAsync(script, cancellationToken);
@@ -122,36 +138,47 @@ public sealed class ScriptService : IScriptService
 		await _scriptRepository.InsertScriptVersionAsync(
 			new ScriptVersion
 			{
-				ScriptId = scriptId,
-				VersionNumber = versionNumber,
-				VersionNotes = versionNotes,
+				ScriptId         = scriptId,
+				VersionNumber    = versionNumber,
+				VersionNotes     = versionNotes,
 				UploadedByUserId = uploadedByUserId,
-				CreatedBy = uploadedByUser.FullName,
-				IPAddress = "127.0.0.1"
+				CreatedBy        = uploadedByUser.FullName,
+				IPAddress        = "127.0.0.1"
 			},
 			cancellationToken);
+
+		// Upload original Excel to R2 and save the storage key
+		var excelKey = StorageKeyBuilder.ScriptExcel(scriptId, versionNumber);
+		await using var r2Stream = new MemoryStream(fileBytes);
+		await _storageService.UploadAsync(r2Stream, _r2Settings.Buckets.Scripts, excelKey,
+			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", cancellationToken);
+		await _scriptRepository.UpdateScriptExcelKeyAsync(scriptId, excelKey, cancellationToken);
+
+		var excelDownloadUrl = await _storageService.GetPresignedUrlAsync(
+			_r2Settings.Buckets.Scripts, excelKey, _r2Settings.PresignedUrlExpiryMinutes.Scripts, cancellationToken);
 
 		InvalidateScriptCache();
 
 		return ApiResponse<ScriptUploadResponseDto>.SuccessResult(
 			new ScriptUploadResponseDto
 			{
-				ScriptId = scriptId,
-				ScriptTitle = script.ScriptTitle,
-				Version = versionNumber,
-				UtteranceCount = parseResult.ValidRows.Count
+				ScriptId         = scriptId,
+				ScriptTitle      = script.ScriptTitle,
+				Version          = versionNumber,
+				UtteranceCount   = parseResult.ValidRows.Count,
+				ExcelDownloadUrl = excelDownloadUrl
 			},
 			"Script uploaded successfully.");
 	}
 
 	public async Task<ApiResponse<PagedResult<ScriptListItemResponseDto>>> GetScriptsAsync(ScriptSearchRequestDto dto, CancellationToken cancellationToken = default)
 	{
-		dto.SearchTerm = string.IsNullOrWhiteSpace(dto.SearchTerm) ? null : dto.SearchTerm.Trim();
-		dto.Category = string.IsNullOrWhiteSpace(dto.Category) ? null : dto.Category.Trim();
+		dto.SearchTerm    = string.IsNullOrWhiteSpace(dto.SearchTerm)    ? null : dto.SearchTerm.Trim();
+		dto.Category      = string.IsNullOrWhiteSpace(dto.Category)      ? null : dto.Category.Trim();
 		dto.GrammarFocusTag = string.IsNullOrWhiteSpace(dto.GrammarFocusTag) ? null : dto.GrammarFocusTag.Trim();
-		dto.TargetAgeGroup = string.IsNullOrWhiteSpace(dto.TargetAgeGroup) ? null : dto.TargetAgeGroup.Trim();
+		dto.TargetAgeGroup  = string.IsNullOrWhiteSpace(dto.TargetAgeGroup)  ? null : dto.TargetAgeGroup.Trim();
 		dto.PageNumber = dto.PageNumber <= 0 ? 1 : dto.PageNumber;
-		dto.PageSize = dto.PageSize <= 0 ? 12 : dto.PageSize;
+		dto.PageSize   = dto.PageSize   <= 0 ? 12 : dto.PageSize;
 
 		var cacheKey = BuildScriptListCacheKey(dto);
 
@@ -228,26 +255,45 @@ public sealed class ScriptService : IScriptService
 		return ApiResponse<byte[]>.SuccessResult(fileBytes, script.ScriptTitle);
 	}
 
-	public Task<ApiResponse<byte[]>> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default)
+	public async Task<ApiResponse<string>> GetExcelDownloadUrlAsync(long scriptId, CancellationToken cancellationToken = default)
 	{
-		var cacheKey = string.IsNullOrWhiteSpace(category)
-			? CacheKeys.SampleTemplate
-			: $"{CacheKeys.SampleTemplate}_{category.Trim().ToLowerInvariant().Replace(" ", "_")}";
-
-		if (_memoryCache.TryGetValue(cacheKey, out byte[]? cachedTemplate) && cachedTemplate is not null)
+		if (scriptId <= 0)
 		{
-			return Task.FromResult(ApiResponse<byte[]>.SuccessResult(cachedTemplate, "Sample template generated successfully."));
+			return ApiResponse<string>.FailureResult(new[] { "ScriptId must be greater than zero." }, "Validation failed.");
 		}
 
-		return BuildAndCacheSampleTemplateAsync(category?.Trim(), cacheKey);
+		var excelKey = await _scriptRepository.GetScriptExcelKeyAsync(scriptId, cancellationToken);
+
+		if (string.IsNullOrEmpty(excelKey))
+		{
+			return ApiResponse<string>.FailureResult(new[] { "No Excel file found for this script." }, "Not found.");
+		}
+
+		var url = await _storageService.GetPresignedUrlAsync(
+			_r2Settings.Buckets.Scripts, excelKey, _r2Settings.PresignedUrlExpiryMinutes.Scripts, cancellationToken);
+
+		return ApiResponse<string>.SuccessResult(url, "Excel download URL generated successfully.");
 	}
 
-	private async Task<ApiResponse<byte[]>> BuildAndCacheSampleTemplateAsync(string? category, string cacheKey)
+	public async Task<ApiResponse<string>> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default)
 	{
-		var templateBytes = await _excelExportService.GenerateSampleScriptTemplateAsync(category);
-		_memoryCache.Set(cacheKey, templateBytes, TimeSpan.FromMinutes(30));
+		var templateKey = StorageKeyBuilder.SampleTemplate();
+		var bucket      = _r2Settings.Buckets.Scripts;
 
-		return ApiResponse<byte[]>.SuccessResult(templateBytes, "Sample template generated successfully.");
+		// Upload sample template to R2 on first request (re-uploads if not found)
+		var exists = await _storageService.ExistsAsync(bucket, templateKey, cancellationToken);
+		if (!exists)
+		{
+			var templateBytes = await _excelExportService.GenerateSampleScriptTemplateAsync(category?.Trim());
+			await using var stream = new MemoryStream(templateBytes);
+			await _storageService.UploadAsync(stream, bucket, templateKey,
+				"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", cancellationToken);
+		}
+
+		var url = await _storageService.GetPresignedUrlAsync(
+			bucket, templateKey, _r2Settings.PresignedUrlExpiryMinutes.Scripts, cancellationToken);
+
+		return ApiResponse<string>.SuccessResult(url, "Sample template URL generated successfully.");
 	}
 
 	private void InvalidateScriptCache()
@@ -303,52 +349,36 @@ public sealed class ScriptService : IScriptService
 			"Grammar Drill",
 			"Roleplay",
 			"Mock Interview",
-			"Interview",          // legacy alias
+			"Interview",
 			"Vocabulary Sprint",
-			"Vocabulary",         // legacy alias
+			"Vocabulary",
 			"Fluency Drill",
 			"Repractice Round",
-			"Repetition"          // legacy alias
+			"Repetition"
 		};
 
 		if (string.IsNullOrWhiteSpace(dto.ScriptTitle))
-		{
 			errors.Add("ScriptTitle is required.");
-		}
 
 		if (string.IsNullOrWhiteSpace(dto.Category))
-		{
 			errors.Add("Category is required.");
-		}
 		else if (validCategories.Contains(dto.Category.Trim()) == false)
-		{
 			errors.Add("Category is invalid.");
-		}
 
 		if (string.IsNullOrWhiteSpace(dto.GrammarFocusTag))
-		{
 			errors.Add("GrammarFocusTag is required.");
-		}
 
 		if (string.IsNullOrWhiteSpace(dto.ContextTag))
-		{
 			errors.Add("ContextTag is required.");
-		}
 
 		if (dto.ComplexityLevel is < 1 or > 5)
-		{
 			errors.Add("ComplexityLevel must be between 1 and 5.");
-		}
 
 		if (string.IsNullOrWhiteSpace(dto.TargetAgeGroup))
-		{
 			errors.Add("TargetAgeGroup is required.");
-		}
 
 		if (string.IsNullOrWhiteSpace(dto.HintLanguage))
-		{
 			errors.Add("HintLanguage is required.");
-		}
 
 		return errors;
 	}
