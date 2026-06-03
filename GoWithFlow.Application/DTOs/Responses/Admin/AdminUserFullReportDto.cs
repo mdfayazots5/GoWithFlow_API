@@ -9,4 +9,6 @@ public sealed class AdminUserFullReportDto
 	public List<AdminMistakeBreakdownDto> MistakeBreakdownList { get; set; } = new();
 
 	public List<WeeklyScoreDto> WeeklyScoreList { get; set; } = new();
+
+	public List<AdminNoteResponseDto> AdminNotesList { get; set; } = new();
 }

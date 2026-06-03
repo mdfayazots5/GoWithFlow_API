@@ -16,7 +16,7 @@ BEGIN
         FROM   tblsession ss
         INNER  JOIN tblscript s ON s.scriptid = ss.scriptid
         INNER  JOIN tblsessionmember sm ON sm.sessionid = ss.sessionid AND sm.userid = p_userid AND sm.isdeleted = FALSE
-        WHERE  LOWER(ss.category) LIKE '%grammar%'
+        WHERE  LOWER(s.category) LIKE '%grammar%'
           AND  ss.status = 'COMPLETED' AND ss.isdeleted = FALSE
         HAVING COUNT(DISTINCT ss.sessionid) >= 10;
 
@@ -29,9 +29,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM tblUserbadge WHERE userid = p_userid AND badgecode = 'INTERVIEW_READY') THEN
         SELECT COUNT(DISTINCT ss.sessionid)::INT INTO v_count
         FROM   tblsession ss
+        INNER  JOIN tblscript s ON s.scriptid = ss.scriptid
         INNER  JOIN tblsessionmember sm ON sm.sessionid = ss.sessionid AND sm.userid = p_userid AND sm.isdeleted = FALSE
         INNER  JOIN tblvoiceanalysis va ON va.sessionid = ss.sessionid AND va.userid = p_userid AND va.isdeleted = FALSE
-        WHERE  LOWER(ss.category) LIKE '%interview%'
+        WHERE  LOWER(s.category) LIKE '%interview%'
           AND  ss.status = 'COMPLETED' AND ss.isdeleted = FALSE
         HAVING AVG(va.fluencyscore) >= 75;
 
@@ -44,9 +45,10 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM tblUserbadge WHERE userid = p_userid AND badgecode = 'FLUENCY_MILESTONE') THEN
         SELECT COUNT(DISTINCT ss.sessionid)::INT INTO v_count
         FROM   tblsession ss
+        INNER  JOIN tblscript s ON s.scriptid = ss.scriptid
         INNER  JOIN tblsessionmember sm ON sm.sessionid = ss.sessionid AND sm.userid = p_userid AND sm.isdeleted = FALSE
         INNER  JOIN tblvoiceanalysis va ON va.sessionid = ss.sessionid AND va.userid = p_userid AND va.isdeleted = FALSE
-        WHERE  LOWER(ss.category) LIKE '%fluency%'
+        WHERE  LOWER(s.category) LIKE '%fluency%'
           AND  ss.status = 'COMPLETED' AND ss.isdeleted = FALSE
         HAVING AVG(va.speakingspeedwpm) BETWEEN 80 AND 120;
 
@@ -73,7 +75,7 @@ BEGIN
         INNER  JOIN tblscript s ON s.scriptid = ss.scriptid
         INNER  JOIN tblsessionmember sm ON sm.sessionid = ss.sessionid AND sm.userid = p_userid AND sm.isdeleted = FALSE
         INNER  JOIN tblvoiceanalysis va ON va.sessionid = ss.sessionid AND va.userid = p_userid AND va.isdeleted = FALSE
-        WHERE  (LOWER(ss.category) LIKE '%roleplay%' OR LOWER(ss.category) LIKE '%role play%')
+        WHERE  (LOWER(s.category) LIKE '%roleplay%' OR LOWER(s.category) LIKE '%role play%')
           AND  ss.status = 'COMPLETED' AND ss.isdeleted = FALSE
         HAVING COUNT(DISTINCT ss.sessionid) >= 10 AND AVG(va.fluencyscore) >= 70;
 

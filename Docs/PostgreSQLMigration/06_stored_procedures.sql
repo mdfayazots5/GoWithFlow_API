@@ -82,24 +82,24 @@ CREATE OR REPLACE FUNCTION uspinsertadminnote(
     p_createdby    VARCHAR(128),
     p_ipaddress    VARCHAR(64)
 ) RETURNS TABLE (
-    adminnodeid  BIGINT,
+    adminnoteid  BIGINT,
     adminuserid  BIGINT,
     adminname    VARCHAR(128),
     notetext     VARCHAR(512),
-    notedate     TIMESTAMPTZ
+    notedate     TIMESTAMP
 ) AS $$
 DECLARE
     v_id BIGINT;
 BEGIN
     INSERT INTO tbladminnote (adminuserid, targetuserid, notetext, createdby, ipaddress)
     VALUES (p_adminuserid, p_targetuserid, p_notetext, p_createdby, p_ipaddress)
-    RETURNING tbladminnote.adminnodeid INTO v_id;
+    RETURNING tbladminnote.adminnoteid INTO v_id;
 
     RETURN QUERY
-    SELECT an.adminnodeid, an.adminuserid, au.fullname::VARCHAR(128), an.notetext, an.notedate
+    SELECT an.adminnoteid, an.adminuserid, au.fullname::VARCHAR(128), an.notetext, an.notedate
     FROM tbladminnote AS an
     INNER JOIN tbluser AS au ON au.userid = an.adminuserid
-    WHERE an.adminnodeid = v_id;
+    WHERE an.adminnoteid = v_id;
 END;
 $$ LANGUAGE plpgsql;
 

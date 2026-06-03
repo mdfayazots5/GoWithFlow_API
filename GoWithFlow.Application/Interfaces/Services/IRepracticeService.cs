@@ -14,7 +14,7 @@ public interface IRepracticeService
 
 	Task<ApiResponse<bool>> UpdateAttemptAsync(UpdateAttemptRequestDto dto, long userId, CancellationToken cancellationToken = default);
 
-	Task<ApiResponse<bool>> CompleteRepracticeSessionAsync(long repracticeSessionId, long userId, CancellationToken cancellationToken = default);
+	Task<ApiResponse<CompleteRepracticeResponseDto>> CompleteRepracticeSessionAsync(long repracticeSessionId, long userId, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<decimal>> GetImprovementPercentageAsync(long userId, CancellationToken cancellationToken = default);
 }

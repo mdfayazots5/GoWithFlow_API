@@ -68,16 +68,31 @@ public sealed class RepracticeService : IRepracticeService
 
 		foreach (var mistake in mistakes)
 		{
+			var hintText = mistake.MistakeType?.ToUpperInvariant() switch
+			{
+				"SPEED"         => "Speaking Speed",
+				"PRONUNCIATION" => "Pronunciation",
+				_               => mistake.GrammarTag
+			};
+
+			var correctionNote = mistake.MistakeType?.ToUpperInvariant() switch
+			{
+				"SPEED"         => "Aim for 80–120 WPM. Read sentences aloud at a natural conversational pace — not too slow, not too fast.",
+				"PRONUNCIATION" => "Focus on clear articulation. Repeat the sentence slowly, then at natural speed. Pay attention to stressed syllables.",
+				"INCOMPLETE"    => "Complete the full sentence without stopping. Speak confidently through to the end.",
+				_               => mistake.CorrectionText ?? mistake.MistakeDetail
+			};
+
 			var repracticeUtterance = new RepracticeUtterance
 			{
 				RepracticeSessionId = repracticeSessionId,
 				MistakeId = mistake.MistakeId,
 				OriginalUtteranceId = mistake.UtteranceId,
 				EnglishText = mistake.UtteranceText,
-				HintText = mistake.GrammarTag,
+				HintText = hintText,
 				MistakeType = mistake.MistakeType,
 				MistakeDetail = mistake.MistakeDetail,
-				CorrectionNote = mistake.CorrectionText ?? mistake.MistakeDetail,
+				CorrectionNote = correctionNote,
 				CreatedBy = user.FullName,
 				IPAddress = "127.0.0.1"
 			};
@@ -161,11 +176,11 @@ public sealed class RepracticeService : IRepracticeService
 		return ApiResponse<bool>.SuccessResult(true, "Repractice attempt updated successfully.");
 	}
 
-	public async Task<ApiResponse<bool>> CompleteRepracticeSessionAsync(long repracticeSessionId, long userId, CancellationToken cancellationToken = default)
+	public async Task<ApiResponse<CompleteRepracticeResponseDto>> CompleteRepracticeSessionAsync(long repracticeSessionId, long userId, CancellationToken cancellationToken = default)
 	{
 		if (repracticeSessionId <= 0 || userId <= 0)
 		{
-			return ApiResponse<bool>.FailureResult(new[] { "RepracticeSessionId and UserId must be greater than zero." }, "Validation failed.");
+			return ApiResponse<CompleteRepracticeResponseDto>.FailureResult(new[] { "RepracticeSessionId and UserId must be greater than zero." }, "Validation failed.");
 		}
 
 		var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
@@ -173,17 +188,22 @@ public sealed class RepracticeService : IRepracticeService
 
 		if (user is null || repracticeSession is null)
 		{
-			return ApiResponse<bool>.FailureResult(new[] { "User or repractice session was not found." }, "Repractice completion failed.");
+			return ApiResponse<CompleteRepracticeResponseDto>.FailureResult(new[] { "User or repractice session was not found." }, "Repractice completion failed.");
 		}
 
 		if (repracticeSession.UserId != userId)
 		{
-			return ApiResponse<bool>.FailureResult(new[] { "This repractice session does not belong to the current user." }, "Repractice completion failed.");
+			return ApiResponse<CompleteRepracticeResponseDto>.FailureResult(new[] { "This repractice session does not belong to the current user." }, "Repractice completion failed.");
 		}
 
 		if (string.Equals(repracticeSession.Status, RepracticeStatusType.COMPLETED.ToString(), StringComparison.OrdinalIgnoreCase))
 		{
-			return ApiResponse<bool>.SuccessResult(true, "Repractice session already completed.");
+			var existing = new CompleteRepracticeResponseDto
+			{
+				ImprovementPercent = repracticeSession.ImprovementPercent,
+				ResolvedCount      = repracticeSession.Utterances?.Count(u => u.IsResolved && !u.IsDeleted) ?? 0
+			};
+			return ApiResponse<CompleteRepracticeResponseDto>.SuccessResult(existing, "Repractice session already completed.");
 		}
 
 		var improvementPercent = await _repracticeRepository.CalculateImprovementPercentageAsync(userId, cancellationToken);
@@ -198,14 +218,19 @@ public sealed class RepracticeService : IRepracticeService
 
 		await _userService.CheckAndAwardBadgesAsync(userId, cancellationToken);
 
-		// Schedule spaced repetition reviews for all resolved mistakes from this session
 		var resolvedMistakeIds = await _repracticeRepository.GetResolvedMistakeIdsBySessionAsync(repracticeSessionId, cancellationToken);
 		foreach (var mistakeId in resolvedMistakeIds)
 		{
 			await _mistakeRepository.ScheduleMistakeReviewAsync(mistakeId, user.FullName, "127.0.0.1", cancellationToken);
 		}
 
-		return ApiResponse<bool>.SuccessResult(true, "Repractice session completed successfully.");
+		var result = new CompleteRepracticeResponseDto
+		{
+			ImprovementPercent = improvementPercent,
+			ResolvedCount      = resolvedMistakeIds.Count
+		};
+
+		return ApiResponse<CompleteRepracticeResponseDto>.SuccessResult(result, "Repractice session completed successfully.");
 	}
 
 	public async Task<ApiResponse<decimal>> GetImprovementPercentageAsync(long userId, CancellationToken cancellationToken = default)

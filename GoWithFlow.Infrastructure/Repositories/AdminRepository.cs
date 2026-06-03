@@ -134,44 +134,47 @@ public sealed class AdminRepository : IAdminRepository
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspGetUserDetailByUserId", cancellationToken);
 		command.Parameters.Add(CreateParameter("@UserId", userId));
 
-		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+		AdminUserDetailResponseDto result;
 
-		if (await reader.ReadAsync(cancellationToken) == false)
+		await using (var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken))
 		{
-			return null;
+			if (await reader.ReadAsync(cancellationToken) == false)
+			{
+				return null;
+			}
+
+			result = new AdminUserDetailResponseDto
+			{
+				UserId = GetInt64(reader, "UserId"),
+				FullName = GetString(reader, "FullName"),
+				MobileNumber = GetString(reader, "MobileNumber"),
+				Email = GetNullableString(reader, "Email"),
+				PasswordHash = GetNullableString(reader, "PasswordHash"),
+				AgeGroup = GetString(reader, "AgeGroup"),
+				PreferredHintLanguage = GetString(reader, "PreferredHintLanguage"),
+				AvatarUrl = GetNullableString(reader, "AvatarUrl"),
+				GroupCode = GetNullableString(reader, "GroupCode"),
+				Role = GetString(reader, "Role"),
+				DailyStreakCount = GetInt32(reader, "DailyStreakCount"),
+				TotalSessionsPlayed = GetInt32(reader, "TotalSessionsPlayed"),
+				LastLoginDate = GetNullableDateTime(reader, "LastLoginDate"),
+				IsActive = GetBoolean(reader, "IsActive"),
+				RegistrationDate = GetDateTime(reader, "RegistrationDate"),
+				Tag = GetNullableString(reader, "Tag"),
+				Comments = GetNullableString(reader, "Comments"),
+				SortOrder = GetInt32(reader, "SortOrder"),
+				IPAddress = GetString(reader, "IPAddress"),
+				CreatedBy = GetString(reader, "CreatedBy"),
+				DateCreated = GetDateTime(reader, "DateCreated"),
+				UpdatedBy = GetNullableString(reader, "UpdatedBy"),
+				LastUpdated = GetNullableDateTime(reader, "LastUpdated"),
+				DeletedBy = GetNullableString(reader, "DeletedBy"),
+				DateDeleted = GetNullableDateTime(reader, "DateDeleted"),
+				IsDeleted = GetBoolean(reader, "IsDeleted"),
+				AvgFluencyScore = GetDecimal(reader, "AvgFluencyScore"),
+				MostCommonMistakeType = GetString(reader, "MostCommonMistakeType")
+			};
 		}
-
-		var result = new AdminUserDetailResponseDto
-		{
-			UserId = GetInt64(reader, "UserId"),
-			FullName = GetString(reader, "FullName"),
-			MobileNumber = GetString(reader, "MobileNumber"),
-			Email = GetNullableString(reader, "Email"),
-			PasswordHash = GetNullableString(reader, "PasswordHash"),
-			AgeGroup = GetString(reader, "AgeGroup"),
-			PreferredHintLanguage = GetString(reader, "PreferredHintLanguage"),
-			AvatarUrl = GetNullableString(reader, "AvatarUrl"),
-			GroupCode = GetNullableString(reader, "GroupCode"),
-			Role = GetString(reader, "Role"),
-			DailyStreakCount = GetInt32(reader, "DailyStreakCount"),
-			TotalSessionsPlayed = GetInt32(reader, "TotalSessionsPlayed"),
-			LastLoginDate = GetNullableDateTime(reader, "LastLoginDate"),
-			IsActive = GetBoolean(reader, "IsActive"),
-			RegistrationDate = GetDateTime(reader, "RegistrationDate"),
-			Tag = GetNullableString(reader, "Tag"),
-			Comments = GetNullableString(reader, "Comments"),
-			SortOrder = GetInt32(reader, "SortOrder"),
-			IPAddress = GetString(reader, "IPAddress"),
-			CreatedBy = GetString(reader, "CreatedBy"),
-			DateCreated = GetDateTime(reader, "DateCreated"),
-			UpdatedBy = GetNullableString(reader, "UpdatedBy"),
-			LastUpdated = GetNullableDateTime(reader, "LastUpdated"),
-			DeletedBy = GetNullableString(reader, "DeletedBy"),
-			DateDeleted = GetNullableDateTime(reader, "DateDeleted"),
-			IsDeleted = GetBoolean(reader, "IsDeleted"),
-			AvgFluencyScore = GetDecimal(reader, "AvgFluencyScore"),
-			MostCommonMistakeType = GetString(reader, "MostCommonMistakeType")
-		};
 
 		result.RecentSessions = await GetRecentUserSessionsAsync(userId, 5, cancellationToken);
 
@@ -307,7 +310,8 @@ public sealed class AdminRepository : IAdminRepository
 				MistakeCount = group.Count()
 			})
 			.ToListAsync(cancellationToken);
-		result.WeeklyScoreList = await GetWeeklyScoresAsync(userId, cancellationToken);
+		result.WeeklyScoreList  = await GetWeeklyScoresAsync(userId, cancellationToken);
+		result.AdminNotesList   = await GetAdminNotesByUserAsync(userId, cancellationToken);
 
 		return result;
 	}
