@@ -50,7 +50,9 @@ public static class ApiRoutes
 		public const string Reports        = "reports";
 		public const string UserReport     = "reports/users/{userId:long}";
 		public const string ExportReports  = "reports/export";
-		public const string SessionHistory = "sessions/history";
+		public const string SessionHistory    = "sessions/history";
+		public const string SessionRecordings = "sessions/{sessionId:long}/recordings";
+		public const string UserAvatar        = "users/{userId:long}/avatar";
 		public const string Cohorts           = "cohorts";
 		public const string CohortDetail      = "cohorts/{cohortId:long}";
 		public const string CohortAssign      = "cohorts/assign";

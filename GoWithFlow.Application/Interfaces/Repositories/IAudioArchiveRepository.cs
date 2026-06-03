@@ -8,6 +8,8 @@ public interface IAudioArchiveRepository
 
 	Task<List<AudioArchiveItemDto>> GetBySessionAndUserAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
 
+	Task<List<AudioArchiveItemDto>> GetAllBySessionAsync(long sessionId, CancellationToken cancellationToken = default);
+
 	Task DeleteAsync(long archiveId, long userId, string deletedBy, CancellationToken cancellationToken = default);
 
 	Task<string?> GetStorageKeyAsync(long archiveId, long userId, CancellationToken cancellationToken = default);

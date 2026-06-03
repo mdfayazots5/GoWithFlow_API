@@ -15,4 +15,6 @@ public sealed class AudioArchiveItemDto
 	public DateTime ExpiresAt { get; set; }
 
 	public DateTime DateCreated { get; set; }
+
+	public string? UserName { get; set; }
 }

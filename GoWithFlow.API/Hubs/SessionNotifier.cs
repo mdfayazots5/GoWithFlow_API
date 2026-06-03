@@ -38,6 +38,13 @@ public sealed class SessionNotifier : ISessionNotifier
 			.SendAsync("INVITATION_CANCELLED", payload, cancellationToken);
 	}
 
+	public Task NotifyMemberReadyAsync(long sessionId, long userId, bool isReady, CancellationToken cancellationToken = default)
+	{
+		return _hubContext.Clients
+			.Group(SessionGroup(sessionId))
+			.SendAsync("MEMBER_READY", new { userId, isReady }, cancellationToken);
+	}
+
 	public static string UserGroup(long userId) => $"user_{userId}";
 
 	public static string SessionGroup(long sessionId) => $"session_{sessionId}";

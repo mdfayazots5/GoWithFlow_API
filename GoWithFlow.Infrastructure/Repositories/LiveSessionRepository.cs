@@ -208,24 +208,27 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		var connection = _dbContext.Database.GetDbConnection();
 		await EnsureConnectionOpenAsync(connection, cancellationToken);
 
-		await using var command = CreateCommand(connection, "dbo.uspGetSessionCompletionSummary");
-		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
-
-		await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
 		var response = new SessionSummaryResponseDto();
 
-		while (await reader.ReadAsync(cancellationToken))
+		await using (var command = CreateCommand(connection, "dbo.uspGetSessionCompletionSummary"))
 		{
-			response.MemberScores.Add(new MemberScoreDto
+			command.Parameters.Add(CreateParameter("@SessionId", sessionId));
+
+			await using var reader = await DbCommandHelper.ExecuteReaderAsync(command, cancellationToken);
+
+			while (await reader.ReadAsync(cancellationToken))
 			{
-				UserId = GetInt64(reader, "UserId"),
-				FullName = GetString(reader, "FullName"),
-				FluencyScore = GetDecimal(reader, "FluencyScore"),
-				ConfidenceScore = GetDecimal(reader, "ConfidenceScore"),
-				MistakeCount = GetInt32(reader, "MistakeCount"),
-				ListenerRating = GetDecimal(reader, "ListenerRating")
-			});
-		}
+				response.MemberScores.Add(new MemberScoreDto
+				{
+					UserId = GetInt64(reader, "UserId"),
+					FullName = GetString(reader, "FullName"),
+					FluencyScore = GetDecimal(reader, "FluencyScore"),
+					ConfidenceScore = GetDecimal(reader, "ConfidenceScore"),
+					MistakeCount = GetInt32(reader, "MistakeCount"),
+					ListenerRating = GetDecimal(reader, "ListenerRating")
+				});
+			}
+		} // reader and command disposed here — connection free for EF queries below
 
 		var sessionSummary = await (
 			from session in _dbContext.Sessions.AsNoTracking()
@@ -254,11 +257,26 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 			.AsNoTracking()
 			.CountAsync(mistake => mistake.SessionId == sessionId && mistake.IsDeleted == false, cancellationToken);
 
-		// Tag facilitator members based on their slot name and the script category.
-		// Facilitator members (Interviewer, Tutor, Coach) are not performance participants —
-		// their scores should not be shown on the session leaderboard.
 		if (response.MemberScores.Count > 0)
 		{
+			var userIds = response.MemberScores.Select(s => s.UserId).ToList();
+
+			// Per-user mistake counts from tblMistake (canonical source, populated before summary is built)
+			var mistakesByUser = await _dbContext.Mistakes
+				.AsNoTracking()
+				.Where(m => m.SessionId == sessionId && m.IsDeleted == false && userIds.Contains(m.UserId))
+				.GroupBy(m => m.UserId)
+				.Select(g => new { UserId = g.Key, Count = g.Count() })
+				.ToDictionaryAsync(x => x.UserId, x => x.Count, cancellationToken);
+
+			// Avatar raw keys (R2 key or legacy URL) — resolved to presigned URLs in service layer
+			var avatarByUser = await _dbContext.Users
+				.AsNoTracking()
+				.Where(u => userIds.Contains(u.UserId) && u.IsDeleted == false)
+				.Select(u => new { u.UserId, u.AvatarUrl })
+				.ToDictionaryAsync(u => u.UserId, u => u.AvatarUrl, cancellationToken);
+
+			// Slot lookup for facilitator tagging
 			var members = await _dbContext.SessionMembers
 				.AsNoTracking()
 				.Where(m => m.SessionId == sessionId && m.IsDeleted == false)
@@ -269,6 +287,9 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 
 			foreach (var score in response.MemberScores)
 			{
+				score.MistakeCount = mistakesByUser.TryGetValue(score.UserId, out var cnt) ? cnt : 0;
+				score.AvatarUrl = avatarByUser.TryGetValue(score.UserId, out var url) ? url : null;
+
 				if (slotByUser.TryGetValue(score.UserId, out var slotName))
 				{
 					score.IsFacilitator = FacilitatorRoles.IsFacilitator(sessionSummary.Category, slotName);

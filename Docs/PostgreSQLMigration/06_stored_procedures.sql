@@ -794,6 +794,7 @@ CREATE OR REPLACE FUNCTION uspupdatesessionmemberleft(
 DECLARE
     v_hostuserid        BIGINT := 0;
     v_activemembercount INT    := 0;
+    v_currentstatus     VARCHAR(16) := '';
 BEGIN
     UPDATE tblsessionmember
     SET leftat      = NOW(),
@@ -807,9 +808,14 @@ BEGIN
       AND isdeleted = FALSE
       AND isactive  = TRUE;
 
-    SELECT ses.hostuserid INTO v_hostuserid
+    SELECT ses.hostuserid, ses.status INTO v_hostuserid, v_currentstatus
     FROM tblsession AS ses
     WHERE ses.sessionid = p_sessionid AND ses.isdeleted = FALSE;
+
+    -- Never downgrade a COMPLETED session to ABANDONED on member disconnect
+    IF v_currentstatus = 'COMPLETED' THEN
+        RETURN;
+    END IF;
 
     SELECT COUNT(1) INTO v_activemembercount
     FROM tblsessionmember AS sem

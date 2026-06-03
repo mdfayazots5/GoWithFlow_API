@@ -6,6 +6,8 @@ public sealed class MemberScoreDto
 
 	public string FullName { get; set; } = string.Empty;
 
+	public string? AvatarUrl { get; set; }
+
 	public decimal FluencyScore { get; set; }
 
 	public decimal ConfidenceScore { get; set; }

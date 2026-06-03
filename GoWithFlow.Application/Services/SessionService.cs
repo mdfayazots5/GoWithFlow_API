@@ -57,20 +57,26 @@ public sealed class SessionService : ISessionService
 			return ApiResponse<CreateSessionResponseDto>.FailureResult(new[] { "Script was not found." }, "Session creation failed.");
 		}
 
-		var slotNames = ExtractSlotNames(script, dto.MaxMembers);
+		// Derive MaxMembers and SessionMode from the script so the host cannot mismatch them.
+		// ExtractSlotNames with a large cap returns all distinct speaker labels in order.
+		var allSlots = ExtractSlotNames(script, byte.MaxValue);
 
-		if (slotNames.Count < dto.MaxMembers)
+		if (allSlots.Count < 2)
 		{
 			return ApiResponse<CreateSessionResponseDto>.FailureResult(
-				new[] { "Selected script does not contain enough distinct speaker slots for the requested MaxMembers." },
+				new[] { "The selected script must have at least 2 distinct speaker labels." },
 				"Session creation failed.");
 		}
+
+		var derivedMaxMembers = (byte)allSlots.Count;
+		var derivedSessionMode = MapCategoryToSessionMode(script.Category);
+		var slotNames = allSlots;
 
 		var session = new Session
 		{
 			SessionName = dto.SessionName.Trim(),
-			SessionMode = MapSessionMode(dto.SessionMode),
-			MaxMembers = dto.MaxMembers,
+			SessionMode = MapSessionMode(derivedSessionMode),
+			MaxMembers = derivedMaxMembers,
 			SessionDuration = dto.SessionDuration,
 			HostUserId = hostUserId,
 			ScriptId = dto.ScriptId,
@@ -426,6 +432,23 @@ public sealed class SessionService : ISessionService
 			SessionModeType.FluencyDrill => "Fluency Drill",
 			SessionModeType.RepracticeRound => "Repractice Round",
 			_ => throw new ArgumentOutOfRangeException(nameof(sessionMode), sessionMode, "Unsupported session mode.")
+		};
+	}
+
+	private static SessionModeType MapCategoryToSessionMode(string category)
+	{
+		return category.Trim() switch
+		{
+			"Grammar Drill"    => SessionModeType.GrammarDrill,
+			"Roleplay"         => SessionModeType.Roleplay,
+			"Mock Interview"   => SessionModeType.MockInterview,
+			"Interview"        => SessionModeType.MockInterview,   // legacy alias
+			"Vocabulary Sprint" => SessionModeType.VocabularySprint,
+			"Vocabulary"       => SessionModeType.VocabularySprint, // legacy alias
+			"Fluency Drill"    => SessionModeType.FluencyDrill,
+			"Repractice Round" => SessionModeType.RepracticeRound,
+			"Repetition"       => SessionModeType.RepracticeRound,  // legacy alias
+			_                  => SessionModeType.GrammarDrill
 		};
 	}
 }

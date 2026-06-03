@@ -106,4 +106,24 @@ public sealed class AudioArchiveService : IAudioArchiveService
 
 		return ApiResponse<bool>.SuccessResult(true, "Audio clip deleted.");
 	}
+
+	public async Task<ApiResponse<List<AudioArchiveItemDto>>> GetAdminSessionRecordingsAsync(long sessionId, CancellationToken cancellationToken = default)
+	{
+		if (sessionId <= 0)
+			return ApiResponse<List<AudioArchiveItemDto>>.FailureResult(new[] { "Invalid sessionId." }, "Validation failed.");
+
+		var items = await _repository.GetAllBySessionAsync(sessionId, cancellationToken);
+
+		var bucket = _r2Settings.Buckets.Audio;
+		foreach (var item in items)
+		{
+			if (StorageKeyBuilder.IsR2Key(item.AudioUrl))
+			{
+				item.AudioUrl = await _storageService.GetPresignedUrlAsync(
+					bucket, item.AudioUrl, _r2Settings.PresignedUrlExpiryMinutes.Audio, cancellationToken);
+			}
+		}
+
+		return ApiResponse<List<AudioArchiveItemDto>>.SuccessResult(items, "Session recordings retrieved.");
+	}
 }

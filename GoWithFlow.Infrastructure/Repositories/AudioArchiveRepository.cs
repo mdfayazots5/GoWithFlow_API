@@ -58,6 +58,44 @@ public sealed class AudioArchiveRepository : IAudioArchiveRepository
 		return items;
 	}
 
+	public async Task<List<AudioArchiveItemDto>> GetAllBySessionAsync(long sessionId, CancellationToken cancellationToken = default)
+	{
+		var conn = _dbContext.Database.GetDbConnection();
+		if (conn.State != System.Data.ConnectionState.Open)
+			await conn.OpenAsync(cancellationToken);
+
+		await using var cmd = conn.CreateCommand();
+		cmd.CommandText = """
+			SELECT aa.archiveid, aa.sessionid, aa.userid, aa.turnindex, aa.storagekey,
+			       aa.durationsecs, aa.expiresat, aa.datecreated, u.fullname
+			FROM   tblaudioarchive aa
+			INNER JOIN tbluser u ON u.userid = aa.userid AND u.isdeleted = FALSE
+			WHERE  aa.sessionid = @sid AND aa.isdeleted = FALSE
+			ORDER  BY aa.turnindex ASC, aa.datecreated ASC
+			""";
+		var p = cmd.CreateParameter(); p.ParameterName = "@sid"; p.Value = sessionId; cmd.Parameters.Add(p);
+
+		await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+		var items = new List<AudioArchiveItemDto>();
+
+		while (await reader.ReadAsync(cancellationToken))
+		{
+			items.Add(new AudioArchiveItemDto
+			{
+				ArchiveId    = reader.GetInt64(reader.GetOrdinal("archiveid")),
+				SessionId    = reader.GetInt64(reader.GetOrdinal("sessionid")),
+				TurnIndex    = reader.GetInt32(reader.GetOrdinal("turnindex")),
+				AudioUrl     = reader.GetString(reader.GetOrdinal("storagekey")),
+				DurationSecs = reader.GetInt32(reader.GetOrdinal("durationsecs")),
+				ExpiresAt    = reader.GetDateTime(reader.GetOrdinal("expiresat")),
+				DateCreated  = reader.GetDateTime(reader.GetOrdinal("datecreated")),
+				UserName     = reader.GetString(reader.GetOrdinal("fullname"))
+			});
+		}
+
+		return items;
+	}
+
 	public async Task DeleteAsync(long archiveId, long userId, string deletedBy, CancellationToken cancellationToken = default)
 	{
 		await using var command = await CreateSpCommandAsync("dbo.uspDeleteAudioArchive", cancellationToken);

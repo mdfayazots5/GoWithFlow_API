@@ -11,4 +11,6 @@ public interface IAudioArchiveService
 	Task<ApiResponse<List<AudioArchiveItemDto>>> GetSessionClipsAsync(long sessionId, long userId, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<bool>> DeleteClipAsync(long archiveId, long userId, string deletedBy, CancellationToken cancellationToken = default);
+
+	Task<ApiResponse<List<AudioArchiveItemDto>>> GetAdminSessionRecordingsAsync(long sessionId, CancellationToken cancellationToken = default);
 }

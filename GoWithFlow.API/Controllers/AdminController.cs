@@ -16,10 +16,14 @@ namespace GoWithFlow.API.Controllers;
 public sealed class AdminController : ControllerBase
 {
 	private readonly IAdminService _adminService;
+	private readonly IAudioArchiveService _audioArchiveService;
+	private readonly IUserService _userService;
 
-	public AdminController(IAdminService adminService)
+	public AdminController(IAdminService adminService, IAudioArchiveService audioArchiveService, IUserService userService)
 	{
 		_adminService = adminService;
+		_audioArchiveService = audioArchiveService;
+		_userService = userService;
 	}
 
 	[HttpGet(ApiRoutes.Admin.Dashboard)]
@@ -140,6 +144,20 @@ public sealed class AdminController : ControllerBase
 	{
 		var response = await _adminService.GetCohortAnalyticsAsync(cohortId, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
+	}
+
+	[HttpGet(ApiRoutes.Admin.SessionRecordings)]
+	public async Task<IActionResult> GetSessionRecordingsAsync(long sessionId, CancellationToken cancellationToken)
+	{
+		var response = await _audioArchiveService.GetAdminSessionRecordingsAsync(sessionId, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	[HttpPost(ApiRoutes.Admin.UserAvatar)]
+	public async Task<IActionResult> UploadUserAvatarAsync(long userId, IFormFile file, CancellationToken cancellationToken)
+	{
+		var response = await _userService.UploadAvatarAsync(userId, file, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
 	private long GetAdminUserId()

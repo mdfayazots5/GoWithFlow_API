@@ -13,17 +13,20 @@ public sealed class SessionHub : Hub
 	private readonly ISessionService _sessionService;
 	private readonly ILiveSessionService _liveSessionService;
 	private readonly IHubConnectionTracker _connectionTracker;
+	private readonly ILobbyReconnectTracker _reconnectTracker;
 	private readonly ILogger<SessionHub> _logger;
 
 	public SessionHub(
 		ISessionService sessionService,
 		ILiveSessionService liveSessionService,
 		IHubConnectionTracker connectionTracker,
+		ILobbyReconnectTracker reconnectTracker,
 		ILogger<SessionHub> logger)
 	{
 		_sessionService = sessionService;
 		_liveSessionService = liveSessionService;
 		_connectionTracker = connectionTracker;
+		_reconnectTracker = reconnectTracker;
 		_logger = logger;
 	}
 
@@ -39,6 +42,9 @@ public sealed class SessionHub : Hub
 
 		if (connectionInfo is not null)
 		{
+			// Cancel any pending grace-window leave for this user+session (page reload reconnect path).
+			_reconnectTracker.CancelPendingLeave(connectionInfo.SessionId, connectionInfo.UserId);
+
 			await Groups.AddToGroupAsync(Context.ConnectionId, connectionInfo.GroupName, Context.ConnectionAborted);
 			_connectionTracker.TrackConnection(Context.ConnectionId, connectionInfo);
 
@@ -66,24 +72,22 @@ public sealed class SessionHub : Hub
 
 				var lobbyStateResponse = await _sessionService.GetLobbyStateAsync(connectionInfo.SessionId, CancellationToken.None);
 
-				// Only deactivate the member when the session is still in LOBBY status.
+				// Only schedule deactivation when the session is still in LOBBY status.
 				// When the session is ACTIVE, disconnecting from the session hub is expected
 				// (the user navigated to the live session room) and must not mark them as left.
 				if (string.Equals(lobbyStateResponse.Data?.Status, "LOBBY", StringComparison.OrdinalIgnoreCase))
 				{
 					var leavingMember = lobbyStateResponse.Data.Members.FirstOrDefault(member => member.UserId == connectionInfo.UserId);
-					var leaveResponse = await _sessionService.LeaveSessionAsync(connectionInfo.SessionId, connectionInfo.UserId, CancellationToken.None);
+					var slotIndex = leavingMember?.SlotIndex ?? 0;
 
-					if (leaveResponse.Success && leavingMember is not null)
-					{
-						await Clients.Group(connectionInfo.GroupName).SendAsync(
-							"MEMBER_LEFT",
-							new
-							{
-								userId = connectionInfo.UserId,
-								slotIndex = leavingMember.SlotIndex
-							});
-					}
+					// Schedule the leave with a 20-second grace window so page reloads do not
+					// permanently remove the member. If the user reconnects within the window,
+					// OnConnectedAsync cancels this via CancelPendingLeave.
+					_reconnectTracker.ScheduleLeave(
+						connectionInfo.SessionId,
+						connectionInfo.UserId,
+						slotIndex,
+						connectionInfo.GroupName);
 				}
 			}
 			catch (Exception disconnectException)

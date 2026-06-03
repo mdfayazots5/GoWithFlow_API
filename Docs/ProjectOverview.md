@@ -923,6 +923,8 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - `POST /api/admin/users` — create new user
 - `PUT /api/admin/users/{userId}` — update user profile
 - `GET /api/admin/sessions/history` — paginated admin session history with filters
+- `GET /api/admin/sessions/{sessionId}/recordings` — ADMIN; returns all audio archive clips for a session across all users; each clip includes `UserName` (speaker name), `TurnIndex`, presigned `AudioUrl` (120-min expiry); backed by `IAudioArchiveService.GetAdminSessionRecordingsAsync` → `IAudioArchiveRepository.GetAllBySessionAsync` (raw SQL join to `tblUser`)
+- `POST /api/admin/users/{userId}/avatar` — ADMIN; multipart `file`; uploads to `gwf-avatars` bucket via `IUserService.UploadAvatarAsync`; saves R2 key to `tblUser.AvatarUrl`; returns presigned URL (1440-min expiry); same handler reused from user self-service avatar upload
 
 ### Admin Session History — Stable Flow Contract
 
@@ -2523,15 +2525,19 @@ ApiResponse<SessionSummaryResponseDto>
   - MemberScores (List<MemberScoreDto>):
       - UserId (long)
       - FullName (string)
+      - AvatarUrl (string|null): presigned R2 URL (resolved in service layer); null if no avatar set
       - FluencyScore (decimal)
       - ConfidenceScore (decimal)
-      - MistakeCount (int)
+      - MistakeCount (int): per-user count from tblMistake (canonical, populated before summary build)
       - ListenerRating (decimal)
+      - IsFacilitator (bool)
   - TotalTurns (int)
   - ScriptTitle (string)
   - GrammarFocusTag (string)
-  - TotalMistakesAllMembers (int)
+  - TotalMistakesAllMembers (int): total across all members from tblMistake
 ```
+
+**MistakeCount source clarification:** `MemberScoreDto.MistakeCount` is read from `tblMistake` (per user, per session) — NOT from `grammarerrorsjson` in `tblvoiceanalysis`. The SP `uspGetSessionCompletionSummary` counts grammar errors from the JSON array in voice analysis records; that value is overridden in `GetSessionCompletionSummaryAsync` with a grouped EF count from `tblMistake` to ensure consistency with `TotalMistakesAllMembers`.
 
 **Business Rules:**
 1. Idempotent: if session already `COMPLETED`, return existing summary immediately
@@ -2834,6 +2840,10 @@ sessionResult: VoiceSessionResult | null
 - Old system: no silence detection → recording ran forever. Fixed: `AudioActivityDetector` VAD + 8s fallback timeout.
 - Old system: no mic permission pre-check → silent failure on first use. Fixed: `requestMicPermission()` before engine starts.
 - `defaultVoiceStarter` and `autoSubmitOnStop` session prefs no longer active — new flow requires explicit user tap for both start and confirm.
+- **Drift 9 (2026-06-03): Completed session shows as ABANDONED in session history** — `uspupdatesessionmemberleft` is called on every member disconnect (hub `OnDisconnectedAsync` → `MarkMemberLeftAsync`; REST leave endpoint → `LeaveSessionAsync`). The SP marks the member inactive then checks: if the host left OR no active members remain → calls `uspupdatesessionstatus(ABANDONED)`. It did NOT check the current session status first. So after `CompleteSessionAsync` sets status = `COMPLETED`, when members disconnect from the live hub (normal navigation away), the SP overwrites COMPLETED → ABANDONED. **Fix (Migration 25):** Added `v_currentstatus VARCHAR(16)` to the SP DECLARE block; reads `ses.status` alongside `ses.hostuserid` in a single SELECT; returns immediately if `v_currentstatus = 'COMPLETED'`. Apply `25_fix_leave_abandoned_guard.sql` to Supabase. Session 46 (Hotel Checking) was affected by this bug — its DB status is ABANDONED but the actual data (voice analyses, mistakes, scores) is complete.
+- **Drift 8 (2026-06-03): Session report shows per-user mistakes = 0 despite 21 total mistakes** — `MemberScoreDto.MistakeCount` was sourced from `uspGetSessionCompletionSummary` SP which counts `grammarerrorsjson` elements from `tblvoiceanalysis`. If voice analysis grammar errors are empty (user scored 0 grammar errors in voice engine), per-user count is 0. But `TotalMistakesAllMembers` reads from `tblMistake` (populated by `SaveMistakesFromSessionAsync` before summary is built), causing the mismatch. **Fix:** After SP call in `GetSessionCompletionSummaryAsync`, override each member's `MistakeCount` with a grouped EF count from `tblMistake` (`_dbContext.Mistakes.GroupBy(m => m.UserId)`). This aligns per-user and total counts to the same canonical source.
+- **Drift 7 (2026-06-03): Session report leaderboard shows DiceBear placeholder avatar instead of user's actual avatar** — `MemberScoreDto` lacked `AvatarUrl`; `uspGetSessionCompletionSummary` only returned `FullName`. Frontend hardcoded DiceBear `api.dicebear.com/7.x/avataaars/svg?seed=<name>`. **Fix:** Added `AvatarUrl` to `MemberScoreDto`; in `GetSessionCompletionSummaryAsync`, after SP call, fetch `tblUser.AvatarUrl` for all member user IDs via EF query; in `LiveSessionService.ResolveAvatarUrlsAsync`, convert R2 keys to presigned URLs using `_storageService.GetPresignedUrlAsync` (same pattern as user profile). Frontend: `ScoreboardRow.avatarUrl` added; template uses `[src]="row.avatarUrl || dicebear"` with `(error)` fallback.
+- **Drift 6 (2026-06-03): `CompleteTurn` on last turn throws `NpgsqlOperationInProgressException`** — `GetSessionCompletionSummaryAsync` in `LiveSessionRepository` used `await using var reader` at method scope. The `await using var` declaration keeps the reader open until the end of the enclosing block (entire method body). After the `while` reader loop completed, EF Core LINQ queries (`FirstOrDefaultAsync`, `CountAsync`, `ToListAsync`) executed on the same `DbConnection` while the raw reader was still technically undisposed. PostgreSQL does not support concurrent commands on a single connection (no MARS equivalent), so it threw `NpgsqlOperationInProgressException: A command is already in progress`. **Fix:** Wrapped the `command` + `reader` in an explicit `await using (var command = ...) { await using var reader = ...; while (...) {...} }` block — both reader and command are disposed at the closing `}`, before EF queries execute. File: `GoWithFlow.Infrastructure/Repositories/LiveSessionRepository.cs`.
 - **Drift 5 (2026-06-01): Non-host speaker gets double bell + "no data detected" on auto-start** — `handleTurnShift()` in `SessionRoomComponent` did two back-to-back `turnState.set()` calls for the same turn: (1) an optimistic update immediately on `TURN_SHIFT` event, (2) the API-confirmed state when `loadCurrentTurn()` returned. Each `turnState.set()` triggered `ngOnChanges()` in `SpeakerScreenComponent`. The second firing reset `analysisPhase = 'recording'` mid-recording and re-armed `_pendingAutoStart`, causing a second `voiceRecorder.startRecording()` call ~700ms later. The second `startSession()` wiped `allFinalTranscripts = []`, started a competing `SpeechRecognition` instance (playing a second browser bell sound), and eventually resolved with empty transcript data. Host user was unaffected because their turn loaded via `initSession()` (single `loadCurrentTurn` path, no `TURN_SHIFT`). **Three-part fix applied 2026-06-01:** (a) **`updateState()` guard in `SessionRoomComponent`**: `turnState.set()` only fires when `turnIndex` or `sessionId` actually changes — same-turn API confirmation is a no-op on the signal. (b) **`ngOnChanges` turnIndex guard in `SpeakerScreenComponent`**: `SimpleChanges` added; `resetPhase()` and auto-start are only triggered when `ts.previousValue?.turnIndex !== currentTurnIndex`, not on every input reference change. (c) **`startSession()` active-session guard in `VoiceRecognitionEngine`**: if `state$ !== 'idle'`, `stopSession()` is called before starting a new one — prevents transcript wipe and competing recognition instances if the double-start ever occurs.
 
 ### Frontend Voice Recognition Engine — Stable Contract
@@ -3494,7 +3504,30 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - `IScriptService.RollbackScriptVersionAsync` + `DuplicateScriptAsync`
 - `ScriptController` — new endpoints
 - `ScriptService.getVersionHistory()` + `ScriptService.rollbackScriptVersion()` + `ScriptService.duplicateScript()` added to Angular service
-- Admin Scripts side panel: "Version History" section shows all versions with rollback buttons; "Duplicate" button added alongside Activate/Deactivate
+- Admin Scripts: previously used a slide-out side panel for script details; replaced 2026-06-03 with dedicated detail page `/admin/scripts/:id` — see Admin Frontend Architecture note below.
+
+---
+
+### Admin Frontend Architecture — List → Detail Page Pattern (2026-06-03)
+
+**Pattern:** All admin list pages use a lean table for search/filter/select only. Record details navigate to a dedicated detail page. The Reports module (`/admin/reports` → `/admin/reports/user/:id`) is the reference implementation.
+
+**Applied to:**
+
+| Module | List Route | Detail Route | Component |
+|---|---|---|---|
+| Reports | `/admin/reports` | `/admin/reports/user/:id` | `UserDetailReportComponent` |
+| Scripts | `/admin/scripts` | `/admin/scripts/:id` | `AdminScriptDetailComponent` |
+| Users | `/admin/users` | `/admin/users/:id` | `AdminUserDetailComponent` |
+| Sessions | `/admin/sessions` | `/admin/sessions/:id` | `AdminSessionDetailComponent` |
+
+**Before (removed):** Scripts, Users, and Sessions used `fixed inset-0 z-50` slide-out side panels (overlays) to show record details within the same route. These broke mobile usability due to full-screen takeover with no scrollable layout.
+
+**After:** Clicking the View/Eye button navigates to the detail route. Detail pages have a back button (`routerLink` to the list). List pages are now lean: only the minimal columns needed for identification and quick actions remain visible.
+
+**Sessions detail special case:** There is no `GET /api/admin/sessions/{id}` API endpoint. The sessions list component passes the session object via Angular router state (`router.navigate([...], { state: { session } })`). The detail component reads it from `history.state.session`. If navigated directly (e.g., page refresh), the "Session not found" state shows with a back link. This is acceptable behaviour for an admin tool where primary flow is always list → detail.
+
+**Edit modal (Users):** The Add/Edit User modal was kept on the list page (`/admin/users`) since it is a lightweight inline form already embedded in `AdminUsersComponent`. The detail page (`/admin/users/:id`) is view-only with Activate/Deactivate and View Full Report actions.
 
 ---
 
@@ -3913,4 +3946,104 @@ Note: `GET /api/scripts/{scriptId}/download` still returns `File()` bytes — th
 ### Migration SQL Files
 
 - `GoWithFlow.Infrastructure/Migrations/PostgreSQL/AddR2StorageKeys_Phase10.sql`
+
+---
+
+## Flow Audit — Confirmed Bugs and Design Gaps (2026-06-03)
+
+**Reference document:** `Backend/Docs/Dev/FlowAudit_ProductionReady.md`
+
+### Confirmed Bugs
+
+#### Bug-01: Lobby reload incorrectly transitions session to ABANDONED
+- **Module:** Session Module — Lobby Flow / SessionHub
+- **Root cause:** `SessionHub.OnDisconnectedAsync` calls `LeaveSessionAsync` when status is LOBBY; `uspUpdateSessionMemberLeft` auto-abandons when the last active member leaves. A page reload disconnects the WebSocket, triggering this path for any user who is alone in the lobby.
+- **Fix:** Add 15–30s reconnect grace window before persisting leave. Only persist leave after grace expires without reconnect. Session should never transition to ABANDONED solely from a WebSocket disconnect.
+- **DB change required:** None for stopgap. For full fix: in-memory or Redis cache tracking disconnected userId+sessionId pairs.
+
+#### Bug-02: MEMBER_READY event not updating host lobby screen in real-time
+- **Module:** Session Module — Lobby Flow — Frontend
+- **Root cause:** `LobbyComponent` `MEMBER_READY` handler likely not finding the correct member reference (userId lookup mismatch or signal not triggering change detection).
+- **Fix:** In `LobbyComponent.ngOnInit()`, register `MEMBER_READY` handler before hub connect; use `members.update()` signal mutation with `userId` key match.
+
+#### Bug-03: Dashboard invitation badge count not updated in real-time
+- **Module:** Session Invitation Module — Frontend
+- **Root cause:** `UserDashboardComponent` does not subscribe to `INVITATION_RECEIVED` SignalR event. Count only updates on page load.
+- **Fix:** In `UserDashboardComponent.ngOnInit()`, subscribe to `INVITATION_RECEIVED`. On event, call `pendingInvitationCount.update(count => count + 1)`.
+
+#### Bug-04: Duplicate readiness action after accepting invitation
+- **Module:** Session Invitation Module — Invitation → Lobby
+- **Root cause:** `RespondToInvitationAsync` (Accept path) inserts `tblSessionMember` with `IsReady=false`. User then enters lobby and must tap again.
+- **Fix:** After inserting member, call `uspUpdateSessionMemberReadyStatus(@IsReady=true)`. Broadcast `MEMBER_READY` alongside `INVITATION_RESPONDED`.
+
+### Confirmed Design Gaps
+
+#### Gap-01: SessionMode collected twice (script upload + session creation)
+- SessionMode is implicitly defined by the script's Category. Remove `SessionMode` from `CreateSessionRequestDto`. Backend derives it from `tblScript.Category`.
+
+#### Gap-02: MaxMembers collected twice (session creation should inherit from script)
+- MaxMembers should be captured at Script Upload (derived from distinct SpeakerLabel count in Excel) and stored on `tblScript.MaxMembers`. Session Creation auto-inherits it.
+- **DB change required:** `ALTER TABLE tblScript ADD MaxMembers TINYINT NOT NULL DEFAULT(2);`
+
+#### Gap-03: Recording toggle shown to all participants
+- `IsRecordingEnabled` should be a host-only session-level flag. Remove recording toggle from participant screens. Add `tblSession.IsRecordingEnabled BIT NOT NULL DEFAULT(0)`.
+- **DB change required:** `ALTER TABLE tblSession ADD IsRecordingEnabled BIT NOT NULL DEFAULT(0);`
+
+#### Gap-04: GrammarFocusTag and HintLanguage are unnecessary in Script Upload UI
+- GrammarFocusTag: derive from GrammarTag column values in Excel; keep in DB for analytics; remove from UI.
+- HintLanguage: hardcoded to Telugu — remove dropdown from upload wizard; backend defaults to "Telugu".
+
+### Implementation Status (2026-06-03)
+
+All 7 items implemented:
+
+#### Bug-01 FIXED
+- Created `ILobbyReconnectTracker` + `LobbyReconnectTracker` singleton (`GoWithFlow.API/Hubs/LobbyReconnectTracker.cs`)
+- `OnDisconnectedAsync`: schedules `LeaveSessionAsync` with 20s grace window instead of immediate call
+- `OnConnectedAsync`: calls `CancelPendingLeave(sessionId, userId)` — page reload reconnects cancel the scheduled leave
+- `LobbyReconnectTracker` uses `IServiceScopeFactory` + `IHubContext<SessionHub>` for out-of-hub leave execution
+- Frontend `lobby.component.ts`: removed `leaveSession` REST call from `ngOnDestroy` (hub grace window is the cleanup mechanism)
+- Registered as singleton in `Program.cs`
+
+#### Bug-02 FIXED
+- Root cause confirmed: `toggleReady()` called REST `PATCH /api/sessions/ready` which updates DB only — no SignalR broadcast.
+  The broadcast only happens via hub method `SetReady`.
+- Fix: `toggleReady()` now calls `wsService.emit('SetReady', sessionId, userId, next)` as primary path.
+  Hub broadcasts `MEMBER_READY` to entire session group → host screen updates immediately.
+  REST API remains as fallback if hub is unavailable.
+
+#### Bug-03 FIXED
+- `WebsocketService.connect()` now accepts `sessionId: string | null` — connects without session context.
+- `UserDashboardComponent` connects to `/hubs/session` (no sessionId) in `ngOnInit`, subscribes to `INVITATION_RECEIVED`.
+  On event: `pendingInvitationCount.update(count => count + 1)` — no API call needed.
+  Disconnects in `ngOnDestroy`.
+
+#### Bug-04 FIXED
+- `SessionInvitationService.RespondToInvitationAsync` (Accept path): after `JoinSessionAsync`, now calls
+  `_sessionRepository.UpdateSessionMemberReadyStatusAsync(@IsReady=true)` and
+  `_notifier.NotifyMemberReadyAsync(sessionId, userId, true)` which broadcasts `MEMBER_READY` to session group.
+- `ISessionNotifier` + `SessionNotifier`: added `NotifyMemberReadyAsync(sessionId, userId, isReady)` method.
+- Result: user who accepts an invitation arrives in lobby already READY. No second tap required.
+
+#### Gap-01/02 FIXED
+- `SessionService.CreateSessionAsync`: derives `SessionMode` from `script.Category` via `MapCategoryToSessionMode()`
+  (includes all 6 canonical categories + 3 legacy aliases).
+  Derives `MaxMembers` from `ExtractSlotNames(script, byte.MaxValue).Count` — all distinct speaker labels.
+- `CreateSessionRequestDto`: `SessionMode` and `MaxMembers` fields retained for backward compatibility but no longer used.
+- Frontend `CreateSessionComponent`:
+  - Removed Practice Mode selector (6-button grid)
+  - Removed MaxMembers stepper (± controls)
+  - Added read-only "Session Type" + "Members" display after script selection (derived client-side)
+  - Duration + Expiry selectors kept; form now requires only Name + Script + Duration + Expiry
+
+#### Gap-03/04 FIXED (Recording host-only)
+- `lobby.component.html`: recording toggle wrapped in `@if (isHost())` — guests never see the control.
+- Guests see passive "This session is being recorded by the host" notice only when `audioConsentEnabled()` is true.
+- Label updated from "Record my voice turns" → "Record Session Audio" (reflects session-level scope).
+
+#### Gap-05/06 FIXED (Upload UI cleanup)
+- Script Upload metadata form: removed "Grammar Focus" dropdown from template.
+- `grammarFocusTag` + `hintLanguage` retained as hidden form values with defaults ('Have Been' / 'Telugu').
+- `metadataForm`: removed `Validators.required` from `hintLanguage` (always 'Telugu', never user-supplied).
+- API payload unchanged — backend still receives all fields; no breaking change.
 - `GoWithFlow.Infrastructure/Migrations/SqlServer/AddR2StorageKeys_Phase10.sql`

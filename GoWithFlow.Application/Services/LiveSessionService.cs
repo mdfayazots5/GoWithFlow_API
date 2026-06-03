@@ -334,6 +334,7 @@ public sealed class LiveSessionService : ILiveSessionService
 				return ApiResponse<SessionSummaryResponseDto>.FailureResult(new[] { "Session summary could not be generated." }, "Session completion failed.");
 			}
 
+			await ResolveAvatarUrlsAsync(existingSummary, cancellationToken);
 			return ApiResponse<SessionSummaryResponseDto>.SuccessResult(existingSummary, "Session completed successfully.");
 		}
 
@@ -388,6 +389,7 @@ public sealed class LiveSessionService : ILiveSessionService
 			summary.VocabularySummary = await _vocabularyService.GetSessionVocabularySummaryAsync(sessionId, vocabularyLearnerId.Value, cancellationToken);
 		}
 
+		await ResolveAvatarUrlsAsync(summary, cancellationToken);
 		return ApiResponse<SessionSummaryResponseDto>.SuccessResult(summary, "Session completed successfully.");
 	}
 
@@ -594,5 +596,27 @@ public sealed class LiveSessionService : ILiveSessionService
 		}
 
 		return Math.Max(1, session.SessionDuration);
+	}
+
+	private async Task ResolveAvatarUrlsAsync(SessionSummaryResponseDto summary, CancellationToken cancellationToken)
+	{
+		var bucket = _r2Settings.Buckets.Avatars;
+		var expiry  = _r2Settings.PresignedUrlExpiryMinutes.Avatars;
+
+		foreach (var score in summary.MemberScores)
+		{
+			var raw = score.AvatarUrl;
+			if (string.IsNullOrEmpty(raw)) continue;
+			if (raw.StartsWith('/') || raw.StartsWith("http", StringComparison.OrdinalIgnoreCase)) continue;
+
+			try
+			{
+				score.AvatarUrl = await _storageService.GetPresignedUrlAsync(bucket, raw, expiry, cancellationToken);
+			}
+			catch
+			{
+				score.AvatarUrl = null;
+			}
+		}
 	}
 }

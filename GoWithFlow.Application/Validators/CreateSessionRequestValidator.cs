@@ -15,11 +15,8 @@ public sealed class CreateSessionRequestValidator : AbstractValidator<CreateSess
 			.MinimumLength(3)
 			.MaximumLength(60);
 
-		RuleFor(request => request.SessionMode)
-			.IsInEnum();
-
-		RuleFor(request => request.MaxMembers)
-			.InclusiveBetween((byte)2, (byte)5);
+		// SessionMode and MaxMembers are now derived from the script on the backend.
+		// The frontend no longer sends them; validation is removed to avoid false 400s.
 
 		RuleFor(request => request.SessionDuration)
 			.Must(duration => ValidDurations.Contains(duration))

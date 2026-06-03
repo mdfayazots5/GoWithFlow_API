@@ -186,6 +186,18 @@ public sealed class SessionInvitationService : ISessionInvitationService
 					},
 					cancellationToken);
 			}
+
+			// Accepting an invitation is an explicit participation commitment — mark the
+			// member ready immediately so they do not need to tap again in the lobby.
+			await _sessionRepository.UpdateSessionMemberReadyStatusAsync(
+				invitation.Value.SessionId, userId, true,
+				user?.FullName ?? "User", "127.0.0.1", cancellationToken);
+
+			try
+			{
+				await _notifier.NotifyMemberReadyAsync(invitation.Value.SessionId, userId, true, cancellationToken);
+			}
+			catch { }
 		}
 
 		// Notify the session host about the response
