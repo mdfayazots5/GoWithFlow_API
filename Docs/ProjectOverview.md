@@ -3994,3 +3994,117 @@ All 7 items implemented:
 - `metadataForm`: removed `Validators.required` from `hintLanguage` (always 'Telugu', never user-supplied).
 - API payload unchanged — backend still receives all fields; no breaking change.
 - `GoWithFlow.Infrastructure/Migrations/SqlServer/AddR2StorageKeys_Phase10.sql`
+
+---
+
+## Android Mobile Module — Capacitor Setup (2026-06-03)
+
+### Configuration
+
+- Framework: Capacitor 8.4.0 wrapping Angular 19 + Vite (AnalogJS) web app
+- App ID: `com.gowithflow.app`
+- App Name: `GoWithFlow`
+- Web Dir: `dist/analog/public` (Vite production build output)
+- Android Scheme: `https` — required for JWT cookies and SignalR auth to function correctly on device
+- Config file: `Frontend/capacitor.config.ts`
+
+### Android Project Location
+
+- Android project root: `Frontend/android/`
+- Gradle wrapper: `gradle-8.14.3-bin` (local cache at `~/.gradle/wrapper/dists/gradle-8.14.3-bin/`)
+- Minimum SDK: 24 (Android 7.0)
+- Compile/Target SDK: 36 (Android 16)
+
+### Environment Requirements
+
+- Java 21 required (Capacitor 8.x compiles with `JavaVersion.VERSION_21`)
+- `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64` must be set when running Gradle
+- Android SDK: `ANDROID_HOME=/root/Android/Sdk` (platforms android-34, android-35, build-tools 34.0.0, 35.0.0)
+- Node 24+ for npm scripts
+
+### Permissions (AndroidManifest.xml)
+
+- `INTERNET` — all API and SignalR calls
+- `RECORD_AUDIO` — voice recognition engine (live session turns)
+- `MODIFY_AUDIO_SETTINGS` — microphone gain during voice turns
+- `ACCESS_NETWORK_STATE` — connectivity detection
+
+### API Connectivity
+
+- Production API: `https://gowithflow-api.onrender.com`
+- Environment resolved automatically via `import.meta.env.PROD` at build time
+- No localhost references in production APK — device reaches API directly over internet
+
+### Build Process (every code change)
+
+```
+cd Frontend/
+npm run build                          # Angular production build → dist/analog/public
+npx cap sync android                   # copy assets into Android project
+cd android/
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug
+```
+
+Output APK (WSL2 path): `Frontend/android/app/build/outputs/apk/debug/app-debug.apk`
+Output APK (Windows path): `C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`
+
+### Device Installation
+
+USB device is connected to Windows — ADB not accessible from WSL2 directly.
+Install from **Windows Command Prompt** only:
+
+```
+adb install -r "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk"
+```
+
+### Known Limitation
+
+Web Speech API (`SpeechRecognition`) does not work inside Android WebView.
+Live session voice turns will not produce transcriptions on device.
+All other features (login, OTP, sessions, scripts, admin, invitations, repractice, dashboard) work correctly.
+Fix requires `@capacitor-community/speech-recognition` plugin — not yet implemented.
+
+### ADB Device Screenshot Pull (Windows)
+
+Use **PowerShell** only — Bash and cmd mangle the `/sdcard/` path via Git bash path conversion.
+
+**Step 1 — List latest screenshots on device:**
+```
+adb shell "ls -lt /sdcard/Pictures/Screenshots/" | head -5
+```
+
+**Step 2 — Pull the latest file to local machine:**
+```
+adb pull /sdcard/Pictures/Screenshots/<filename>.jpg C:\Users\mdfay\AppData\Local\Temp\latest_screenshot.jpg
+```
+
+**Step 3 — Read the image** using the Read tool on:
+`C:\Users\mdfay\AppData\Local\Temp\latest_screenshot.jpg`
+
+**Critical rules:**
+- Always run `adb pull` via PowerShell — never Bash or cmd (both corrupt the `/sdcard/` path)
+- Device must show `device` (not `offline` or `unauthorized`) in `adb devices` before pulling
+- If device is offline: ask user to unlock phone and re-approve USB debugging prompt
+
+**APK Share Location (for family distribution):**
+`C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk`
+Recipients must enable "Install from unknown sources" on their Android device before installing.
+
+### local.properties (Critical — do not delete)
+
+File location: `Frontend/android/local.properties`
+Required content:
+```
+sdk.dir=/root/Android/Sdk
+```
+This file is not committed to git. If missing, Gradle fails with "SDK location not found".
+Must be recreated manually if the android folder is reset or re-initialized.
+
+### Notes on Build Issues Encountered (2026-06-03)
+
+- Gradle 8.14.3-all: partial download in cache caused `forceFetch` SSL failure → switched to `gradle-8.14.3-bin` (fully cached)
+- Gradle 8.10.2 rejected: AGP requires minimum Gradle 8.13
+- Java 17 rejected: Capacitor 8.4.0 sets `sourceCompatibility JavaVersion.VERSION_21` → installed Java 21
+- Resolution: `gradle-wrapper.properties` uses `gradle-8.14.3-bin.zip`, Gradle invoked with `JAVA_HOME` pointing to Java 21
+- local.properties missing on first build → Gradle failed with "SDK location not found" → created manually with `sdk.dir=/root/Android/Sdk`
+- adb pull path mangling: Bash and cmd corrupt `/sdcard/` path via Git bash → use PowerShell only for adb pull commands

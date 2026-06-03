@@ -158,6 +158,11 @@ Logic source: `ProjectOverview.md` only.
 | IStorageService | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
 | excelstoragkey | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
 | audiostoragkey | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
+| android | Android Mobile Module | Android Mobile Module — Capacitor Setup |
+| capacitor | Android Mobile Module | Android Mobile Module — Capacitor Setup |
+| apk | Android Mobile Module | Android Mobile Module — Capacitor Setup |
+| mobile | Android Mobile Module | Android Mobile Module — Capacitor Setup |
+| gradle | Android Mobile Module | Android Mobile Module — Capacitor Setup |
 
 ## Module List
 
@@ -208,3 +213,7 @@ Logic source: `ProjectOverview.md` only.
 11. Phase 10 Storage
     - Section: `Phase 10 — Cloudflare R2 Storage Integration`
     - Purpose: IStorageService, CloudflareR2StorageService, bucket design, presigned URLs, all file upload/download flows, DB column changes, backwards compatibility rules
+
+12. Android Mobile Module
+    - Section: `Android Mobile Module — Capacitor Setup`
+    - Purpose: Capacitor 8.4.0 config, Android project structure, build process, Gradle setup, Java 21 requirement, APK generation, device installation via Windows ADB, known limitations
