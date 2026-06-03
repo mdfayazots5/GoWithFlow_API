@@ -52,7 +52,6 @@ public static class ApiRoutes
 		public const string ExportReports  = "reports/export";
 		public const string SessionHistory    = "sessions/history";
 		public const string SessionRecordings = "sessions/{sessionId:long}/recordings";
-		public const string UserAvatar        = "users/{userId:long}/avatar";
 		public const string Cohorts           = "cohorts";
 		public const string CohortDetail      = "cohorts/{cohortId:long}";
 		public const string CohortAssign      = "cohorts/assign";
@@ -81,7 +80,6 @@ public static class ApiRoutes
 	{
 		public const string Base = VersionPrefix + "/sessions";
 		public const string ValidateJoinCode = "validate/{joinCode}";
-		public const string Join = "join";
 		public const string Lobby = "lobby/{sessionId:long}";
 		public const string Ready = "ready";
 		public const string Start = "{sessionId:long}/start";

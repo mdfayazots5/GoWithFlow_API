@@ -178,6 +178,8 @@ public sealed class UserService : IUserService
 			return ApiResponse<SessionDetailResponseDto>.FailureResult(new[] { "Session detail was not found." }, "Session detail not found.");
 		}
 
+		await ResolveSessionDetailAvatarsAsync(sessionDetail, cancellationToken);
+
 		return ApiResponse<SessionDetailResponseDto>.SuccessResult(sessionDetail, "Session detail retrieved successfully.");
 	}
 
@@ -323,6 +325,28 @@ public sealed class UserService : IUserService
 			AgeGroupType.Adult => "Adult (18+)",
 			_ => throw new ArgumentOutOfRangeException(nameof(ageGroup), ageGroup, "Unsupported age group.")
 		};
+	}
+
+	private async Task ResolveSessionDetailAvatarsAsync(SessionDetailResponseDto detail, CancellationToken cancellationToken)
+	{
+		var bucket = _r2Settings.Buckets.Avatars;
+		var expiry = _r2Settings.PresignedUrlExpiryMinutes.Avatars;
+
+		foreach (var member in detail.AllMemberScores)
+		{
+			var raw = member.AvatarUrl;
+			if (string.IsNullOrEmpty(raw)) continue;
+			if (raw.StartsWith('/') || raw.StartsWith("http", StringComparison.OrdinalIgnoreCase)) continue;
+
+			try
+			{
+				member.AvatarUrl = await _storageService.GetPresignedUrlAsync(bucket, raw, expiry, cancellationToken);
+			}
+			catch
+			{
+				member.AvatarUrl = null;
+			}
+		}
 	}
 
 	private static string? NormalizeNullableValue(string? value)

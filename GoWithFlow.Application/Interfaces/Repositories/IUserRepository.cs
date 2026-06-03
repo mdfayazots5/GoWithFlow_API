@@ -62,4 +62,24 @@ public interface IUserRepository : IGenericRepository<User>
 	Task<GoalProgressResponseDto> GetGoalProgressAsync(long userId, CancellationToken cancellationToken = default);
 
 	Task<List<UserSearchResultDto>> SearchUsersByNameAsync(string searchTerm, long excludeUserId, CancellationToken cancellationToken = default);
+
+	/// <summary>
+	/// Updates all admin-editable user fields in a single direct SQL statement.
+	/// Uses provider-aware lowercase column names — safe for PostgreSQL and SQL Server.
+	/// </summary>
+	Task UpdateUserByAdminAsync(
+		long userId,
+		string fullName,
+		string mobileNumber,
+		string? email,
+		string ageGroup,
+		string preferredHintLanguage,
+		string? avatarUrl,
+		string? passwordHash,
+		CancellationToken cancellationToken = default);
+
+	/// <summary>
+	/// Updates only the AvatarUrl column. Used after avatar upload on user creation.
+	/// </summary>
+	Task UpdateAvatarUrlAsync(long userId, string objectKey, CancellationToken cancellationToken = default);
 }

@@ -189,6 +189,84 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
+	public async Task UpdateUserByAdminAsync(
+		long userId,
+		string fullName,
+		string mobileNumber,
+		string? email,
+		string ageGroup,
+		string preferredHintLanguage,
+		string? avatarUrl,
+		string? passwordHash,
+		CancellationToken cancellationToken = default)
+	{
+		var connection = DbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		await using var cmd = connection.CreateCommand();
+
+		// Build SQL using provider-correct lowercase (PostgreSQL) or PascalCase (SQL Server) identifiers.
+		// Never use EF Core Update() for this entity — EF Core quotes PascalCase names which
+		// PostgreSQL treats as case-sensitive, causing "relation not found" errors.
+		if (IsPostgres)
+		{
+			var sql = "UPDATE tbluser SET fullname=@fn, mobilenumber=@mn, email=@em, " +
+			          "agegroup=@ag, preferredhintlanguage=@phl, avatarurl=@au, " +
+			          "updatedby='Admin', lastupdated=NOW()" +
+			          (passwordHash is not null ? ", passwordhash=@pw" : "") +
+			          " WHERE userid=@id AND isdeleted=FALSE";
+			cmd.CommandText = sql;
+		}
+		else
+		{
+			var sql = "UPDATE dbo.tblUser SET FullName=@fn, MobileNumber=@mn, Email=@em, " +
+			          "AgeGroup=@ag, PreferredHintLanguage=@phl, AvatarUrl=@au, " +
+			          "UpdatedBy='Admin', LastUpdated=GETDATE()" +
+			          (passwordHash is not null ? ", PasswordHash=@pw" : "") +
+			          " WHERE UserId=@id AND IsDeleted=0";
+			cmd.CommandText = sql;
+		}
+
+		// Use cmd.CreateParameter() directly — NOT the CreateParameter() helper, which normalizes
+		// names to "p_" prefix for stored procedures. This is a raw SQL command; parameter names
+		// must match the placeholders in the SQL string exactly.
+		void AddParam(string name, object? value)
+		{
+			var p = cmd.CreateParameter();
+			p.ParameterName = name;
+			p.Value = value ?? DBNull.Value;
+			cmd.Parameters.Add(p);
+		}
+
+		AddParam("fn",  fullName);
+		AddParam("mn",  mobileNumber);
+		AddParam("em",  email);
+		AddParam("ag",  ageGroup);
+		AddParam("phl", preferredHintLanguage);
+		AddParam("au",  avatarUrl);
+		AddParam("id",  userId);
+
+		if (passwordHash is not null)
+			AddParam("pw", passwordHash);
+
+		await DbCommandHelper.ExecuteNonQueryAsync(cmd, cancellationToken);
+	}
+
+	public async Task UpdateAvatarUrlAsync(long userId, string objectKey, CancellationToken cancellationToken = default)
+	{
+		var connection = DbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		await using var cmd = connection.CreateCommand();
+		cmd.CommandText = IsPostgres
+			? "UPDATE tbluser SET avatarurl=@key, lastupdated=NOW() WHERE userid=@id AND isdeleted=FALSE"
+			: "UPDATE dbo.tblUser SET AvatarUrl=@key, LastUpdated=GETDATE() WHERE UserId=@id AND IsDeleted=0";
+		cmd.Parameters.Add(CreateParameter("@key", objectKey));
+		cmd.Parameters.Add(CreateParameter("@id",  userId));
+
+		await DbCommandHelper.ExecuteNonQueryAsync(cmd, cancellationToken);
+	}
+
 	public async Task UpsertUserStreakAsync(long userId, int practiceMinutes, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
 	{
 		var connection = DbContext.Database.GetDbConnection();
@@ -500,7 +578,8 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 			select new
 			{
 				user.UserId,
-				user.FullName
+				user.FullName,
+				user.AvatarUrl
 			})
 			.ToListAsync(cancellationToken);
 
@@ -544,6 +623,7 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		{
 			UserId = member.UserId,
 			FullName = member.FullName,
+			AvatarUrl = member.AvatarUrl,
 			FluencyScore = voiceAggregates.TryGetValue(member.UserId, out var voiceAggregate) ? voiceAggregate.FluencyScore : 0m,
 			ConfidenceScore = voiceAggregates.TryGetValue(member.UserId, out voiceAggregate) ? voiceAggregate.ConfidenceScore : 0m,
 			MistakeCount = mistakeCounts.TryGetValue(member.UserId, out var mistakeCount) ? mistakeCount : 0,

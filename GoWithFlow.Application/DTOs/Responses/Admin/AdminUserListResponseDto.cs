@@ -17,4 +17,7 @@ public sealed class AdminUserListResponseDto
 	public DateTime? LastLoginDate { get; set; }
 
 	public bool IsActive { get; set; }
+
+	/// <summary>Presigned R2 URL resolved per-request. Null when no avatar is set.</summary>
+	public string? AvatarUrl { get; set; }
 }

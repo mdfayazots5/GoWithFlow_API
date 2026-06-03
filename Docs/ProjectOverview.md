@@ -752,7 +752,11 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 #### GET /api/dashboard
 
-- Returns: user name, streak, today date, active session banner, pending repractice count, last 3 sessions, last 3 unresolved mistakes
+- Returns: `UserDashboardResponseDto` — `userName`, `currentStreak`, `todayDate`, `pendingRepracticeCount`, `recentSessions` (`SessionListItemResponseDto[]`), `pendingMistakes` (`MistakeResponseDto[]`)
+- `recentSessions` fields in use: `sessionId`, `sessionName`, `sessionMode`, `sessionDate`, `duration`, `fluencyScore` (decimal — must use `number:'1.0-1'` pipe), `status`, `scriptTitle`
+- `pendingMistakes` fields in use: `mistakeId`, `mistakeType`, `grammarTag`, `contextTag`, `spokenText`, `utteranceText`, `mistakeDetail`, `sessionName`, `scriptTitle`, `firstOccurrence`
+- Frontend `getDashboard()` in `UserService` passes `r.data` through without mapping — all fields are accessed directly from the API response shape using camelCase JSON names
+- **Notes on Drift (2026-06-03):** Template used `session.createdDate` (non-existent — should be `session.sessionDate`) and `session.myScore` (non-existent — should be `session.fluencyScore`). Pending mistakes used `mistake.text` (non-existent — should be `mistake.utteranceText`) and `mistake.type` (non-existent — should be `mistake.mistakeType`). Fields `sessionMode`, `duration`, `status`, `scriptTitle`, `mistakeDetail`, `grammarTag`, `contextTag`, `sessionName`, `firstOccurrence` were all present in the API response but never rendered. Score displayed raw decimal (`87.0000000000000000`) without the `number:'1.0-1'` pipe. Fixed: all bindings corrected to match API field names; all requested fields now rendered; `number:'1.0-1'` pipe applied; `track $index` replaced with `track mistake.mistakeId`.
 
 #### GET /api/dashboard/weekly-report
 
@@ -783,6 +787,9 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 #### GET /api/users/sessions/{sessionId}/detail
 
 - Returns: session header, caller performance summary, caller mistake list, listener feedback received, all member scores
+- `AllMemberScores` items include `AvatarUrl` (presigned R2 URL, resolved in `UserService.ResolveSessionDetailAvatarsAsync` — same R2 key → presigned URL pattern as profile endpoint)
+- Frontend: `allMemberScores` in `SessionDetail` model has `avatar?: string`; `user.service.ts` maps `s.avatarUrl → avatar`; template binds `[avatarUrl]="member.avatar"` on `app-user-avatar`
+- **Notes on Drift (2026-06-03):** `GetSessionMemberScoresAsync` in `UserRepository` selected only `UserId` and `FullName` — `AvatarUrl` was never projected, so `MemberScoreDto.AvatarUrl` was always `null`. `UserService.GetSessionDetailAsync` returned the DTO without resolving R2 keys. Frontend `allMemberScores` mapper omitted `avatarUrl` entirely; `SessionDetail.allMemberScores` type had no `avatar` field. Result: `app-user-avatar` on `/session/detail/{id}` always showed initials fallback. Fix: (1) `AvatarUrl` added to LINQ select in `GetSessionMemberScoresAsync` and mapped to `MemberScoreDto.AvatarUrl`; (2) `ResolveSessionDetailAvatarsAsync` added to `UserService` and called from `GetSessionDetailAsync`; (3) `avatar` field added to `SessionDetail.allMemberScores` type; (4) `avatarUrl → avatar` mapping added in `user.service.ts`.
 
 #### GET /api/users/progress — User Progress (Improvement Data)
 
@@ -908,23 +915,27 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 
 - `GET /api/admin/dashboard` — global totals, recent activities, top grammar mistakes
   - Response fields: `topGrammarMistakes[].grammarTag`, `topGrammarMistakes[].userCount`, `topGrammarMistakes[].percentage`
-  - Frontend mapping: `getDashboard()` in `AdminService` maps these to `{ tag, count, percentage }` before passing to component. Template uses `area.tag` and `area.count`. Direct passthrough of raw API object breaks the display — always map.
+  - `recentActivities[].avatarUrl` — R2 key resolved to presigned URL (1440-min) in `AdminService.GetDashboardSummaryAsync` before caching; null if user has no avatar
+  - Frontend mapping: `getDashboard()` in `AdminService` maps SP fields to `{ userName, sessionName, sessionDate, fluencyScore, mistakeCount, status, avatarUrl }`. Template shows `<img>` when `avatarUrl` is non-null, falls back to initials circle.
   - Notes on Drift: Bug fixed 2026-06-02 — service was passing `topGrammarMistakes` items raw to `weakAreas`; template reads `area.tag` / `area.count` but API returns `grammarTag` / `userCount`. Fix: added `.map()` in `getDashboard()` to rename fields.
+  - Notes on Drift (2026-06-03): `uspgetrecentactivitylist` did not return `avatarurl` despite `tbluser` being joined. `RecentActivityDto` had no `AvatarUrl` field. Dashboard showed initials-only fallback for all rows. Migration 31 added `avatarurl` but declared `sessiondate TIMESTAMPTZ` — table column is `TIMESTAMP` (no tz), causing 42804. Migration 32 corrected with verified live DB types. Rule: always query `information_schema.columns` for actual column types before writing a `RETURNS TABLE` SP — never assume timezone variant. Full fix: SP updated (migration 32); `RecentActivityDto.AvatarUrl` added; repository mapper updated; `GetDashboardSummaryAsync` resolves R2 keys to presigned URLs before caching; Angular service maps `avatarUrl`; template shows `<img>` with initials fallback. Admin top bar also fixed: `AdminLayoutComponent` now reads `fullName` + `avatarUrl` from `AuthService.currentUser` and uses `app-user-avatar` in both topbar and profile menu (was hardcoded initials-only).
 - `POST /api/admin/users` — create new user; `PUT /api/admin/users/{userId}` — update user
   - Notes on Drift: Bug fixed 2026-06-02 — stale async race condition in `AdminUsersComponent.openEditModal()`: `getUserDetail` async callback could fire after user closed edit modal and opened "Add User" modal, patching the reset form with old user data. Fix: guard in callback checks `editingUserId() !== user.id` and returns early if the modal context has changed.
-- `GET /api/admin/users` — paginated admin user list
+- `GET /api/admin/users` — paginated admin user list; backed by `uspgetalluserbysearch` (**RETURNS TABLE** contract — must NOT use RETURNS SETOF REFCURSOR; see drift note below)
+  - Notes on Drift (2026-06-03): Migration 29 reverted `uspgetalluserbysearch` to `RETURNS SETOF REFCURSOR` to add `avatarurl`. This broke the endpoint with `System.IndexOutOfRangeException: Field not found in row: UserId` because the C# reader loop (`AdminRepository.GetUsersAsync`) uses a simple `reader.ReadAsync()` loop that expects flat columns — it was written for the `RETURNS TABLE` contract established in migration 13. A REFCURSOR function called via `SELECT * FROM fn()` returns cursor name strings as rows, not data columns. Fixed in migration 30: restored `RETURNS TABLE` with all 9 columns including `avatarurl`. Rule: this SP must always use `RETURNS TABLE` — never `RETURNS SETOF REFCURSOR`.
 - `GET /api/admin/users/{userId}` — full user profile with averages and recent sessions
 - `PATCH /api/admin/users/status` — updates `tblUser.IsActive`
 - `POST /api/admin/users/notes` — inserts admin note using admin JWT claim
 - `GET /api/admin/users/{userId}/notes` — active admin notes for target user
-- `GET /api/admin/reports` — paginated user report summaries; `ImprovementPercent = (resolved / total) * 100`
+- `GET /api/admin/reports` — paginated user report summaries; `ImprovementPercent = (resolved / total) * 100`; `avatarUrl` included — R2 key resolved to presigned URL in `GetReportSummaryAsync` before returning; frontend `getReports()` maps `avatarUrl`; list uses `app-user-avatar`
+  - Notes on Drift (2026-06-03): `uspgetuserreportsummarylist` did not return `avatarurl`. Migration 33 added it to the `userreport` CTE (select + group by) and final SELECT. Live function signature verified via `pg_get_functiondef` before writing — used unqualified `CHARACTER VARYING` / `NUMERIC` / `TIMESTAMP` to match live declaration exactly.
 - `GET /api/admin/reports/users/{userId}` — user header, session history, mistake breakdown, weekly scores
 - `GET /api/admin/reports/export` — generates Excel in-memory via `ClosedXML`; **Phase 10 (R2):** uploads to `gwf-exports` bucket; key `exports/{userId}/{yyyyMMdd_HHmmss}.xlsx`; returns `ApiResponse<string>` where `Data` = presigned URL (30-minute expiry); controller no longer streams bytes
-- `POST /api/admin/users` — create new user
-- `PUT /api/admin/users/{userId}` — update user profile
+- `POST /api/admin/users` — create new user; **multipart/form-data** (`[FromForm]`); fields: `fullName`, `mobileNumber`, `email?`, `ageGroup`, `preferredHintLanguage`, `password?`, `avatar?` (IFormFile); if `avatar` is provided, uploads to `gwf-avatars` bucket via `AdminService.UploadAvatarInternalAsync`, saves R2 key to `tblUser.AvatarUrl`; returns `AdminCreateUserResponseDto` including `avatarUrl` (presigned, 1440-min) or null
+- `PUT /api/admin/users/{userId}` — update user profile; **multipart/form-data** (`[FromForm]`); same fields as create (all optional except `fullName`, `mobileNumber`, `ageGroup`, `preferredHintLanguage`); if `avatar` is provided, uploads and returns new presigned URL in `data` field; `data` is null if no avatar uploaded; **`POST /api/admin/users/{userId}/avatar` removed** (2026-06-03 — merged into PUT)
+  - Notes on Drift (2026-06-03): `UpdateUserByAdminAsync` used `CreateParameter("@fn", ...)` which normalizes names to `p_fn` for PostgreSQL (designed for stored procs). The raw UPDATE SQL used `@fn`, causing `42601: syntax error at or near "=@"`. Fix: replaced with `cmd.CreateParameter()` directly (bypasses normalizer). Rule: for raw SQL commands in UserRepository, always use `cmd.CreateParameter()` — never the `CreateParameter()` helper method.
 - `GET /api/admin/sessions/history` — paginated admin session history with filters
 - `GET /api/admin/sessions/{sessionId}/recordings` — ADMIN; returns all audio archive clips for a session across all users; each clip includes `UserName` (speaker name), `TurnIndex`, presigned `AudioUrl` (120-min expiry); backed by `IAudioArchiveService.GetAdminSessionRecordingsAsync` → `IAudioArchiveRepository.GetAllBySessionAsync` (raw SQL join to `tblUser`)
-- `POST /api/admin/users/{userId}/avatar` — ADMIN; multipart `file`; uploads to `gwf-avatars` bucket via `IUserService.UploadAvatarAsync`; saves R2 key to `tblUser.AvatarUrl`; returns presigned URL (1440-min expiry); same handler reused from user self-service avatar upload
 
 ### Admin Session History — Stable Flow Contract
 
@@ -1332,7 +1343,7 @@ Real-time lobby updates via SignalR at `/hubs/session`.
 | `uspGetAvailableSlotsBySessionId` | `@SessionId` | Rows: `SlotIndex`, `SlotName`, `IsOccupied`, `UserFullName`, `IsReady` |
 | `uspUpdateSessionMemberReadyStatus` | `@SessionId`, `@UserId`, `@IsReady`, `@UpdatedBy`, `@IPAddress` | non-query |
 | `uspUpdateSessionStatus` | `@SessionId`, `@Status`, `@UpdatedBy`, `@IPAddress` | non-query |
-| `uspUpdateSessionMemberLeft` | `@SessionId`, `@UserId`, `@UpdatedBy`, `@IPAddress` | non-query; auto-abandons session if host leaves or no active members remain |
+| `uspUpdateSessionMemberLeft` | `@SessionId`, `@UserId`, `@UpdatedBy`, `@IPAddress` | non-query; auto-abandons session if: host leaves, OR 0 active members remain, OR session is ACTIVE and < 2 active members remain (migration 28). Never downgrades COMPLETED (migration 25 guard). |
 | `uspGetSessionListByUserId` | `@UserId`, `@StatusFilter`, `@PageNumber`, `@PageSize` | RS1: `SessionId`, `SessionName`, `SessionMode`, `SessionDate`, `Duration`, `FluencyScore`, `MistakeCount`, `Status`, `ScriptTitle`; RS2: `TotalCount` |
 
 ### Domain Model
@@ -1463,13 +1474,13 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 
 ### Flow: Validate Join Code
 
-**Purpose:** Guest retrieves session preview before joining to see slots and session info.
+**Purpose:** Returns session preview with slot list. Used internally by the Create Session flow to fetch guest slots after session creation; the join-by-code UI has been removed.
 
-**Entry Points:** Frontend join-session screen
+**Entry Points:** `create-session.component.ts` — called after a successful `POST /api/sessions` to retrieve unoccupied guest slots for the invite screen.
 
-**UI Route / Screen:** Join session entry screen
+**UI Route / Screen:** Not user-facing; invoked programmatically during session creation.
 
-**UI Trigger:** User enters join code and presses Validate / Preview
+**UI Trigger:** Session creation success response
 
 **Preconditions:** User is authenticated; join code is a 6-character string
 
@@ -1526,7 +1537,7 @@ HTTP 200 — ApiResponse<SessionPreviewResponseDto>
 **Frontend Mapping Note:**
 - Frontend maps `Duration`, `CurrentMemberCount` from this response into `SessionPreview` shape
 - Fallback aliases retained only for compatibility with older payload shapes
-- After validate succeeds, frontend navigates to join page with sessionId carried from preview
+- After validate succeeds, `create-session.component.ts` filters `Slots` where `IsOccupied = false` and passes them as query params to `/session/invite`
 
 **Recovery / Fallback Logic:**
 - SQL Server path may consume slot rows from result set 2 of the already-open `uspGetSessionByJoinCode` reader before disposing it
@@ -1538,100 +1549,6 @@ HTTP 200 — ApiResponse<SessionPreviewResponseDto>
 - `uspGetSessionByJoinCode` must return `Duration` (not `SessionDuration`) for the repository to map correctly
 - SQL Server preview contract returns slot rows as result set 2; the live PostgreSQL routine currently returns only the header row and requires a post-disposal fallback call to `uspGetAvailableSlotsBySessionId`
 - Repository preview flow previously opened a second command (`uspGetAvailableSlotsBySessionId`) before disposing the active `uspGetSessionByJoinCode` reader; PostgreSQL rejects that pattern with an in-progress command error
-
----
-
-### Flow: Join Session
-
-**Purpose:** Guest selects a slot and joins the session lobby. Repeat join (user already in lobby) is idempotent.
-
-**Entry Points:**
-- Frontend join-session screen; page route uses `SessionPreview` data from validate step
-- `Confirm & Join` button placed directly below the role-selection list (not in a sticky footer)
-- Labels, badges, helper text, and CTA rendered in black on light surfaces
-
-**UI Route / Screen:** Join session screen; navigates to `/session/lobby/{sessionId}` on success
-
-**UI Trigger:** `Confirm & Join` button click
-
-**Preconditions:** Validate join code completed; user has selected a slot
-
-**Request Contract:**
-```
-POST /api/sessions/join
-Authorization: Bearer {accessToken}
-Body (JoinSessionRequestDto):
-  - JoinCode (string, required, exactly 6 chars)
-  - SlotIndex (byte, required, 1–5)
-```
-
-**Response Contract:**
-```
-HTTP 200 — ApiResponse<LobbyStateResponseDto>
-  - SessionId (long)
-  - SessionName (string)
-  - JoinCode (string)
-  - SessionMode (string)
-  - ScriptTitle (string)
-  - MaxMembers (byte)
-  - SessionDuration (int)
-  - Status (string)
-  - Members (List<LobbyMemberDto>):
-      - UserId (long)
-      - FullName (string)
-      - AvatarUrl (string, nullable)
-      - SlotIndex (byte)
-      - SlotName (string)
-      - IsReady (bool)
-      - IsHost (bool)
-  - CanStart (bool)
-```
-
-**Validation Rules (FluentValidation):**
-- `JoinCode`: not empty, exactly 6 chars
-- `SlotIndex`: 1–5 inclusive
-
-**Business Rules (Service):**
-1. Join code is normalized (trim + uppercase)
-2. `uspValidateJoinCode` called — output params: `@IsValid BIT`, `@SessionId BIGINT`, `@SessionName NVARCHAR(128)`, `@Status NVARCHAR(16)`, `@CurrentMemberCount INT`
-3. If `IsValid = false` → fail: `"Join code is invalid, expired, or the room is already full."`
-4. `GetLobbyStateBySessionIdAsync` — if user is already in `Members` list, return existing lobby state (idempotent)
-5. `GetAvailableSlotsBySessionIdAsync` → `uspGetAvailableSlotsBySessionId` → slot list with `IsOccupied`
-6. If `SlotIndex` not found in available slots → fail: `"Selected slot does not exist for this session."`
-7. If selected slot `IsOccupied = true` → fail: `"Selected slot is already occupied."`
-8. Insert member via `uspInsertSessionMember`: `@SessionId`, `@UserId`, `@SlotIndex`, `@SlotName`, `@IsHost = false`, `@CreatedBy`, `@IPAddress`
-9. Reload lobby state via `uspGetSessionBySessionId`
-10. `CanStart = Members.Count >= 2 AND All(IsReady)`
-
-**Database Tables:** `tblSessionMember` (insert), `tblSession` + `tblSessionMember` (reads)
-
-**Stored Procedures:**
-- `uspValidateJoinCode` (output params)
-- `uspGetAvailableSlotsBySessionId`
-- `uspInsertSessionMember`
-- `uspGetSessionBySessionId` (to build lobby response)
-
-**State Transitions:** None — session remains `LOBBY`
-
-**SignalR / Realtime Events:**
-- After joining via REST, frontend calls `JoinLobby(sessionId, userId)` on `/hubs/session`
-- Hub broadcasts `MEMBER_JOINED` to group `session_{sessionId}`: `{ userId, name, slotIndex }`
-
-**Failure Cases:**
-- Invalid/expired/full join code → `"Join code is invalid, expired, or the room is already full."`
-- Slot not in available list → `"Selected slot does not exist for this session."`
-- Slot occupied → `"Selected slot is already occupied."`
-- Lobby state null after join → `"Lobby state could not be loaded after joining."`
-
-**Recovery / Fallback Logic:**
-- Idempotent repeat join: if user is already in Members, returns existing lobby state without re-inserting
-- `uspGetSessionBySessionId` Status drift fallback: if `Status` column is missing from RS1, repository exits the `DbDataReader` scope and disposes it before running the EF fallback query on `tblSession.Status` (returns `"LOBBY"` if still null)
-
-**Notes on Known Drift Prevented:**
-- `uspGetSessionBySessionId` must emit `Status` column in RS1 — added in migration `AddStatusToLobbyStateSP`; without it, `ResolveLobbyStatusAsync` falls back to EF to prevent `IndexOutOfRangeException`
-- The status fallback must run only after the lobby SP reader scope has ended and the reader is disposed; merely finishing `ReadAsync`/`NextResultAsync` is not enough, and querying EF before disposal causes SQL Server error: `There is already an open DataReader associated with this Connection`
-- Numeric fields (`SlotIndex`, `MaxMembers`, counts, durations) use `Convert.To*()` not direct CLR cast — prevents type mismatch errors when SP returns different numeric types
-- Frontend uses `sessionId` from the `join` response (not the validate response) for lobby navigation
 
 ---
 
@@ -1774,7 +1691,7 @@ Path param: sessionId (long)
 - User must be a currently **active** member (`IsActive = 1`) of the session — enforced via `GetLobbyStateBySessionIdAsync` LINQ filter
 - Calls `uspUpdateSessionMemberLeft(@SessionId, @UserId, @UpdatedBy, @IPAddress)`
 - SP sets `IsActive = 0`, `IsReady = 0`, `LeftAt = GETDATE()` for the leaving member
-- SP auto-abandons session (`Status = 'ABANDONED'`) when host leaves OR when no active members remain
+- SP auto-abandons session (`Status = 'ABANDONED'`) when: host leaves OR no active members remain OR (status = ACTIVE AND active member count < 2). Never downgrades a COMPLETED session (migration 25 guard).
 - Calling leave when already inactive → "Session member was not found" (correct, idempotent-safe)
 
 **`GetLobbyStateBySessionIdAsync` LINQ filter (CRITICAL):**
@@ -1801,10 +1718,9 @@ return activeMembers.Count >= 2 && activeMembers.All(m => m.IsReady);
 - Frontend `confirmLeave()`: calls `POST /api/sessions/{sessionId}/leave` then navigates. Navigation always happens (success or error). `OnDisconnectedAsync` acts as the safety net for browser-close/network-loss.
 
 **Rejoin flow (after leave):**
-1. User navigates back to `/session/join` or dashboard
-2. `JoinSessionAsync` calls `GetLobbyStateBySessionIdAsync` → with IsActive filter, left member is NOT in Members list → check at line 165 passes → rejoin allowed
-3. `GetAvailableSlotsBySessionIdAsync` (via SP `uspGetAvailableSlotsBySessionId`) filters `AND IsActive = 1` — slot appears as available after leave
-4. `uspInsertSessionMember` inserts a NEW row (previous inactive row kept for history)
+- The join-by-code page has been removed; rejoin is handled exclusively through the invitation flow (`SessionInvitationService.RespondToInvitationAsync`)
+- `_sessionRepository.JoinSessionAsync` (repository method) inserts a new `tblSessionMember` row; the previous inactive row is kept for history
+- `GetAvailableSlotsBySessionIdAsync` filters `AND IsActive = 1` — slot appears as available after leave
 
 **Failure Cases:**
 - User not found → 400 with failure (Session or user was not found)
@@ -2322,14 +2238,15 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 
 **SignalR / Realtime Events:**
 - Hub `CompleteTurn(sessionId, memberId, turnIndex, score)` calls `ShiftTurnAsync`
-- Broadcasts `TURN_SHIFT` to `live_{sessionId}`: `{ newActiveMemberId, slotIndex, turnIndex, nextUtterance }`
+- Broadcasts `TURN_SHIFT` to `live_{sessionId}`: `{ newActiveMemberId, newActiveMemberName, slotIndex, turnIndex, nextUtterance }`
 
 **Frontend Transition Contract:**
 - `TURN_SHIFT` is a partial event, not a full `TurnStateResponseDto`
 - The active speaker must submit turn completion through hub method `CompleteTurn`, not the REST `POST /api/turns/{sessionId}/shift` endpoint, so every connected client receives `TURN_SHIFT` without needing a manual page reload
 - After receiving `TURN_SHIFT`, the live-session room must refresh `GET /api/turns/{sessionId}/current` to hydrate the canonical state for all clients
-- The room may optimistically swap `activeMemberId`, `turnIndex`, and `utterance`; `activeSlotIndex` is optional in the temporary client-side transition because the canonical current-turn reload runs immediately afterward
+- The room may optimistically swap `activeMemberId`, `activeMemberName`, `turnIndex`, and `utterance`; `activeSlotIndex` is optional in the temporary client-side transition because the canonical current-turn reload runs immediately afterward
 - The shared frontend `TurnState` model should still include `activeSlotIndex` to match the backend contract, but the live room must not depend on that field in the optimistic `TURN_SHIFT` patch path
+- `activeMemberName` MUST be included in the optimistic `TURN_SHIFT` patch — the `updateState()` guard blocks same-turn API confirmations from overwriting state (prevents double-trigger of `ngOnChanges`), so the name must come from the event itself, not from the subsequent `loadCurrentTurn()` response
 
 **Failure Cases:**
 - `MemberId != userId` → `"Only the active speaker can complete the current turn."`
@@ -2342,6 +2259,7 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 **Notes on Known Drift Prevented:**
 - `SpeakerLabel` and `SlotName` matched case-insensitively with trim — prevents mismatches from whitespace or casing differences in script upload vs. session slot assignment
 - Treating `TURN_SHIFT` as a full turn DTO leaves listeners on stale speaker text and blocks the next speaker from seeing the recorder; clients must re-fetch current turn after the event
+- **Speaker name drift (2026-06-03):** `handleTurnShift()` spread `...currentState` into the optimistic update, carrying the previous turn's `activeMemberName`. The `updateState()` guard (which prevents same-`turnIndex` re-fires to avoid double-triggering `ngOnChanges`) blocked the subsequent `loadCurrentTurn()` response from correcting it. Result: when the same role (e.g. "Receptionist") appeared multiple times in the script, every turn transition showed the previous speaker's name until the next turn. **Fix:** `newActiveMemberName` added to the `TURN_SHIFT` hub broadcast and consumed in the optimistic patch in `handleTurnShift`. The name is now correct from the moment the event fires.
 
 ---
 
@@ -2639,7 +2557,7 @@ GetActiveSessionMemberByUserIdAsync → null (IsActive = 0)
 |---|---|
 | `MEMBER_JOINED` | `{ userId: long, name: string, slotIndex: byte }` |
 | `MEMBER_LEFT` | `{ userId: long, slotIndex: byte }` |
-| `TURN_SHIFT` | `{ newActiveMemberId: long, slotIndex: byte, turnIndex: int, nextUtterance: UtteranceResponseDto }` |
+| `TURN_SHIFT` | `{ newActiveMemberId: long, newActiveMemberName: string, slotIndex: byte, turnIndex: int, nextUtterance: UtteranceResponseDto }` |
 | `LISTENER_TAG` | `{ tag: string, fromUserId: long }` |
 | `RE_READ_REQUESTED` | `{ requesterId: long, reReadCount: int }` |
 | `SESSION_ENDED` | `{ sessionId: long, summary: SessionSummaryResponseDto }` |
@@ -2786,15 +2704,28 @@ sessionResult: VoiceSessionResult | null
 3. User taps mic inside `VoiceRecorderComponent` → `VoiceRecognitionEngine.startSession()` begins
 
 **Recording Phase — VoiceRecognitionEngine flow:**
-1. `requestMicPermission()` — `navigator.mediaDevices.getUserMedia` before recognition starts
-2. `AudioActivityDetector.start()` — opens AudioContext, waveform + VAD starts
+1. `requestMicPermission()` — uses Permissions API if available; falls back to getUserMedia to avoid double-stream on iOS
+2. VAD configured for device via `configure()` before `AudioActivityDetector.start()`
 3. `SpeechRecognition` configured: `lang = 'en-IN'`, `continuous = !isIOS`, `interimResults = true`, `maxAlternatives = 3`
-4. `onresult` — interim buffered for display only; final chunks collected in `allFinalTranscripts[]`; **interim results reset the 8000ms fallback timer** (when no finals yet) so the deadline is "8s from last speech activity" not "8s from mic press"
-5. Silence detected (< -50dB for 1200ms) → `recognition.stop()` after 400ms buffer
-6. Fallback timeout: **8000ms from last speech activity** (interim resets timer if no finals yet); 2500ms from last final chunk → auto-finalize
-7. Finalize: join all final chunks → `TranscriptNormalizer.normalize()` both sides → `PronunciationScorer.score()` → emit `VoiceSessionResult`
-8. Retry on `network` / `audio-capture` / `no-speech` errors up to 3 times (500ms delay)
-9. iOS: `continuous = false`, restart on `onend` manually until VAD detects silence
+4. `onresult` — interim buffered for display only; final chunks collected in `allFinalTranscripts[]`; interim resets fallback timer; finals set `_hasSpoken = true` when ≥ 2 words
+5. VAD silence detected → fires callback only if `_hasSpeechStarted` (amplitude gate); engine only stops if `_hasSpoken` (transcript gate) → `_intentionalStop = true` → `recognition.stop()` after 400 ms (600 ms on mobile)
+6. `_intentionalStop` flag: set before any deliberate `recognition.stop()` call — suppresses `onend` restart path and prevents a second browser bell sound
+7. `onerror: 'no-speech'` — if transcripts exist, extends timeout instead of retrying with a new instance (which would play a bell). Only retries with new instance when no speech at all.
+8. Finalize triggers: VAD silence / post-final timeout / fallback timeout / unexpected `onend` with finals
+9. Minimum-duration guard in `finalize()`: reschedules if elapsed < 2000 ms AND wordCount < 2 AND !_hasSpoken
+10. `finalize()` calls `recognition.stop()` with `_intentionalStop = true` before scoring to prevent bell on later `onend`
+11. iOS: `continuous = false`, restarts on `onresult` final — guarded by `!_intentionalStop`
+
+**Device-aware timeouts:**
+
+| Timeout | Desktop | Mobile |
+|---|---|---|
+| Fallback (no finals yet) | 8 000 ms | 12 000 ms |
+| Post-first-final | 2 500 ms | 4 500 ms |
+| Stop delay after VAD silence | 400 ms | 600 ms |
+| Minimum recording duration guard | 800 ms | 2 000 ms |
+
+**Device detection:** `isIOS = /iPad\|iPhone\|iPod/.test(ua) \|\| (maxTouchPoints > 1 && /Macintosh/.test(ua))` — covers iPadOS 13+ which sends a desktop UA. `isMobile = isIOS || /Android|.../.test(ua)`. Public getter `isMobileDevice` consumed by `SpeakerScreenComponent` to gate auto-start.
 
 **onRecordingStarted():**
 - Calls `VoiceBroadcastService.startBroadcast()` (fire-and-forget)
@@ -2840,6 +2771,16 @@ sessionResult: VoiceSessionResult | null
 - Old system: no silence detection → recording ran forever. Fixed: `AudioActivityDetector` VAD + 8s fallback timeout.
 - Old system: no mic permission pre-check → silent failure on first use. Fixed: `requestMicPermission()` before engine starts.
 - `defaultVoiceStarter` and `autoSubmitOnStop` session prefs no longer active — new flow requires explicit user tap for both start and confirm.
+- **Drift 11 (2026-06-03): Voice listening unreliable on mobile/tablet — premature stops, double bell, spurious auto-start** — Five converging root causes identified and fixed:
+  1. **Auto-start bell on mobile** — `defaultVoiceStarter: true` (default) caused `SpeakerScreenComponent` to auto-start recording on every device including mobile. Every `recognition.start()` call plays the browser's system speech-recognition bell. On mobile, this fires before the user is ready. Fix: `ngOnChanges` in `SpeakerScreenComponent` now guards `_pendingAutoStart` with `&& !voiceEngine.isMobileDevice` — mobile/tablet users must tap the mic button explicitly.
+  2. **Second bell during speech (`no-speech` retry)** — Mobile Chrome fires `onerror { error: 'no-speech' }` when its own internal silence timer expires (separate from our VAD). The retry path called `startRecognition()` which creates a NEW `SpeechRecognition` instance and calls `.start()` → second system bell, even mid-speech. Fix: if `allFinalTranscripts.length > 0`, `'no-speech'` error now extends the post-final timeout instead of retrying with a new instance. A new recognition instance (and its bell) is only created when the user genuinely has not spoken yet.
+  3. **Premature finalization from 2500 ms post-final timer** — Mobile speech API fires partial final results aggressively (after the first few words). Once any final result arrives, the 2500 ms silence timeout began counting. A natural breath or inter-phrase pause > 2.5 s triggered `finalize()` while the user was still speaking. Fix: post-final timeout raised to 4500 ms on mobile (vs 2500 ms on desktop). Fallback (no-finals) timeout raised from 8000 to 12000 ms on mobile.
+  4. **VAD fires after startup ambient noise** — `AudioActivityDetector` silence callback fired 1200 ms after the recording started if the user hadn't spoken yet (ambient room noise drove db just above threshold, then dipped below). This caused an immediate stop before any speech. Fix: `_hasSpeechStarted` latch in VAD — silence callback is suppressed until the audio level has exceeded `speechThresholdDB` at least once. Also: `_hasSpoken` flag in `VoiceRecognitionEngine` — VAD silence path additionally requires a final transcript of ≥ 2 words before it can stop recording. VAD silence duration raised from 1200 to 2500 ms on mobile.
+  5. **AGC-induced amplitude instability** — `autoGainControl: true` in the `AudioActivityDetector` `getUserMedia` stream caused rapid gain shifts between words, producing brief near-silence readings mid-speech and triggering the silence timer. Fix: `autoGainControl: false` in the VAD stream. The speech recognition API manages its own audio path independently and is unaffected. Also removed `sampleRate: 16000` from getUserMedia constraints — this is not a valid constraint spec and silently fails or rejects on some mobile browsers.
+  6. **Minimum-duration guard** — Added in `finalize()`: if `elapsed < 2000 ms` AND `wordCount < 2` AND `!_hasSpoken`, reschedule and keep listening. Prevents any sub-2-second trigger on noise from producing a result.
+  7. **`_intentionalStop` flag** — Set to `true` before any deliberate `recognition.stop()` call (in `finalize()`, `stopSession()`, `handleSilenceDetected()`). The `onend` handler skips all restart logic when this flag is set, preventing another `recognition.start()` (and bell) from firing after a controlled stop.
+  Files changed: `audio-activity-detector.ts`, `voice-recognition.engine.ts`, `speaker-screen.component.ts`.
+- **Drift 10 (2026-06-03): Non-host leaving a 2-person ACTIVE session does not abandon the session** — `uspupdatesessionmemberleft` abandons only when the host leaves OR when `active_member_count = 0`. In a 2-person ACTIVE session where the non-host leaves, `active_member_count` drops to 1 (host alone). Neither condition triggers, so the session stays `ACTIVE` and the remaining user is stuck alone in a live session that can never continue. **Fix (Migration 28):** Added `OR (v_currentstatus = 'ACTIVE' AND v_activemembercount < 2)` to the abandon condition. When any member leaves and fewer than 2 active members remain in an ACTIVE session, the session is immediately set to `ABANDONED`. LOBBY sessions are unaffected (count < 2 is common while waiting for others to join). Migration file: `28_fix_active_session_single_member_abandon.sql`. Drift type: DB contract drift.
 - **Drift 9 (2026-06-03): Completed session shows as ABANDONED in session history** — `uspupdatesessionmemberleft` is called on every member disconnect (hub `OnDisconnectedAsync` → `MarkMemberLeftAsync`; REST leave endpoint → `LeaveSessionAsync`). The SP marks the member inactive then checks: if the host left OR no active members remain → calls `uspupdatesessionstatus(ABANDONED)`. It did NOT check the current session status first. So after `CompleteSessionAsync` sets status = `COMPLETED`, when members disconnect from the live hub (normal navigation away), the SP overwrites COMPLETED → ABANDONED. **Fix (Migration 25):** Added `v_currentstatus VARCHAR(16)` to the SP DECLARE block; reads `ses.status` alongside `ses.hostuserid` in a single SELECT; returns immediately if `v_currentstatus = 'COMPLETED'`. Apply `25_fix_leave_abandoned_guard.sql` to Supabase. Session 46 (Hotel Checking) was affected by this bug — its DB status is ABANDONED but the actual data (voice analyses, mistakes, scores) is complete.
 - **Drift 8 (2026-06-03): Session report shows per-user mistakes = 0 despite 21 total mistakes** — `MemberScoreDto.MistakeCount` was sourced from `uspGetSessionCompletionSummary` SP which counts `grammarerrorsjson` elements from `tblvoiceanalysis`. If voice analysis grammar errors are empty (user scored 0 grammar errors in voice engine), per-user count is 0. But `TotalMistakesAllMembers` reads from `tblMistake` (populated by `SaveMistakesFromSessionAsync` before summary is built), causing the mismatch. **Fix:** After SP call in `GetSessionCompletionSummaryAsync`, override each member's `MistakeCount` with a grouped EF count from `tblMistake` (`_dbContext.Mistakes.GroupBy(m => m.UserId)`). This aligns per-user and total counts to the same canonical source.
 - **Drift 7 (2026-06-03): Session report leaderboard shows DiceBear placeholder avatar instead of user's actual avatar** — `MemberScoreDto` lacked `AvatarUrl`; `uspGetSessionCompletionSummary` only returned `FullName`. Frontend hardcoded DiceBear `api.dicebear.com/7.x/avataaars/svg?seed=<name>`. **Fix:** Added `AvatarUrl` to `MemberScoreDto`; in `GetSessionCompletionSummaryAsync`, after SP call, fetch `tblUser.AvatarUrl` for all member user IDs via EF query; in `LiveSessionService.ResolveAvatarUrlsAsync`, convert R2 keys to presigned URLs using `_storageService.GetPresignedUrlAsync` (same pattern as user profile). Frontend: `ScoreboardRow.avatarUrl` added; template uses `[src]="row.avatarUrl || dicebear"` with `(error)` fallback.
@@ -2924,13 +2865,18 @@ stopSession(): void
 
 #### AudioActivityDetector — Key Config
 
-| Setting | Value | Tuning Note |
-|---|---|---|
-| `silenceThresholdDB` | `-50` | Quiet room: lower to -55. Noisy room: raise to -45 |
-| `silenceDurationMs` | `1200` | Raise to 1800 for users who pause between words |
-| `fftSize` | `256` | Low latency — do not increase |
-| `sampleRate` | `16000` | Optimal for speech recognition |
-| Audio constraints | `echoCancellation`, `noiseSuppression`, `autoGainControl` all `true` | Built-in browser noise reduction |
+Thresholds are set at runtime via `configure()` — values differ between desktop and mobile.
+
+| Setting | Desktop | Mobile / Tablet | Tuning Note |
+|---|---|---|---|
+| `silenceThresholdDB` | `-50` | `-55` | More negative = must be quieter to count as silent. Mobile needs stricter threshold to avoid false silence during inter-word pauses |
+| `silenceDurationMs` | `1200` | `2500` | Mobile users pause longer between phrases; 1.2 s triggers too early |
+| `speechThresholdDB` | `-35` | `-30` | Amplitude must EXCEED this to latch `_hasSpeechStarted`. Mobile mics produce lower output so threshold is slightly higher |
+| `fftSize` | `512` | `512` | Increased from 256 for smoother RMS |
+| Audio constraints | `echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: false` | same | AGC disabled — rapid AGC gain shifts caused false near-silence readings between words, triggering premature stops. AGC on the RECOGNITION stream is browser-managed and unaffected. |
+| `sampleRate` | browser default | browser default | Removed explicit 16 000 Hz from getUserMedia — not a valid constraint and silently fails/rejects on some mobile browsers |
+
+**`_hasSpeechStarted` flag:** one-way latch within a session. Set to `true` the first time the measured dB rises above `speechThresholdDB`. The silence callback is suppressed until this flag is true — prevents ambient/startup noise from triggering a premature stop before the user has spoken.
 
 #### VoiceFeedbackComponent — Score Bands
 
@@ -3894,8 +3840,9 @@ All buckets are **private**. Files are never served via public R2 URLs. All acce
 #### R2 Service Implementation
 - `GoWithFlow.Infrastructure/ExternalServices/CloudflareR2StorageService.cs`
 - SDK: `AWSSDK.S3` v3.7.x (R2 is S3-compatible; no Cloudflare-specific SDK needed)
-- `AmazonS3Config.ForcePathStyle = true`, `SignatureVersion = "4"`, `UseChunkEncoding = false` on uploads
+- `AmazonS3Config.ForcePathStyle = true`, `SignatureVersion = "4"`, `AuthenticationRegion = "auto"`, `UseChunkEncoding = false` on uploads
 - `GetPreSignedURL` is synchronous — wrapped in `Task.FromResult`
+- **Drift fixed 2026-06-03:** `AuthenticationRegion = "auto"` is mandatory. Without it, `GetPreSignedURL` falls back to SigV2 (`AWSAccessKeyId` query param format) on custom `ServiceURL` endpoints even when `SignatureVersion = "4"` is set. Cloudflare R2 rejects SigV2 with HTTP 401 `"SigV2 authorization is not supported. Please use SigV4 instead."` — all presigned URLs were broken until this was added.
 
 ### DB Changes (applied to Supabase PostgreSQL 2026-06-02)
 

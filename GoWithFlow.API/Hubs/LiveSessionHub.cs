@@ -130,6 +130,7 @@ public sealed class LiveSessionHub : Hub
 			new
 			{
 				newActiveMemberId = response.Data.ActiveMemberId,
+				newActiveMemberName = response.Data.ActiveMemberName,
 				slotIndex = response.Data.ActiveSlotIndex,
 				turnIndex = response.Data.TurnIndex,
 				nextUtterance = response.Data.Utterance

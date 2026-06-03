@@ -10,8 +10,6 @@ public interface ISessionService
 
 	Task<ApiResponse<SessionPreviewResponseDto>> ValidateJoinCodeAsync(string joinCode, CancellationToken cancellationToken = default);
 
-	Task<ApiResponse<LobbyStateResponseDto>> JoinSessionAsync(JoinSessionRequestDto dto, long userId, CancellationToken cancellationToken = default);
-
 	Task<ApiResponse<LobbyStateResponseDto>> GetLobbyStateAsync(long sessionId, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<bool>> UpdateReadyStatusAsync(UpdateReadyStatusRequestDto dto, long userId, CancellationToken cancellationToken = default);

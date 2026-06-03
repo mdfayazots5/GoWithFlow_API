@@ -2125,7 +2125,8 @@ BEGIN
     SELECT
         usr.userid, usr.fullname, usr.mobilenumber, usr.agegroup,
         usr.totalsessionsplayed, usr.dailystreakcount,
-        usr.lastlogindate, usr.isactive
+        usr.lastlogindate, usr.isactive,
+        usr.avatarurl
     FROM tbluser AS usr
     WHERE usr.isdeleted = FALSE
       AND (p_searchterm IS NULL

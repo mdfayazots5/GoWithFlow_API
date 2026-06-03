@@ -1,10 +1,13 @@
 using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.Session;
 using GoWithFlow.Application.DTOs.Responses.Session;
+using GoWithFlow.Application.Helpers;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
+using GoWithFlow.Application.Settings;
 using GoWithFlow.Domain.Entities;
 using GoWithFlow.Domain.Enums;
+using Microsoft.Extensions.Options;
 
 namespace GoWithFlow.Application.Services;
 
@@ -23,17 +26,23 @@ public sealed class SessionService : ISessionService
 	private readonly IScriptRepository _scriptRepository;
 	private readonly ISessionRepository _sessionRepository;
 	private readonly ILiveSessionService _liveSessionService;
+	private readonly IStorageService _storageService;
+	private readonly CloudflareR2Settings _r2Settings;
 
 	public SessionService(
 		IUserRepository userRepository,
 		IScriptRepository scriptRepository,
 		ISessionRepository sessionRepository,
-		ILiveSessionService liveSessionService)
+		ILiveSessionService liveSessionService,
+		IStorageService storageService,
+		IOptions<CloudflareR2Settings> r2Options)
 	{
 		_userRepository = userRepository;
 		_scriptRepository = scriptRepository;
 		_sessionRepository = sessionRepository;
 		_liveSessionService = liveSessionService;
+		_storageService = storageService;
+		_r2Settings = r2Options.Value;
 	}
 
 	public async Task<ApiResponse<CreateSessionResponseDto>> CreateSessionAsync(CreateSessionRequestDto dto, long hostUserId, CancellationToken cancellationToken = default)
@@ -144,75 +153,6 @@ public sealed class SessionService : ISessionService
 		return ApiResponse<SessionPreviewResponseDto>.SuccessResult(preview, "Session preview retrieved successfully.");
 	}
 
-	public async Task<ApiResponse<LobbyStateResponseDto>> JoinSessionAsync(JoinSessionRequestDto dto, long userId, CancellationToken cancellationToken = default)
-	{
-		if (userId <= 0)
-		{
-			return ApiResponse<LobbyStateResponseDto>.FailureResult(new[] { "UserId must be greater than zero." }, "Validation failed.");
-		}
-
-		var normalizedJoinCode = NormalizeJoinCode(dto.JoinCode);
-		var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
-
-		if (user is null)
-		{
-			return ApiResponse<LobbyStateResponseDto>.FailureResult(new[] { "User was not found." }, "Session join failed.");
-		}
-
-		var validationResult = await _sessionRepository.ValidateJoinCodeAsync(normalizedJoinCode, cancellationToken);
-
-		if (validationResult is null || validationResult.Value.IsValid == false)
-		{
-			return ApiResponse<LobbyStateResponseDto>.FailureResult(new[] { "Join code is invalid, expired, or the room is already full." }, "Session join failed.");
-		}
-
-		var existingLobbyState = await _sessionRepository.GetLobbyStateBySessionIdAsync(validationResult.Value.SessionId, cancellationToken);
-
-		if (existingLobbyState is not null && existingLobbyState.Members.Any(member => member.UserId == userId))
-		{
-			existingLobbyState.CanStart = ResolveCanStart(existingLobbyState);
-			return ApiResponse<LobbyStateResponseDto>.SuccessResult(existingLobbyState, "Lobby state retrieved successfully.");
-		}
-
-		var availableSlots = await _sessionRepository.GetAvailableSlotsBySessionIdAsync(validationResult.Value.SessionId, cancellationToken);
-		var selectedSlot = availableSlots.FirstOrDefault(slot => slot.SlotIndex == dto.SlotIndex);
-
-		if (selectedSlot is null)
-		{
-			return ApiResponse<LobbyStateResponseDto>.FailureResult(new[] { "Selected slot does not exist for this session." }, "Session join failed.");
-		}
-
-		if (selectedSlot.IsOccupied)
-		{
-			return ApiResponse<LobbyStateResponseDto>.FailureResult(new[] { "Selected slot is already occupied." }, "Session join failed.");
-		}
-
-		await _sessionRepository.JoinSessionAsync(
-			new SessionMember
-			{
-				SessionId = validationResult.Value.SessionId,
-				UserId = userId,
-				SlotIndex = dto.SlotIndex,
-				SlotName = selectedSlot.SlotName,
-				IsReady = false,
-				IsHost = false,
-				CreatedBy = user.FullName,
-				IPAddress = "127.0.0.1"
-			},
-			cancellationToken);
-
-		var lobbyState = await _sessionRepository.GetLobbyStateBySessionIdAsync(validationResult.Value.SessionId, cancellationToken);
-
-		if (lobbyState is null)
-		{
-			return ApiResponse<LobbyStateResponseDto>.FailureResult(new[] { "Lobby state could not be loaded after joining." }, "Session join failed.");
-		}
-
-		lobbyState.CanStart = ResolveCanStart(lobbyState);
-
-		return ApiResponse<LobbyStateResponseDto>.SuccessResult(lobbyState, "Joined session successfully.");
-	}
-
 	public async Task<ApiResponse<LobbyStateResponseDto>> GetLobbyStateAsync(long sessionId, CancellationToken cancellationToken = default)
 	{
 		if (sessionId <= 0)
@@ -228,6 +168,7 @@ public sealed class SessionService : ISessionService
 		}
 
 		lobbyState.CanStart = ResolveCanStart(lobbyState);
+		await ResolveLobbyAvatarsAsync(lobbyState, cancellationToken);
 
 		return ApiResponse<LobbyStateResponseDto>.SuccessResult(lobbyState, "Lobby state retrieved successfully.");
 	}
@@ -402,6 +343,27 @@ public sealed class SessionService : ISessionService
 		var activeMembers = lobbyState.Members;
 		return activeMembers.Count >= 2 && activeMembers.All(member => member.IsReady);
 	}
+
+	private async Task ResolveLobbyAvatarsAsync(LobbyStateResponseDto lobbyState, CancellationToken cancellationToken)
+	{
+		var tasks = lobbyState.Members
+			.Where(m => IsR2Key(m.AvatarUrl))
+			.Select(async m =>
+			{
+				m.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+					_r2Settings.Buckets.Avatars,
+					m.AvatarUrl!,
+					_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+					cancellationToken);
+			});
+
+		await Task.WhenAll(tasks);
+	}
+
+	private static bool IsR2Key(string? value) =>
+		!string.IsNullOrEmpty(value)
+		&& !value.StartsWith('/')
+		&& !value.StartsWith("http", StringComparison.OrdinalIgnoreCase);
 
 	private static string NormalizeJoinCode(string joinCode)
 	{

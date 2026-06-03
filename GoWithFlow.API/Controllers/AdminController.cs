@@ -17,13 +17,11 @@ public sealed class AdminController : ControllerBase
 {
 	private readonly IAdminService _adminService;
 	private readonly IAudioArchiveService _audioArchiveService;
-	private readonly IUserService _userService;
 
-	public AdminController(IAdminService adminService, IAudioArchiveService audioArchiveService, IUserService userService)
+	public AdminController(IAdminService adminService, IAudioArchiveService audioArchiveService)
 	{
 		_adminService = adminService;
 		_audioArchiveService = audioArchiveService;
-		_userService = userService;
 	}
 
 	[HttpGet(ApiRoutes.Admin.Dashboard)]
@@ -41,7 +39,7 @@ public sealed class AdminController : ControllerBase
 	}
 
 	[HttpPost(ApiRoutes.Admin.Users)]
-	public async Task<IActionResult> CreateUserAsync([FromBody] AdminCreateUserRequestDto dto, CancellationToken cancellationToken)
+	public async Task<IActionResult> CreateUserAsync([FromForm] AdminCreateUserRequestDto dto, CancellationToken cancellationToken)
 	{
 		var response = await _adminService.CreateUserAsync(dto, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status201Created);
@@ -55,7 +53,7 @@ public sealed class AdminController : ControllerBase
 	}
 
 	[HttpPut(ApiRoutes.Admin.UserDetail)]
-	public async Task<IActionResult> UpdateUserAsync(long userId, [FromBody] AdminUpdateUserRequestDto dto, CancellationToken cancellationToken)
+	public async Task<IActionResult> UpdateUserAsync(long userId, [FromForm] AdminUpdateUserRequestDto dto, CancellationToken cancellationToken)
 	{
 		var response = await _adminService.UpdateUserAsync(userId, dto, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
@@ -150,13 +148,6 @@ public sealed class AdminController : ControllerBase
 	public async Task<IActionResult> GetSessionRecordingsAsync(long sessionId, CancellationToken cancellationToken)
 	{
 		var response = await _audioArchiveService.GetAdminSessionRecordingsAsync(sessionId, cancellationToken);
-		return BuildActionResult(response, StatusCodes.Status200OK);
-	}
-
-	[HttpPost(ApiRoutes.Admin.UserAvatar)]
-	public async Task<IActionResult> UploadUserAvatarAsync(long userId, IFormFile file, CancellationToken cancellationToken)
-	{
-		var response = await _userService.UploadAvatarAsync(userId, file, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 

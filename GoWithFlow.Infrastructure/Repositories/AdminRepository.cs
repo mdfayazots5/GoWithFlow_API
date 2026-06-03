@@ -57,7 +57,8 @@ public sealed class AdminRepository : IAdminRepository
 				SessionDate = GetDateTime(reader, "SessionDate"),
 				FluencyScore = GetDecimal(reader, "FluencyScore"),
 				MistakeCount = GetInt32(reader, "MistakeCount"),
-				SessionStatus = GetString(reader, "SessionStatus")
+				SessionStatus = GetString(reader, "SessionStatus"),
+				AvatarUrl = GetNullableString(reader, "AvatarUrl")
 			});
 		}
 
@@ -110,7 +111,8 @@ public sealed class AdminRepository : IAdminRepository
 				TotalSessionsPlayed = GetInt32(reader, "TotalSessionsPlayed"),
 				DailyStreakCount = GetInt32(reader, "DailyStreakCount"),
 				LastLoginDate = GetNullableDateTime(reader, "LastLoginDate"),
-				IsActive = GetBoolean(reader, "IsActive")
+				IsActive = GetBoolean(reader, "IsActive"),
+				AvatarUrl = GetNullableString(reader, "AvatarUrl")
 			});
 		}
 
@@ -251,7 +253,8 @@ public sealed class AdminRepository : IAdminRepository
 				AvgFluencyScore = GetDecimal(reader, "AvgFluencyScore"),
 				MostCommonMistakeType = GetString(reader, "MostCommonMistakeType"),
 				ImprovementPercent = GetDecimal(reader, "ImprovementPercent"),
-				LastSessionDate = GetNullableDateTime(reader, "LastSessionDate")
+				LastSessionDate = GetNullableDateTime(reader, "LastSessionDate"),
+				AvatarUrl = GetNullableString(reader, "AvatarUrl")
 			});
 		}
 

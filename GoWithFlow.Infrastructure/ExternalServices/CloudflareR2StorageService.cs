@@ -26,9 +26,10 @@ public sealed class CloudflareR2StorageService : IStorageService
             _settings.SecretAccessKey,
             new AmazonS3Config
             {
-                ServiceURL      = _settings.AccountEndpoint,
-                ForcePathStyle  = true,
-                SignatureVersion = "4"
+                ServiceURL           = _settings.AccountEndpoint,
+                ForcePathStyle       = true,
+                SignatureVersion     = "4",
+                AuthenticationRegion = "auto"
             });
     }
 

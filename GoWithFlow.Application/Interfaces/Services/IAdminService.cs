@@ -26,7 +26,7 @@ public interface IAdminService
 
 	Task<ApiResponse<AdminCreateUserResponseDto>> CreateUserAsync(AdminCreateUserRequestDto dto, CancellationToken cancellationToken = default);
 
-	Task<ApiResponse<bool>> UpdateUserAsync(long userId, AdminUpdateUserRequestDto dto, CancellationToken cancellationToken = default);
+	Task<ApiResponse<string?>> UpdateUserAsync(long userId, AdminUpdateUserRequestDto dto, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<PagedResult<AdminSessionHistoryItemDto>>> GetSessionHistoryAsync(AdminSessionHistoryFilterRequestDto dto, CancellationToken cancellationToken = default);
 

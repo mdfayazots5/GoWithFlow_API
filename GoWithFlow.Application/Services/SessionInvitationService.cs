@@ -4,6 +4,8 @@ using GoWithFlow.Application.DTOs.Responses.Session;
 using GoWithFlow.Application.DTOs.Responses.User;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
+using GoWithFlow.Application.Settings;
+using Microsoft.Extensions.Options;
 
 namespace GoWithFlow.Application.Services;
 
@@ -19,17 +21,23 @@ public sealed class SessionInvitationService : ISessionInvitationService
 	private readonly ISessionInvitationRepository _invitationRepository;
 	private readonly IUserRepository _userRepository;
 	private readonly ISessionNotifier _notifier;
+	private readonly IStorageService _storageService;
+	private readonly CloudflareR2Settings _r2Settings;
 
 	public SessionInvitationService(
 		ISessionRepository sessionRepository,
 		ISessionInvitationRepository invitationRepository,
 		IUserRepository userRepository,
-		ISessionNotifier notifier)
+		ISessionNotifier notifier,
+		IStorageService storageService,
+		IOptions<CloudflareR2Settings> r2Options)
 	{
 		_sessionRepository = sessionRepository;
 		_invitationRepository = invitationRepository;
 		_userRepository = userRepository;
 		_notifier = notifier;
+		_storageService = storageService;
+		_r2Settings = r2Options.Value;
 	}
 
 	public async Task<ApiResponse<List<SessionInvitationDto>>> SendInvitationsAsync(
@@ -282,6 +290,15 @@ public sealed class SessionInvitationService : ISessionInvitationService
 
 		var invitations = await _invitationRepository.GetInvitationsBySessionIdAsync(sessionId, cancellationToken);
 
+		await Task.WhenAll(invitations
+			.Where(i => IsR2Key(i.AvatarUrl))
+			.Select(async i =>
+			{
+				i.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+					_r2Settings.Buckets.Avatars, i.AvatarUrl!,
+					_r2Settings.PresignedUrlExpiryMinutes.Avatars, cancellationToken);
+			}));
+
 		return ApiResponse<List<SessionInvitationDto>>.SuccessResult(invitations, "Invitations retrieved successfully.");
 	}
 
@@ -296,6 +313,15 @@ public sealed class SessionInvitationService : ISessionInvitationService
 		}
 
 		var invitations = await _invitationRepository.GetPendingInvitationsByUserIdAsync(userId, cancellationToken);
+
+		await Task.WhenAll(invitations
+			.Where(i => IsR2Key(i.HostAvatarUrl))
+			.Select(async i =>
+			{
+				i.HostAvatarUrl = await _storageService.GetPresignedUrlAsync(
+					_r2Settings.Buckets.Avatars, i.HostAvatarUrl!,
+					_r2Settings.PresignedUrlExpiryMinutes.Avatars, cancellationToken);
+			}));
 
 		return ApiResponse<List<UserInvitationDto>>.SuccessResult(invitations, "Invitations retrieved successfully.");
 	}
@@ -317,4 +343,9 @@ public sealed class SessionInvitationService : ISessionInvitationService
 
 		return ApiResponse<List<UserSearchResultDto>>.SuccessResult(results, "Users retrieved successfully.");
 	}
+
+	private static bool IsR2Key(string? value) =>
+		!string.IsNullOrEmpty(value)
+		&& !value.StartsWith('/')
+		&& !value.StartsWith("http", StringComparison.OrdinalIgnoreCase);
 }

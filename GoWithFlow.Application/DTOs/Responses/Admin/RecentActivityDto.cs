@@ -13,4 +13,6 @@ public sealed class RecentActivityDto
 	public int MistakeCount { get; set; }
 
 	public string SessionStatus { get; set; } = string.Empty;
+
+	public string? AvatarUrl { get; set; }
 }

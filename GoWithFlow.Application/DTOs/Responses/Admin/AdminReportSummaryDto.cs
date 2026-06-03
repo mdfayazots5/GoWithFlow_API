@@ -15,4 +15,6 @@ public sealed class AdminReportSummaryDto
 	public decimal ImprovementPercent { get; set; }
 
 	public DateTime? LastSessionDate { get; set; }
+
+	public string? AvatarUrl { get; set; }
 }

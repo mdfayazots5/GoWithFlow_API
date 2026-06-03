@@ -36,13 +36,6 @@ public sealed class SessionController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
 	}
 
-	[HttpPost(ApiRoutes.Session.Join)]
-	public async Task<IActionResult> JoinSessionAsync([FromBody] JoinSessionRequestDto dto, CancellationToken cancellationToken)
-	{
-		var response = await _sessionService.JoinSessionAsync(dto, GetUserId(), cancellationToken);
-		return BuildActionResult(response, StatusCodes.Status200OK);
-	}
-
 	[HttpGet(ApiRoutes.Session.Lobby)]
 	public async Task<IActionResult> GetLobbyStateAsync(long sessionId, CancellationToken cancellationToken)
 	{

@@ -11,4 +11,7 @@ public sealed class AdminCreateUserResponseDto
 	public string AgeGroup { get; set; } = string.Empty;
 
 	public string Status { get; set; } = "ACTIVE";
+
+	/// <summary>Presigned R2 URL for the avatar. Null if no avatar was uploaded.</summary>
+	public string? AvatarUrl { get; set; }
 }

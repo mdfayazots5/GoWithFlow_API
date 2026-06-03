@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Http;
+
 namespace GoWithFlow.Application.DTOs.Requests.Admin;
 
 public sealed class AdminCreateUserRequestDto
@@ -16,4 +18,7 @@ public sealed class AdminCreateUserRequestDto
 
 	/// <summary>Optional. When provided, sets the user's login password.</summary>
 	public string? Password { get; set; }
+
+	/// <summary>Optional avatar image. Uploaded to R2 and key saved to tblUser when provided.</summary>
+	public IFormFile? Avatar { get; set; }
 }

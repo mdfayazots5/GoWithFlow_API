@@ -7,7 +7,9 @@ using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
 using GoWithFlow.Application.Settings;
 using GoWithFlow.Domain.Entities;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace GoWithFlow.Application.Services;
@@ -20,6 +22,7 @@ public sealed class AdminService : IAdminService
 	private readonly IExcelExportService _excelExportService;
 	private readonly IStorageService _storageService;
 	private readonly CloudflareR2Settings _r2Settings;
+	private readonly ILogger<AdminService> _logger;
 
 	public AdminService(
 		IAdminRepository adminRepository,
@@ -27,7 +30,8 @@ public sealed class AdminService : IAdminService
 		IMemoryCache memoryCache,
 		IExcelExportService excelExportService,
 		IStorageService storageService,
-		IOptions<CloudflareR2Settings> r2Options)
+		IOptions<CloudflareR2Settings> r2Options,
+		ILogger<AdminService> logger)
 	{
 		_adminRepository    = adminRepository;
 		_userRepository     = userRepository;
@@ -35,6 +39,7 @@ public sealed class AdminService : IAdminService
 		_excelExportService = excelExportService;
 		_storageService     = storageService;
 		_r2Settings         = r2Options.Value;
+		_logger             = logger;
 	}
 
 	public async Task<ApiResponse<AdminDashboardResponseDto>> GetDashboardSummaryAsync(CancellationToken cancellationToken = default)
@@ -47,6 +52,19 @@ public sealed class AdminService : IAdminService
 		var dashboardSummary = await _adminRepository.GetDashboardSummaryAsync(cancellationToken);
 		dashboardSummary.RecentActivities = await _adminRepository.GetRecentActivitiesAsync(10, cancellationToken);
 		dashboardSummary.TopGrammarMistakes = await _adminRepository.GetTopGrammarMistakesAsync(5, cancellationToken);
+
+		var avatarResolveTasks = dashboardSummary.RecentActivities
+			.Where(a => IsR2Key(a.AvatarUrl))
+			.Select(async a =>
+			{
+				a.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+					_r2Settings.Buckets.Avatars,
+					a.AvatarUrl!,
+					_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+					cancellationToken);
+			});
+		await Task.WhenAll(avatarResolveTasks);
+
 		_memoryCache.Set(CacheKeys.AdminDashboardStats, dashboardSummary, TimeSpan.FromMinutes(2));
 
 		return ApiResponse<AdminDashboardResponseDto>.SuccessResult(dashboardSummary, "Admin dashboard summary retrieved successfully.");
@@ -57,6 +75,20 @@ public sealed class AdminService : IAdminService
 		NormalizeUserSearch(dto);
 
 		var users = await _adminRepository.GetUsersAsync(dto, cancellationToken);
+
+		// Resolve R2 keys to presigned URLs in parallel — one per user with an avatar
+		var resolveTasks = users.Items
+			.Where(u => IsR2Key(u.AvatarUrl))
+			.Select(async u =>
+			{
+				u.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+					_r2Settings.Buckets.Avatars,
+					u.AvatarUrl!,
+					_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+					cancellationToken);
+			});
+
+		await Task.WhenAll(resolveTasks);
 
 		return ApiResponse<PagedResult<AdminUserListResponseDto>>.SuccessResult(users, "Admin user list retrieved successfully.");
 	}
@@ -73,6 +105,15 @@ public sealed class AdminService : IAdminService
 		if (userDetail is null)
 		{
 			return ApiResponse<AdminUserDetailResponseDto>.FailureResult(new[] { "User not found." }, "User detail not found.");
+		}
+
+		if (IsR2Key(userDetail.AvatarUrl))
+		{
+			userDetail.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+				_r2Settings.Buckets.Avatars,
+				userDetail.AvatarUrl!,
+				_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+				cancellationToken);
 		}
 
 		return ApiResponse<AdminUserDetailResponseDto>.SuccessResult(userDetail, "Admin user detail retrieved successfully.");
@@ -152,6 +193,18 @@ public sealed class AdminService : IAdminService
 
 		var reportSummary = await _adminRepository.GetReportSummaryAsync(dto, cancellationToken);
 
+		var avatarTasks = reportSummary.Items
+			.Where(r => IsR2Key(r.AvatarUrl))
+			.Select(async r =>
+			{
+				r.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+					_r2Settings.Buckets.Avatars,
+					r.AvatarUrl!,
+					_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+					cancellationToken);
+			});
+		await Task.WhenAll(avatarTasks);
+
 		return ApiResponse<PagedResult<AdminReportSummaryDto>>.SuccessResult(reportSummary, "Admin report summary retrieved successfully.");
 	}
 
@@ -167,6 +220,15 @@ public sealed class AdminService : IAdminService
 		if (report is null)
 		{
 			return ApiResponse<AdminUserFullReportDto>.FailureResult(new[] { "User report not found." }, "User report not found.");
+		}
+
+		if (IsR2Key(report.UserHeader.AvatarUrl))
+		{
+			report.UserHeader.AvatarUrl = await _storageService.GetPresignedUrlAsync(
+				_r2Settings.Buckets.Avatars,
+				report.UserHeader.AvatarUrl!,
+				_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+				cancellationToken);
 		}
 
 		return ApiResponse<AdminUserFullReportDto>.SuccessResult(report, "Admin user full report retrieved successfully.");
@@ -235,58 +297,85 @@ public sealed class AdminService : IAdminService
 
 		var userId = await _userRepository.InsertUserAsync(user, cancellationToken);
 
+		string? avatarUrl = null;
+
+		if (dto.Avatar is not null)
+		{
+			var result = await UploadAvatarInternalAsync(userId, dto.Avatar, cancellationToken);
+			if (result is not null)
+			{
+				await _userRepository.UpdateAvatarUrlAsync(userId, result.Value.ObjectKey, cancellationToken);
+				avatarUrl = result.Value.PresignedUrl;
+			}
+		}
+
 		var response = new AdminCreateUserResponseDto
 		{
 			UserId = userId,
 			FullName = user.FullName,
 			MobileNumber = user.MobileNumber,
 			AgeGroup = user.AgeGroup,
-			Status = "ACTIVE"
+			Status = "ACTIVE",
+			AvatarUrl = avatarUrl
 		};
 
 		return ApiResponse<AdminCreateUserResponseDto>.SuccessResult(response, "User created successfully.");
 	}
 
-	public async Task<ApiResponse<bool>> UpdateUserAsync(long userId, AdminUpdateUserRequestDto dto, CancellationToken cancellationToken = default)
+	public async Task<ApiResponse<string?>> UpdateUserAsync(long userId, AdminUpdateUserRequestDto dto, CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrWhiteSpace(dto.FullName))
-			return ApiResponse<bool>.FailureResult(new[] { "Full name is required." }, "Validation failed.");
+			return ApiResponse<string?>.FailureResult(new[] { "Full name is required." }, "Validation failed.");
 
 		if (string.IsNullOrWhiteSpace(dto.MobileNumber))
-			return ApiResponse<bool>.FailureResult(new[] { "Mobile number is required." }, "Validation failed.");
+			return ApiResponse<string?>.FailureResult(new[] { "Mobile number is required." }, "Validation failed.");
 
 		if (string.IsNullOrWhiteSpace(dto.AgeGroup) || !IsValidAgeGroup(dto.AgeGroup))
-			return ApiResponse<bool>.FailureResult(new[] { "Age group must be one of: Child (6-12), Teen (13-17), Adult (18+)." }, "Validation failed.");
+			return ApiResponse<string?>.FailureResult(new[] { "Age group must be one of: Child (6-12), Teen (13-17), Adult (18+)." }, "Validation failed.");
 
 		if (string.IsNullOrWhiteSpace(dto.PreferredHintLanguage) || !IsValidHintLanguage(dto.PreferredHintLanguage))
-			return ApiResponse<bool>.FailureResult(new[] { "Preferred language must be one of: Telugu, Hindi, Tamil, Kannada, None." }, "Validation failed.");
+			return ApiResponse<string?>.FailureResult(new[] { "Preferred language must be one of: Telugu, Hindi, Tamil, Kannada, None." }, "Validation failed.");
 
 		var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
 		if (user is null)
-			return ApiResponse<bool>.FailureResult(new[] { "User not found." }, "Update failed.");
+			return ApiResponse<string?>.FailureResult(new[] { "User not found." }, "Update failed.");
 
 		if (!string.Equals(user.MobileNumber, dto.MobileNumber.Trim(), StringComparison.OrdinalIgnoreCase))
 		{
 			var existing = await _userRepository.GetByMobileNumberAsync(dto.MobileNumber.Trim(), cancellationToken);
 			if (existing is not null)
-				return ApiResponse<bool>.FailureResult(new[] { "Mobile number is already registered." }, "Update failed.");
+				return ApiResponse<string?>.FailureResult(new[] { "Mobile number is already registered." }, "Update failed.");
 		}
 
-		user.FullName = dto.FullName.Trim();
-		user.MobileNumber = dto.MobileNumber.Trim();
-		user.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim();
-		user.AgeGroup = dto.AgeGroup.Trim();
-		user.PreferredHintLanguage = dto.PreferredHintLanguage.Trim();
-		user.UpdatedBy = "Admin";
-		user.LastUpdated = DateTime.UtcNow;
+		// Upload avatar if provided — get new R2 key and presigned URL
+		string? avatarUrl   = null;
+		string? newAvatarKey = null;
 
-		if (!string.IsNullOrWhiteSpace(dto.Password))
-			user.PasswordHash = HashPassword(dto.Password);
+		if (dto.Avatar is not null)
+		{
+			var result = await UploadAvatarInternalAsync(userId, dto.Avatar, cancellationToken);
+			if (result is not null)
+			{
+				newAvatarKey = result.Value.ObjectKey;
+				avatarUrl    = result.Value.PresignedUrl;
+			}
+		}
 
-		_userRepository.Update(user);
-		await _userRepository.SaveChangesAsync(cancellationToken);
+		// Persist all changes via direct SQL — never via EF Core DbSet.Update() because
+		// EF Core generates quoted PascalCase identifiers ("tblUser") that PostgreSQL
+		// rejects as case-sensitive (DB has lowercase 'tbluser').
+		await _userRepository.UpdateUserByAdminAsync(
+			userId,
+			dto.FullName.Trim(),
+			dto.MobileNumber.Trim(),
+			string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim(),
+			dto.AgeGroup.Trim(),
+			dto.PreferredHintLanguage.Trim(),
+			newAvatarKey ?? user.AvatarUrl,
+			string.IsNullOrWhiteSpace(dto.Password) ? null : HashPassword(dto.Password),
+			cancellationToken);
 
-		return ApiResponse<bool>.SuccessResult(true, "User updated successfully.");
+		return ApiResponse<string?>.SuccessResult(avatarUrl, "User updated successfully.");
 	}
 
 	private static string HashPassword(string password)
@@ -298,6 +387,37 @@ public sealed class AdminService : IAdminService
 
 	private static bool IsValidAgeGroup(string value) =>
 		value is "Child (6-12)" or "Teen (13-17)" or "Adult (18+)";
+
+	private static bool IsR2Key(string? value) =>
+		!string.IsNullOrEmpty(value)
+		&& !value.StartsWith('/')
+		&& !value.StartsWith("http", StringComparison.OrdinalIgnoreCase);
+
+	private static readonly HashSet<string> AllowedAvatarExtensions =
+		new(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".webp" };
+
+	/// <summary>
+	/// Uploads an avatar file to R2. Returns (ObjectKey, PresignedUrl) or null if extension not allowed.
+	/// Caller must assign ObjectKey to user.AvatarUrl and call SaveChanges.
+	/// </summary>
+	private async Task<(string ObjectKey, string PresignedUrl)?> UploadAvatarInternalAsync(
+		long userId, IFormFile file, CancellationToken cancellationToken)
+	{
+		var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+		if (!AllowedAvatarExtensions.Contains(extension))
+			return null;
+
+		var objectKey   = StorageKeyBuilder.UserAvatar(userId, extension.TrimStart('.'));
+		var bucket      = _r2Settings.Buckets.Avatars;
+
+		await using var stream = file.OpenReadStream();
+		await _storageService.UploadAsync(stream, bucket, objectKey, file.ContentType, cancellationToken);
+
+		var presignedUrl = await _storageService.GetPresignedUrlAsync(
+			bucket, objectKey, _r2Settings.PresignedUrlExpiryMinutes.Avatars, cancellationToken);
+
+		return (objectKey, presignedUrl);
+	}
 
 	public async Task<ApiResponse<PagedResult<AdminSessionHistoryItemDto>>> GetSessionHistoryAsync(
 		AdminSessionHistoryFilterRequestDto dto,
@@ -352,8 +472,16 @@ public sealed class AdminService : IAdminService
 			return ApiResponse<List<CohortMemberDto>>.FailureResult(new[] { "CohortId must be greater than zero." }, "Validation failed.");
 		}
 
-		var result = await _adminRepository.GetCohortMembersAsync(cohortId, cancellationToken);
-		return ApiResponse<List<CohortMemberDto>>.SuccessResult(result, "Cohort members retrieved successfully.");
+		try
+		{
+			var result = await _adminRepository.GetCohortMembersAsync(cohortId, cancellationToken);
+			return ApiResponse<List<CohortMemberDto>>.SuccessResult(result, "Cohort members retrieved successfully.");
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex, "GetCohortMembersAsync failed for CohortId={CohortId}", cohortId);
+			return ApiResponse<List<CohortMemberDto>>.FailureResult(new[] { "Failed to retrieve cohort members." }, "An error occurred.");
+		}
 	}
 
 	public async Task<ApiResponse<CohortAnalyticsResponseDto>> GetCohortAnalyticsAsync(long cohortId, CancellationToken cancellationToken = default)
