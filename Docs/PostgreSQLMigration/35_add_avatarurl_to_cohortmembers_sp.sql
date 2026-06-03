@@ -1,13 +1,9 @@
 -- ============================================================
--- Migration 34: Fix uspGetCohortMembers BIGINT type mismatch
--- Root cause: sessioncount and totalmistakes were declared as
---   BIGINT in RETURNS TABLE, but AdminRepository.GetCohortMembersAsync
---   reads them with reader.GetInt32(), which Npgsql rejects for Int64.
---   Result: InvalidCastException → 500 Internal Server Error on
---   GET /api/admin/cohorts/{id}/members.
--- Fix: Cast COUNT aggregates to INT. Change lastlogindate from
---   TIMESTAMPTZ to TIMESTAMP to match the actual tbluser column type.
--- Safe: COUNT of sessions/mistakes will never overflow INT.
+-- Migration 35: Add avatarurl to uspGetCohortMembers
+-- Reason: CohortMemberDto.AvatarUrl added; SP must return the
+--   column so the repository reader can populate it.
+--   Frontend cohort detail page uses app-user-avatar which
+--   needs avatarUrl to show photos instead of initials.
 -- Apply: Run directly on Supabase SQL editor.
 -- ============================================================
 
@@ -22,10 +18,11 @@ RETURNS TABLE (
     isactive            BOOLEAN,
     dailystreakcount    INT,
     totalsessionsplayed INT,
-    lastlogindate       TIMESTAMP,   -- was TIMESTAMPTZ; tbluser.lastlogindate is TIMESTAMP
-    sessioncount        INT,         -- was BIGINT; caused InvalidCastException in GetInt32()
+    lastlogindate       TIMESTAMP,
+    avatarurl           VARCHAR,
+    sessioncount        INT,
     avgfluencyscore     NUMERIC,
-    totalmistakes       INT          -- was BIGINT; caused InvalidCastException in GetInt32()
+    totalmistakes       INT
 ) AS $$
 BEGIN
     RETURN QUERY
@@ -38,6 +35,7 @@ BEGIN
         u.dailystreakcount,
         u.totalsessionsplayed,
         u.lastlogindate,
+        u.avatarurl,
         COALESCE(s.sessioncount, 0)::INT,
         COALESCE(s.avgfluency,   0::NUMERIC),
         COALESCE(m.mistakecount, 0)::INT

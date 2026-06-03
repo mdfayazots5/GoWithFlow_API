@@ -496,17 +496,18 @@ public sealed class AdminRepository : IAdminRepository
 		{
 			items.Add(new CohortMemberDto
 			{
-				UserId            = GetInt64(reader, "UserId"),
-				FullName          = GetString(reader, "FullName"),
-				MobileNumber      = GetString(reader, "MobileNumber"),
-				AgeGroup          = GetString(reader, "AgeGroup"),
-				IsActive          = GetBoolean(reader, "IsActive"),
-				DailyStreakCount  = GetInt32(reader, "DailyStreakCount"),
+				UserId              = GetInt64(reader, "UserId"),
+				FullName            = GetString(reader, "FullName"),
+				MobileNumber        = GetString(reader, "MobileNumber"),
+				AgeGroup            = GetString(reader, "AgeGroup"),
+				IsActive            = GetBoolean(reader, "IsActive"),
+				DailyStreakCount    = GetInt32(reader, "DailyStreakCount"),
 				TotalSessionsPlayed = GetInt32(reader, "TotalSessionsPlayed"),
-				LastLoginDate     = GetNullableDateTime(reader, "LastLoginDate"),
-				SessionCount      = GetInt32(reader, "SessionCount"),
-				AvgFluencyScore   = GetDecimal(reader, "AvgFluencyScore"),
-				TotalMistakes     = GetInt32(reader, "TotalMistakes")
+				LastLoginDate       = GetNullableDateTime(reader, "LastLoginDate"),
+				AvatarUrl           = GetNullableString(reader, "AvatarUrl"),
+				SessionCount        = GetInt32(reader, "SessionCount"),
+				AvgFluencyScore     = GetDecimal(reader, "AvgFluencyScore"),
+				TotalMistakes       = GetInt32(reader, "TotalMistakes")
 			});
 		}
 

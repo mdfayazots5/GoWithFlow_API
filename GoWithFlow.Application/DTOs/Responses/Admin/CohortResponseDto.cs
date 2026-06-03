@@ -33,6 +33,8 @@ public sealed class CohortMemberDto
 
 	public DateTime? LastLoginDate { get; set; }
 
+	public string? AvatarUrl { get; set; }
+
 	public int SessionCount { get; set; }
 
 	public decimal AvgFluencyScore { get; set; }
