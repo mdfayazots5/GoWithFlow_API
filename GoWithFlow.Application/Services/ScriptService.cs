@@ -275,25 +275,9 @@ public sealed class ScriptService : IScriptService
 		return ApiResponse<string>.SuccessResult(url, "Excel download URL generated successfully.");
 	}
 
-	public async Task<ApiResponse<string>> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default)
+	public async Task<byte[]> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default)
 	{
-		var templateKey = StorageKeyBuilder.SampleTemplate();
-		var bucket      = _r2Settings.Buckets.Scripts;
-
-		// Upload sample template to R2 on first request (re-uploads if not found)
-		var exists = await _storageService.ExistsAsync(bucket, templateKey, cancellationToken);
-		if (!exists)
-		{
-			var templateBytes = await _excelExportService.GenerateSampleScriptTemplateAsync(category?.Trim());
-			await using var stream = new MemoryStream(templateBytes);
-			await _storageService.UploadAsync(stream, bucket, templateKey,
-				"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", cancellationToken);
-		}
-
-		var url = await _storageService.GetPresignedUrlAsync(
-			bucket, templateKey, _r2Settings.PresignedUrlExpiryMinutes.Scripts, cancellationToken);
-
-		return ApiResponse<string>.SuccessResult(url, "Sample template URL generated successfully.");
+		return await _excelExportService.GenerateSampleScriptTemplateAsync(category?.Trim());
 	}
 
 	private void InvalidateScriptCache()

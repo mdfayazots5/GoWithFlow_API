@@ -93,8 +93,11 @@ public sealed class ScriptController : ControllerBase
 	[HttpGet(ApiRoutes.Script.SampleTemplate)]
 	public async Task<IActionResult> GetSampleTemplateAsync([FromQuery] string? category, CancellationToken cancellationToken)
 	{
-		var response = await _scriptService.GetSampleTemplateAsync(category, cancellationToken);
-		return BuildActionResult(response, StatusCodes.Status200OK);
+		var bytes = await _scriptService.GetSampleTemplateAsync(category, cancellationToken);
+		var safeName = string.IsNullOrWhiteSpace(category)
+			? "GoWithFlow_Template"
+			: $"GoWithFlow_Template_{category.Trim().Replace(" ", "_")}";
+		return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"{safeName}.xlsx");
 	}
 
 	[Authorize(Policy = AuthorizationPolicies.AdminOnly)]

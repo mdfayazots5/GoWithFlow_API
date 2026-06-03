@@ -19,7 +19,7 @@ public interface IScriptService
 
 	Task<ApiResponse<List<ScriptVersionResponseDto>>> GetVersionHistoryAsync(long scriptId, CancellationToken cancellationToken = default);
 
-	Task<ApiResponse<string>> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default);
+	Task<byte[]> GetSampleTemplateAsync(string? category = null, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<byte[]>> DownloadScriptAsync(long scriptId, CancellationToken cancellationToken = default);
 
