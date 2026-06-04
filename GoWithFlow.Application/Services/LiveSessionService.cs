@@ -453,6 +453,7 @@ public sealed class LiveSessionService : ILiveSessionService
 
 		if (existingTurn is not null)
 		{
+			existingTurn.ActiveMemberAvatarUrl = await ResolveAvatarUrlAsync(existingTurn.ActiveMemberAvatarUrl, cancellationToken);
 			return (existingTurn, null);
 		}
 
@@ -524,6 +525,7 @@ public sealed class LiveSessionService : ILiveSessionService
 			return (null, "Turn was inserted but could not be retrieved. Check uspGetCurrentTurnBySessionId stored procedure.");
 		}
 
+		createdTurn.ActiveMemberAvatarUrl = await ResolveAvatarUrlAsync(createdTurn.ActiveMemberAvatarUrl, cancellationToken);
 		return (createdTurn, null);
 	}
 
@@ -596,6 +598,25 @@ public sealed class LiveSessionService : ILiveSessionService
 		}
 
 		return Math.Max(1, session.SessionDuration);
+	}
+
+	private async Task<string?> ResolveAvatarUrlAsync(string? raw, CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrEmpty(raw)) return null;
+		if (raw.StartsWith('/') || raw.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return raw;
+
+		try
+		{
+			return await _storageService.GetPresignedUrlAsync(
+				_r2Settings.Buckets.Avatars,
+				raw,
+				_r2Settings.PresignedUrlExpiryMinutes.Avatars,
+				cancellationToken);
+		}
+		catch
+		{
+			return null;
+		}
 	}
 
 	private async Task ResolveAvatarUrlsAsync(SessionSummaryResponseDto summary, CancellationToken cancellationToken)

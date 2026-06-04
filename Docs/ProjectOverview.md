@@ -773,6 +773,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 #### GET /api/users/profile
 
 - Returns: profile fields plus computed totals (sessions, last-30-day average fluency, resolved mistakes)
+- Frontend: `ProfileComponent` reads `userState.avatarUrl()` (computed from `profile()?.avatar`) and binds it to `<app-user-avatar [name]="..." [avatarUrl]="..." size="xl">` in the hero section — falls back to initials automatically when photo is absent
 
 #### PUT /api/users/profile
 
@@ -917,7 +918,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - `GET /api/admin/dashboard` — global totals, recent activities, top grammar mistakes
   - Response fields: `topGrammarMistakes[].grammarTag`, `topGrammarMistakes[].userCount`, `topGrammarMistakes[].percentage`
   - `recentActivities[].avatarUrl` — R2 key resolved to presigned URL (1440-min) in `AdminService.GetDashboardSummaryAsync` before caching; null if user has no avatar
-  - Frontend mapping: `getDashboard()` in `AdminService` maps SP fields to `{ userName, sessionName, sessionDate, fluencyScore, mistakeCount, status, avatarUrl }`. Template shows `<img>` when `avatarUrl` is non-null, falls back to initials circle.
+  - Frontend mapping: `getDashboard()` in `AdminService` maps SP fields to `{ userName, sessionName, sessionDate, fluencyScore, mistakeCount, status, avatarUrl }`. Template uses `<app-user-avatar [name]="row.userName" [avatarUrl]="row.avatarUrl" size="sm">` — handles presigned URL display and initials fallback uniformly.
   - Notes on Drift: Bug fixed 2026-06-02 — service was passing `topGrammarMistakes` items raw to `weakAreas`; template reads `area.tag` / `area.count` but API returns `grammarTag` / `userCount`. Fix: added `.map()` in `getDashboard()` to rename fields.
   - Notes on Drift (2026-06-03): `uspgetrecentactivitylist` did not return `avatarurl` despite `tbluser` being joined. `RecentActivityDto` had no `AvatarUrl` field. Dashboard showed initials-only fallback for all rows. Migration 31 added `avatarurl` but declared `sessiondate TIMESTAMPTZ` — table column is `TIMESTAMP` (no tz), causing 42804. Migration 32 corrected with verified live DB types. Rule: always query `information_schema.columns` for actual column types before writing a `RETURNS TABLE` SP — never assume timezone variant. Full fix: SP updated (migration 32); `RecentActivityDto.AvatarUrl` added; repository mapper updated; `GetDashboardSummaryAsync` resolves R2 keys to presigned URLs before caching; Angular service maps `avatarUrl`; template shows `<img>` with initials fallback. Admin top bar also fixed: `AdminLayoutComponent` now reads `fullName` + `avatarUrl` from `AuthService.currentUser` and uses `app-user-avatar` in both topbar and profile menu (was hardcoded initials-only).
 - `POST /api/admin/users` — create new user; `PUT /api/admin/users/{userId}` — update user
@@ -2173,6 +2174,7 @@ ApiResponse<TurnStateResponseDto>
   - TotalTurns (int)
   - ActiveMemberId (long)
   - ActiveMemberName (string)
+  - ActiveMemberAvatarUrl (string?): presigned R2 URL for the active speaker's avatar; null if no photo uploaded; resolved in service layer via ResolveAvatarUrlAsync
   - ActiveSlotIndex (byte)
   - Utterance (UtteranceResponseDto): full utterance record for this turn
   - ReReadAllowed (bool)
@@ -2239,13 +2241,13 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 
 **SignalR / Realtime Events:**
 - Hub `CompleteTurn(sessionId, memberId, turnIndex, score)` calls `ShiftTurnAsync`
-- Broadcasts `TURN_SHIFT` to `live_{sessionId}`: `{ newActiveMemberId, newActiveMemberName, slotIndex, turnIndex, nextUtterance }`
+- Broadcasts `TURN_SHIFT` to `live_{sessionId}`: `{ newActiveMemberId, newActiveMemberName, activeMemberAvatarUrl, slotIndex, turnIndex, nextUtterance }`
 
 **Frontend Transition Contract:**
 - `TURN_SHIFT` is a partial event, not a full `TurnStateResponseDto`
 - The active speaker must submit turn completion through hub method `CompleteTurn`, not the REST `POST /api/turns/{sessionId}/shift` endpoint, so every connected client receives `TURN_SHIFT` without needing a manual page reload
 - After receiving `TURN_SHIFT`, the live-session room must refresh `GET /api/turns/{sessionId}/current` to hydrate the canonical state for all clients
-- The room may optimistically swap `activeMemberId`, `activeMemberName`, `turnIndex`, and `utterance`; `activeSlotIndex` is optional in the temporary client-side transition because the canonical current-turn reload runs immediately afterward
+- The room may optimistically swap `activeMemberId`, `activeMemberName`, `activeMemberAvatarUrl`, `turnIndex`, and `utterance`; `activeSlotIndex` is optional in the temporary client-side transition because the canonical current-turn reload runs immediately afterward
 - The shared frontend `TurnState` model should still include `activeSlotIndex` to match the backend contract, but the live room must not depend on that field in the optimistic `TURN_SHIFT` patch path
 - `activeMemberName` MUST be included in the optimistic `TURN_SHIFT` patch — the `updateState()` guard blocks same-turn API confirmations from overwriting state (prevents double-trigger of `ngOnChanges`), so the name must come from the event itself, not from the subsequent `loadCurrentTurn()` response
 
@@ -2261,6 +2263,7 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 - `SpeakerLabel` and `SlotName` matched case-insensitively with trim — prevents mismatches from whitespace or casing differences in script upload vs. session slot assignment
 - Treating `TURN_SHIFT` as a full turn DTO leaves listeners on stale speaker text and blocks the next speaker from seeing the recorder; clients must re-fetch current turn after the event
 - **Speaker name drift (2026-06-03):** `handleTurnShift()` spread `...currentState` into the optimistic update, carrying the previous turn's `activeMemberName`. The `updateState()` guard (which prevents same-`turnIndex` re-fires to avoid double-triggering `ngOnChanges`) blocked the subsequent `loadCurrentTurn()` response from correcting it. Result: when the same role (e.g. "Receptionist") appeared multiple times in the script, every turn transition showed the previous speaker's name until the next turn. **Fix:** `newActiveMemberName` added to the `TURN_SHIFT` hub broadcast and consumed in the optimistic patch in `handleTurnShift`. The name is now correct from the moment the event fires.
+- **Listener-screen avatar missing (2026-06-04):** `TurnState` had no `activeMemberAvatarUrl` field; `<app-user-avatar>` in listener-screen always fell back to initials. **Fix (full-stack):** `TurnStateResponseDto.ActiveMemberAvatarUrl` added; `LiveSessionRepository.GetCurrentTurnAsync` selects `activeMember.AvatarUrl` (already joined from `tblUser`); `LiveSessionService.ResolveAvatarUrlAsync` resolves R2 key to presigned URL and is called after both the existing-turn and created-turn return paths in `EnsureCurrentTurnAsync` / `CreateNextTurnAsync`; `LiveSessionHub.CompleteTurn` adds `activeMemberAvatarUrl` to the `TURN_SHIFT` broadcast; `TurnState` frontend model adds `activeMemberAvatarUrl?: string | null`; `TurnShiftEvent` type updated; optimistic patch in `handleTurnShift` sets `activeMemberAvatarUrl`; listener-screen template binds `[avatarUrl]="turnState.activeMemberAvatarUrl"` on `app-user-avatar`.
 
 ---
 
@@ -2569,7 +2572,7 @@ GetActiveSessionMemberByUserIdAsync → null (IsActive = 0)
 |---|---|
 | `MEMBER_JOINED` | `{ userId: long, name: string, slotIndex: byte }` |
 | `MEMBER_LEFT` | `{ userId: long, slotIndex: byte }` |
-| `TURN_SHIFT` | `{ newActiveMemberId: long, newActiveMemberName: string, slotIndex: byte, turnIndex: int, nextUtterance: UtteranceResponseDto }` |
+| `TURN_SHIFT` | `{ newActiveMemberId: long, newActiveMemberName: string, activeMemberAvatarUrl: string|null, slotIndex: byte, turnIndex: int, nextUtterance: UtteranceResponseDto }` |
 | `LISTENER_TAG` | `{ tag: string, fromUserId: long }` |
 | `RE_READ_REQUESTED` | `{ requesterId: long, reReadCount: int }` |
 | `SESSION_ENDED` | `{ sessionId: long, summary: SessionSummaryResponseDto }` |
@@ -4576,3 +4579,91 @@ None — navigation only.
 
 ### Notes on Known Drift Prevented
 Prior to 2026-06-04, no `@capacitor/app` listener existed. Capacitor's default Android behavior when no `backButton` listener is registered is to exit the WebView (close the app) on every back press — regardless of navigation history. This caused the reported issue where every back press closed the app instead of navigating to the previous screen. Fixed by registering a centralized `backButton` listener in `BackButtonService`.
+
+---
+
+## Android Mobile Module — Mobile Design Standards (2026-06-04)
+
+### Reference Document
+`Backend/Docs/MobileDesignAnalysis.md` — full audit, standards, and implementation priorities.
+
+### Summary of Issues Identified (Pending Implementation Approval)
+
+**Critical:**
+- Text sizes `7px–10px` used throughout 30+ components — minimum readable size is 11px for labels/captions.
+- Touch targets under 44px: `w-6/w-7/w-8/w-9` icon buttons, `h-10` select elements.
+- Lobby hero card: `text-3xl` session name + join code risks overflow on 320–360px screens.
+- User page bottom padding uses hardcoded `pb-28` (112px) — does not account for `env(safe-area-inset-bottom)`. Admin layout handles this correctly.
+
+**High:**
+- Missing `--gwf-secondary: #3D5A99` color token (used as undocumented second accent throughout live session and speaker screens).
+- `hidden sm:block` hides session context info in live session topbar on all phones < 640px.
+- Admin screens use HTML tables on mobile — need card-list alternative below 768px.
+
+**Medium:**
+- 40 of 51 components have no `.component.scss` file — responsive overrides rely entirely on Tailwind responsive prefixes.
+- Hardcoded hex colors in templates bypass CSS variable system.
+- `confirm()` browser dialogs should be replaced with in-app confirmation panels.
+
+### Design Token Additions Required (in `styles.scss` and `_variables.scss`)
+```css
+--gwf-secondary:       #3D5A99
+--gwf-secondary-dark:  #2D4580
+--gwf-nav-bg:          #0D1526
+--gwf-focus-bg-deep:   #121221
+$breakpoint-xxs:       360px
+```
+
+### What Is Already Correct (do not regress)
+- Bottom nav (`bottom-nav.component.scss`) — reference implementation, do not change.
+- Admin layout safe-area handling — `calc(84px + env(safe-area-inset-bottom, 0px))`.
+- Live session room — `max(24px, env(safe-area-inset-bottom, 24px))` bottom padding.
+- Speaker screen `questionFontSize` — clamp() based on utterance length.
+- Login screen — clamp() throughout, min(100%, 400px) wrapper.
+- Voice recorder mic button — `clamp(58px, 14vw, 70px)` correct responsive sizing.
+
+### Implementation Applied (2026-06-04)
+
+All Priority 1 and Priority 2 items from MobileDesignAnalysis.md were implemented and build verified:
+
+**Global SCSS:**
+- Added tokens: `--gwf-secondary: #3D5A99`, `--gwf-secondary-dark`, `--gwf-nav-bg: #0D1526`, `--gwf-focus-bg-deep: #121221`
+- Added `.gwf-page-bottom` utility class: `calc(68px + env(safe-area-inset-bottom, 0px) + 16px)`
+- Added `.gwf-page-content` and `.gwf-icon-btn` utility classes
+- Added `$breakpoint-xxs: 360px` and `@mixin respond-xxs`, `@mixin safe-area-bottom`, `@mixin gwf-icon-btn`
+- Corrected `$bottomnav-height` from 64px → 68px (matches actual nav height)
+
+**Typography:**
+- All `text-[7px]`, `text-[8px]`, `text-[9px]`, `text-[10px]` → `text-[11px]` across 42 files via mass replacement
+
+**Lobby:**
+- Session name: `text-3xl` → CSS class `lobby-session-name` with `clamp(18px, 5vw, 28px)`
+- Join code: `text-3xl` → CSS class `lobby-join-code` with `clamp(20px, 5.5vw, 28px)`
+
+**Session Room:**
+- Settings + leave buttons: `w-9 h-9` (36px) → `w-11 h-11` (44px)
+- Alert dismiss button: `w-6 h-6` (24px) → `w-11 h-11` (44px)
+- Session context info: removed `hidden sm:block` — now always visible
+
+**Touch targets:**
+- Correction round close button: `w-8 h-8` → `w-11 h-11`
+- Admin modal close button: `w-8 h-8` → `w-11 h-11`
+- Admin table action buttons: `w-8 h-8` → `w-10 h-10`
+- Script library, profile edit buttons: `w-8 h-8` → `w-10 h-10`
+- Dashboard recommendation arrow: `w-8 h-8` → `w-10 h-10`
+
+**Form inputs:**
+- Create session selects: `h-10` (40px) → `h-12` (48px)
+- Admin filter inputs/selects: `h-10` → `h-11` (44px) across 6 admin files
+
+**Safe area:**
+- All 16 user pages: `pb-28` (hardcoded 112px) → `gwf-page-bottom` (safe-area-aware dynamic)
+
+**Admin tables:**
+- Admin dashboard: card-list pattern added for `< 640px`, table remains for `>= 640px`
+
+**Color tokens:**
+- `login.component.scss`: `#3D5A99`, `#2D4580`, `#D32F2F`, `#6B7280`, `#1A1A2E` → CSS vars
+- `admin-layout.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
+- `bottom-nav.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
+- Template inline styles: `#F59E0B` → `text-gw-warning`, `#E07B39` → `text-gw-accent`, `#2E7D32` → `text-gw-success`

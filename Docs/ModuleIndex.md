@@ -167,6 +167,14 @@ Logic source: `ProjectOverview.md` only.
 | back navigation | Android Mobile Module | Android Mobile Module — Back Navigation |
 | backButton | Android Mobile Module | Android Mobile Module — Back Navigation |
 | BackButtonService | Android Mobile Module | Android Mobile Module — Back Navigation |
+| mobile design | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| mobile ux | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| responsive | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| typography | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| touch target | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| safe area | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| design standards | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| breakpoint | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
 
 ## Module List
 
@@ -221,3 +229,5 @@ Logic source: `ProjectOverview.md` only.
 12. Android Mobile Module
     - Section: `Android Mobile Module — Capacitor Setup`
     - Purpose: Capacitor 8.4.0 config, Android project structure, build process, Gradle setup, Java 21 requirement, APK generation, device installation via Windows ADB, known limitations
+    - Section: `Android Mobile Module — Mobile Design Standards`
+    - Purpose: Mobile UX audit findings, design standards, typography scale, touch target rules, safe-area requirements, color token additions, implementation priorities. Full doc: `Backend/Docs/MobileDesignAnalysis.md`

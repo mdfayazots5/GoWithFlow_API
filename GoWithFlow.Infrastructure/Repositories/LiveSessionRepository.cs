@@ -62,6 +62,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				TotalTurns = turnState.TotalTurns,
 				ActiveMemberId = turnState.ActiveMemberId,
 				ActiveMemberName = activeMember.FullName,
+				ActiveMemberAvatarUrl = activeMember.AvatarUrl,
 				ActiveSlotIndex = turnState.ActiveSlotIndex,
 				Utterance = new UtteranceResponseDto
 				{

@@ -14,6 +14,8 @@ public sealed class TurnStateResponseDto
 
 	public string ActiveMemberName { get; set; } = string.Empty;
 
+	public string? ActiveMemberAvatarUrl { get; set; }
+
 	public byte ActiveSlotIndex { get; set; }
 
 	public UtteranceResponseDto Utterance { get; set; } = new();
