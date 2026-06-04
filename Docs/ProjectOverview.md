@@ -509,6 +509,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - Live PostgreSQL auth failures occurred because application code used stored-procedure invocation semantics against function-based migration output; provider-aware execution now rewrites those calls before execution
 - Live PostgreSQL auth failures also occurred when an active function returned `passwordhash VARCHAR(256)` against `tbluser.passwordhash VARCHAR(512)`; the fix is appended in `14_auth_user_result_contract_fixes.sql`
 - The frontend login shell previously used `min-height: 100vh` plus vertical padding, which produced unnecessary page scroll on compact viewports; the stable contract is now a device-fit `100dvh` shell with responsive spacing
+- **Session persistence on Android (2026-06-04):** App always showed login on cold start even when the user was logged in. Root cause: `app.routes.ts` empty path `''` had `redirectTo: 'auth/login'` unconditionally — no token check. Fix: replaced with `autoLoginGuard` that reads `localStorage.getItem('gwf_token')` — if present, redirects to `/admin/dashboard` or `/user/dashboard` based on role; if absent, redirects to `/auth/login`. Tokens are correctly stored in `localStorage` by `modules/auth/auth.service.setSession()` on login — the issue was routing-only, not storage.
 
 ## Backend Authentication Foundation — Database Provider Selection and Startup Validation
 
@@ -2682,6 +2683,7 @@ Subscribers: active session members inside the live room
 - **Drift 4 (2026-05-23): Single skipped word cascades entire alignment → all subsequent words score near-zero** — `alignAndScore` only detected *insertions* (extra spoken words) in its look-ahead, never *deletions* (skipped expected words). When a speaker skips one word (e.g. "I have **[been]** waiting..."), the algorithm did a substitution ("waiting" scored against "been"), then compared every following word against the wrong expected slot. Entire sentence offset by 1 position → fluency=15 for a near-perfect sentence. **Mathematical proof from screen:** spoken missed only "been", yet fluency=15 and "[project]" showed as missing at the end (exhausted spokenIdx one slot early). **Fix:** Added deletion look-ahead in `alignAndScore`: when `wordSimilarity(spokenWord, expected[expectedIdx+1]) >= 0.7 AND > current similarity`, mark `expected[expectedIdx]` as `isMissing`, advance `expectedIdx` only (keep `spokenIdx` on same word). Priority: insertion checked first, deletion second, substitution last. **Verified trace:** with fix, "I have waiting to see it how long have you been working on this project" vs expected gives 15/16 matched, [been] missing, fluency≈94, overall≈93 — correct.
 - **Drift 3 (2026-05-23): 8000ms fallback timer fires before isFinal for long sentences → all scores wrong** — Timer started at mic press; interim results did not reset it. For a 12-word sentence where the user takes 2–3s to prepare then speaks for 4–5s, the 8000ms timer fired just before the browser emitted `isFinal=true`. `finalize()` ran with `allFinalTranscripts=[]` → `transcribedText=""`, `confidenceScore=70` (hardcoded fallback), `fluencyScore=0`, `overallScore=18` (= `0.25 × 70`), all words `[missing]`. **Fix:** In the `onresult` handler's `else` (interim) branch, when `allFinalTranscripts.length===0`, call `resetSilenceTimeout(8000)`. This makes the fallback deadline "8s from last speech activity" not "8s from mic press". Once a `isFinal` arrives the 2500ms timer takes over. **Secondary fix:** `VoiceFeedbackComponent.speedLabel` now returns `'— Not detected'` for `wpm===0` instead of `'🐢 Too slow'` — 0 WPM means capture failed, not that the speaker was too slow.
 - **Drift 2 (2026-05-23): Page-refresh after recording-complete causes 400 on re-submit** — Drift 1 fixed hub reconnect and member lookup, but did not address: the voice analysis is saved immediately at `onRecordingComplete` (before `CompleteTurn`). If the user refreshes at that point, `ngOnChanges` resets phase to `'recording'` (in-memory state lost). The user re-records the same active turn and the backend rejects with 400 "already exists". **Two-part fix applied 2026-05-23:** (a) **Backend UPSERT**: `SaveVoiceAnalysisAsync` now calls `GetVoiceAnalysisByUserTurnAsync`; if a record exists for this session+user+turn, it calls `UpdateVoiceAnalysisAsync` (EF `ExecuteUpdateAsync` on all score fields) and returns 200 `"Voice analysis updated successfully."` — no more 400 on re-record. New repo methods: `GetVoiceAnalysisByUserTurnAsync(sessionId, userId, turnIndex)`, `UpdateVoiceAnalysisAsync(voiceAnalysisId, updates, updatedBy)`. (b) **Frontend sessionStorage persistence**: `SpeakerScreenComponent` stores the `VoiceSessionResult` in `sessionStorage` under key `gwf_va_{sessionId}_{turnIndex}_{userId}` on `onRecordingComplete`. On `ngOnChanges`, `tryRestoreFromStorage()` checks this key and if found, restores `sessionResult` and sets `analysisPhase = 'feedback'` — user lands back on their score screen after refresh, not a blank recorder. Entry is cleared on `CompleteTurn` success or `Skip` success.
+- **Drift 5 (2026-06-04): Web Speech API fails on Edge mobile browser** — Two root causes: (a) `requestMicPermission()` called `getUserMedia`, stopped the stream, then immediately called `SpeechRecognition.start()`. Edge/Chrome mobile do not release the audio hardware immediately after `stop()`, so `SpeechRecognition` got an `audio-capture` error. After 3 retries this became a permanent failure. (b) Edge mobile does not support the `en-IN` locale — `language-not-supported` fired but was not in the retryable list, causing an immediate hard error with no fallback. **Fix (2026-06-04):** (a) On mobile browsers where `SpeechRecognition` is available, `requestMicPermission()` now skips `getUserMedia` entirely — `SpeechRecognition` handles its own permission prompt and surfaces `not-allowed` via `onerror` if denied. (b) Added `language-not-supported` handling: first occurrence sets `_useFallbackLang = true` and retries with `en-US`. (c) Added `not-allowed` error handler: surfaces a clear message instead of falling through to the generic error. (d) `_useFallbackLang` is reset at the start of each `startSession()` call. Zero changes to `speaker-screen.component.ts`.
 
 ### Flow: Speaker Turn — Stable Contract
 
@@ -2877,6 +2879,27 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 | `sampleRate` | browser default | browser default | Removed explicit 16 000 Hz from getUserMedia — not a valid constraint and silently fails/rejects on some mobile browsers |
 
 **`_hasSpeechStarted` flag:** one-way latch within a session. Set to `true` the first time the measured dB rises above `speechThresholdDB`. The silence callback is suppressed until this flag is true — prevents ambient/startup noise from triggering a premature stop before the user has spoken.
+
+#### Known Mobile Drift — Bell Every 5 Seconds + Nothing Detected Fix (2026-06-04)
+
+**Drift type:** Browser API contract drift — Android Chrome `continuous` mode behavior
+
+**Root cause (bell every 5 s):** With `continuous=true` on mobile Chrome, the browser fires an internal silence timeout every ~5 seconds and triggers `onend` even while the user is speaking. Each `onend` caused a restart → bell sound. Users heard a bell every 5 seconds.
+
+**Root cause (nothing detected):** Each restart via `recognition.start()` on an ended instance was unreliable. After 3 exhausted retries, the 12-second fallback timer fired `finalize()` with empty `allFinalTranscripts` → "(nothing detected)".
+
+**Fixes applied in `voice-recognition.engine.ts`:**
+1. **VAD skipped on mobile** — `AudioActivityDetector.start()` calls `getUserMedia` with custom audio constraints. When this stream is held open, the Web Speech API's internal audio pipeline on Android Chrome receives no audio (zero `onresult` events). Fix: `if (!this._isMobile) { await this.vad.start(); }`. Mobile end-of-speech detection is handled entirely by the recognition's own `onend` cycle.
+2. `recognition.continuous = !this.isIOS && !this._isMobile` — mobile now uses `continuous=false` like iOS. The browser handles end-of-speech internally; `isFinal` fires reliably; no more 5-second internal timeout restarts.
+3. `onend` with finals + mobile: restart recognition (same instance) instead of finalizing — let the 4.5 s silence timer finalize when user truly stops.
+4. `onend` no-finals: restart via `recognition.start()` (same instance) — avoids race condition with `onerror` that also calls `startRecognition`.
+5. `_accumulatedInterim` fallback: accumulated from full `event.results` buffer on every `onresult`. `finalize()` uses it when `allFinalTranscripts` is empty — safety net for any browser still not firing `isFinal`.
+
+**VoiceFeedbackComponent change:** `showDetailedBreakdown` set to `true` by default — full comparison panel always visible without requiring user click.
+
+#### VoiceFeedbackComponent — UI Defaults
+
+- `showDetailedBreakdown` defaults to `true` — full comparison panel (You said / Expected) is always visible on result, no click needed.
 
 #### VoiceFeedbackComponent — Score Bands
 
@@ -4025,20 +4048,217 @@ All 7 items implemented:
 ### Permissions (AndroidManifest.xml)
 
 - `INTERNET` — all API and SignalR calls
-- `RECORD_AUDIO` — voice recognition engine (live session turns)
+- `RECORD_AUDIO` — native speech recognition via `@capacitor-community/speech-recognition`
 - `MODIFY_AUDIO_SETTINGS` — microphone gain during voice turns
 - `ACCESS_NETWORK_STATE` — connectivity detection
 
 ### API Connectivity
 
 - Production API: `https://gowithflow-api.onrender.com`
-- Environment resolved automatically via `import.meta.env.PROD` at build time
-- No localhost references in production APK — device reaches API directly over internet
+- Environment file: `Frontend/src/app/environments/environment.ts`
+- `PROD = true` (production build): connects directly to `https://gowithflow-api.onrender.com`
+- `PROD = false` (dev build): uses `window.location.origin/api` → Vite proxy → local .NET backend at `https://localhost:44378`
 
-### Build Process (every code change)
+### Network Security Config
 
+File: `Frontend/android/app/src/main/res/xml/network_security_config.xml`
+Allows cleartext HTTP to both PC addresses:
+- `10.147.254.186` — secondary PC interface
+- `192.168.31.216` — primary WiFi IP (home network, same subnet as Android device)
+
+Required for dev APK to reach Vite dev server over HTTP.
+
+### Two APK Modes
+
+#### Mode 1 — Production APK (distribution and production testing)
+
+`capacitor.config.ts` must NOT have `server.url`. App loads from bundled assets.
+Connects to: `https://gowithflow-api.onrender.com` — no local server needed.
+
+Build (WSL2):
+```bash
+cd /mnt/c/Live/GoWithFlow/Frontend
+npm run build
+npx cap sync android
+cd android
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug
 ```
-cd Frontend/
+
+Install (Windows PowerShell):
+```powershell
+adb install -r "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk"
+```
+
+Copy to share location (PowerShell):
+```powershell
+Copy-Item "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk" `
+          "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk"
+```
+
+#### Mode 2 — Dev APK with Live Reload (rapid development iteration)
+
+`capacitor.config.ts` must have `server.url: 'http://192.168.31.216:4200'` and `cleartext: true`.
+Current state: `capacitor.config.ts` already has this config as of 2026-06-04.
+
+**Workflow:**
+1. Verify PC IP is still `192.168.31.216` → `ipconfig | Select-String "IPv4"`
+2. Start Angular dev server: `cd Frontend && npm run dev` (binds to `0.0.0.0:4200`)
+   - Default: proxies `/api` and `/hubs` to `https://gowithflow-api.onrender.com` — no local backend needed
+   - For local backend dev: `$env:API_TARGET='https://localhost:44378'; npm run dev`
+3. Only rebuild and reinstall APK when `capacitor.config.ts` changes — otherwise dev server serves changes via HMR
+4. Device loads app from dev server → frontend changes reflect without reinstall
+
+**Vite proxy default target (2026-06-04 change):** `https://gowithflow-api.onrender.com`
+Previously defaulted to `https://localhost:44378` which required local .NET backend. Changed so dev APK works against production API by default.
+Override: `$env:API_TARGET='https://localhost:44378'; npm run dev`
+
+**Current live-reload APK:** Built 2026-06-04, has `server.url: 'http://192.168.31.216:4200'` baked in.
+`C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`
+
+### APK Release Process — Run This Exact Sequence Every Time
+
+**Use case:** Producing a new APK for family/friends distribution or device testing.
+**Time:** ~3–5 minutes total. No manual steps beyond running these commands.
+
+---
+
+#### Step 1 — Remove server.url (Windows PowerShell or edit directly)
+
+`capacitor.config.ts` must have NO `server` block for a production APK.
+Required content:
+```typescript
+const config: CapacitorConfig = {
+  appId: 'com.gowithflow.app',
+  appName: 'GoWithFlow',
+  webDir: 'dist/analog/public'
+};
+```
+
+---
+
+#### Step 2 — Vite production build (Windows PowerShell, inside `Frontend/`)
+
+```powershell
+Set-Location "C:\Live\GoWithFlow\Frontend"
+npm run build
+```
+
+Produces: `dist/analog/public/` — bundled Angular app.
+
+---
+
+#### Step 3 — Capacitor sync (Windows PowerShell, inside `Frontend/`)
+
+```powershell
+npx cap sync android
+```
+
+Copies `dist/analog/public` into the Android project. Confirm output includes:
+- `✔ Copying web assets`
+- `✔ Creating capacitor.config.json` (verify NO `server` key in this file)
+- `@capacitor-community/speech-recognition@7.0.1` listed under plugins
+
+---
+
+#### Step 4 — Clear old build dir, then Gradle build (Windows PowerShell)
+
+Always clear the build dir first. WSL2 cannot delete intermediates on the Windows filesystem after a previous build — Gradle fails with "Unable to delete directory after 10 attempts".
+
+```powershell
+Remove-Item -Recurse -Force "C:\Live\GoWithFlow\Frontend\android\app\build" -ErrorAction SilentlyContinue
+wsl --exec bash -c "cd /mnt/c/Live/GoWithFlow/Frontend/android && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -8"
+```
+
+Expected last line: `BUILD SUCCESSFUL in Xs`
+
+Output APK: `C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`
+
+---
+
+#### Step 5 — Replace distribution APK (Windows PowerShell)
+
+```powershell
+Remove-Item "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk" -ErrorAction SilentlyContinue
+Copy-Item "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk" `
+          "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk"
+Get-Item "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk" | Select-Object Length, LastWriteTime
+```
+
+---
+
+#### Step 6 — Restore live-reload config (Windows PowerShell or edit directly)
+
+After distribution APK is done, restore `server.url` for dev work:
+```typescript
+const config: CapacitorConfig = {
+  appId: 'com.gowithflow.app',
+  appName: 'GoWithFlow',
+  webDir: 'dist/analog/public',
+  server: {
+    url: 'http://192.168.31.216:4200',
+    cleartext: true
+  }
+};
+```
+
+---
+
+#### Step 7 — Install on device (Windows PowerShell)
+
+```powershell
+# If only one ADB device connected:
+adb install -r "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk"
+
+# If both USB and wireless active (specify serial):
+adb -s QGCAAETSYXRS95KV install -r "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk"
+```
+
+---
+
+#### Share with family/friends
+
+APK location: `C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk`
+
+Recipients must:
+1. Enable **Install from unknown sources** (Settings → Apps → Special app access → Install unknown apps)
+2. Open the APK file on device to install
+
+App connects to: `https://gowithflow-api.onrender.com` — no local server needed.
+
+---
+
+#### Full sequence as one block (copy-paste ready)
+
+```powershell
+# STEP 1: Remove server.url from capacitor.config.ts (edit manually)
+
+# STEP 2: Build
+Set-Location "C:\Live\GoWithFlow\Frontend"
+npm run build
+npx cap sync android
+
+# STEP 3: Clear build dir (REQUIRED — WSL2 cannot delete Windows intermediates)
+Remove-Item -Recurse -Force "C:\Live\GoWithFlow\Frontend\android\app\build" -ErrorAction SilentlyContinue
+
+# STEP 4: Gradle
+wsl --exec bash -c "cd /mnt/c/Live/GoWithFlow/Frontend/android && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -8"
+
+# STEP 5: Replace distribution APK
+Remove-Item "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk" -ErrorAction SilentlyContinue
+Copy-Item "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk" "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk"
+Get-Item "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk" | Select-Object Length, LastWriteTime
+
+# STEP 6: Restore server.url in capacitor.config.ts (edit manually)
+
+# STEP 7: Install on device
+adb -s QGCAAETSYXRS95KV install -r "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk"
+```
+
+### Build Process — Full APK Rebuild
+
+Run from WSL2:
+```bash
+cd /mnt/c/Live/GoWithFlow/Frontend
 npm run build                          # Angular production build → dist/analog/public
 npx cap sync android                   # copy assets into Android project
 cd android/
@@ -4051,38 +4271,81 @@ Output APK (Windows path): `C:\Live\GoWithFlow\Frontend\android\app\build\output
 ### Device Installation
 
 USB device is connected to Windows — ADB not accessible from WSL2 directly.
-Install from **Windows Command Prompt** only:
+Install from **Windows PowerShell** only:
 
-```
+```powershell
 adb install -r "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk"
 ```
 
-### Known Limitation
+Wireless ADB works for installation once `adb connect 192.168.31.203:5555` is active.
 
-Web Speech API (`SpeechRecognition`) does not work inside Android WebView.
-Live session voice turns will not produce transcriptions on device.
-All other features (login, OTP, sessions, scripts, admin, invitations, repractice, dashboard) work correctly.
-Fix requires `@capacitor-community/speech-recognition` plugin — not yet implemented.
+### Wireless ADB Setup (2026-06-04)
+
+Configured — device accessible over WiFi without USB cable.
+Device WiFi IP: `192.168.31.203` | Port: `5555` | Serial: `QGCAAETSYXRS95KV`
+
+**One-time USB setup (already done — repeat only if device is reset):**
+```powershell
+adb tcpip 5555
+adb connect 192.168.31.203:5555
+adb devices   # both serial and 192.168.31.203:5555 should appear
+```
+
+**After USB removal:**
+```powershell
+adb connect 192.168.31.203:5555
+```
+
+If connection fails: confirm device is on WiFi (same `192.168.31.x` network) and USB debugging is still enabled.
+
+### Debug Session Guide
+
+Full debugging playbook: `Backend/Docs/Dev/MobileDebug_PhaseWise_Guide.md`
+Covers: clean install (Phase 1), manual flow walk (Phase 2), logcat capture (Phase 3), targeted logs (Phase 4), backend cross-reference (Phase 5), wireless ADB (Phase 6).
+
+### Native Speech Recognition (FULLY IMPLEMENTED — 2026-06-04)
+
+**Plugin:** `@capacitor-community/speech-recognition` v7.0.1 — installed and wired up.
+
+**Implementation:** `Frontend/src/app/core/services/voice/voice-recognition.engine.ts`
+
+**Platform detection:** `Capacitor.isNativePlatform()` → if true, routes to `startNativeSession()`
+
+**Native path flow:**
+1. `checkPermissions()` → `requestPermissions()` if not granted (runtime RECORD_AUDIO request)
+2. `NativeSpeechRecognition.start()` fires the Android `SpeechRecognizer` service
+3. Partial results stream via listener events → accumulated into `latestTranscript`
+4. Silence detection: 2.5s with no new partial → finalizes
+5. Hard timeout: 15s max → finalizes with whatever was captured
+6. `finalizeNative()` → runs scoring pipeline (pronunciation, fluency, hesitations)
+
+**VAD on native path:** NOT started — would conflict with `SpeechRecognizer` audio pipeline. Silence is handled by the 2.5s silence timer instead.
+
+**Notes on Drift:** ProjectOverview previously stated "Web Speech API does not work in WebView — fix requires plugin, not yet implemented." This was stale. The plugin was installed (`@capacitor-community/speech-recognition@7.0.1`) and the native path fully implemented in the voice engine. Corrected 2026-06-04.
 
 ### ADB Device Screenshot Pull (Windows)
 
 Use **PowerShell** only — Bash and cmd mangle the `/sdcard/` path via Git bash path conversion.
 
-**Step 1 — List latest screenshots on device:**
-```
-adb shell "ls -lt /sdcard/Pictures/Screenshots/" | head -5
-```
-
-**Step 2 — Pull the latest file to local machine:**
-```
-adb pull /sdcard/Pictures/Screenshots/<filename>.jpg C:\Users\mdfay\AppData\Local\Temp\latest_screenshot.jpg
+**Method (always use this — captures to device then pulls):**
+```powershell
+adb shell screencap -p /sdcard/screen_tmp.png
+adb pull /sdcard/screen_tmp.png "C:\Users\mdfay\AppData\Local\Temp\latest_screenshot.jpg"
 ```
 
 **Step 3 — Read the image** using the Read tool on:
 `C:\Users\mdfay\AppData\Local\Temp\latest_screenshot.jpg`
 
+**From device Screenshots folder:**
+```powershell
+adb shell "ls -lt /sdcard/Pictures/Screenshots/" | Select-Object -First 5
+adb pull /sdcard/Pictures/Screenshots/<filename>.jpg C:\Users\mdfay\AppData\Local\Temp\latest_screenshot.jpg
+```
+
 **Critical rules:**
-- Always run `adb pull` via PowerShell — never Bash or cmd (both corrupt the `/sdcard/` path)
+- Always use `adb shell screencap -p /sdcard/file.png` → `adb pull` — never `adb exec-out screencap -p | Set-Content` (PS5.1 cannot pipe binary stdout to file)
+- Always run via PowerShell — never Bash or cmd (both corrupt the `/sdcard/` path)
+- When both USB and wireless ADB are active simultaneously, `adb devices` shows two entries — all commands must include `-s QGCAAETSYXRS95KV` (serial) to avoid "more than one device/emulator" error
 - Device must show `device` (not `offline` or `unauthorized`) in `adb devices` before pulling
 - If device is offline: ask user to unlock phone and re-approve USB debugging prompt
 
@@ -4100,11 +4363,62 @@ sdk.dir=/root/Android/Sdk
 This file is not committed to git. If missing, Gradle fails with "SDK location not found".
 Must be recreated manually if the android folder is reset or re-initialized.
 
-### Notes on Build Issues Encountered (2026-06-03)
+### Quick Command Reference (Windows PowerShell)
 
+> **Note:** When both USB and wireless ADB connections are active, all commands need `-s QGCAAETSYXRS95KV`.
+> Use `-s 192.168.31.203:5555` instead when connected wirelessly only.
+
+```powershell
+# Check ADB and device
+adb devices
+
+# Connect wirelessly
+adb connect 192.168.31.203:5555
+
+# Install APK (USB only OR wireless only)
+adb install -r "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk"
+
+# Install APK (when both USB and wireless active)
+adb -s QGCAAETSYXRS95KV install -r "C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk"
+
+# Uninstall app
+adb -s QGCAAETSYXRS95KV uninstall com.gowithflow.app
+
+# Launch app
+adb -s QGCAAETSYXRS95KV shell monkey -p com.gowithflow.app -c android.intent.category.LAUNCHER 1
+
+# Clear logcat
+adb -s QGCAAETSYXRS95KV logcat -c
+
+# Capture logs to file
+adb -s QGCAAETSYXRS95KV logcat -v time > "C:\Live\GoWithFlow\Backend\Docs\Dev\device_log.txt"
+
+# Filter to app debug logs
+adb -s QGCAAETSYXRS95KV logcat -v time | findstr "GWF-DEBUG"
+
+# Screenshot (correct method)
+adb -s QGCAAETSYXRS95KV shell screencap -p /sdcard/screen_tmp.png
+adb -s QGCAAETSYXRS95KV pull /sdcard/screen_tmp.png C:\Users\mdfay\AppData\Local\Temp\latest_screenshot.jpg
+
+# Get device WiFi IP
+adb -s QGCAAETSYXRS95KV shell ip route | findstr wlan
+
+# Switch to wireless ADB (while USB connected)
+adb tcpip 5555
+adb connect 192.168.31.203:5555
+```
+
+### Notes on Build Issues Encountered
+
+**2026-06-03:**
 - Gradle 8.14.3-all: partial download in cache caused `forceFetch` SSL failure → switched to `gradle-8.14.3-bin` (fully cached)
 - Gradle 8.10.2 rejected: AGP requires minimum Gradle 8.13
 - Java 17 rejected: Capacitor 8.4.0 sets `sourceCompatibility JavaVersion.VERSION_21` → installed Java 21
 - Resolution: `gradle-wrapper.properties` uses `gradle-8.14.3-bin.zip`, Gradle invoked with `JAVA_HOME` pointing to Java 21
 - local.properties missing on first build → Gradle failed with "SDK location not found" → created manually with `sdk.dir=/root/Android/Sdk`
 - adb pull path mangling: Bash and cmd corrupt `/sdcard/` path via Git bash → use PowerShell only for adb pull commands
+
+**2026-06-04:**
+- `adb exec-out screencap -p | Set-Content -Encoding Byte` fails in PowerShell 5.1 — PS5.1 cannot pipe binary stdout; use `adb shell screencap -p /sdcard/file.png` → `adb pull` instead
+- Wireless ADB configured: device IP `192.168.31.203`, port `5555` — USB cable no longer required after initial `adb tcpip 5555`
+- Native speech recognition confirmed fully implemented — `@capacitor-community/speech-recognition@7.0.1` is installed and the native path in `voice-recognition.engine.ts` is complete
