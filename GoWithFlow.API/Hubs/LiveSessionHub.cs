@@ -93,6 +93,10 @@ public sealed class LiveSessionHub : Hub
 		var parsedSessionId = ParseSessionId(sessionId);
 		var parsedMemberId = ParseAndValidateCallerUserId(memberId);
 
+		_logger.LogInformation(
+			"CompleteTurn received. SessionId={SessionId} MemberId={MemberId} TurnIndex={TurnIndex} Score={Score}",
+			parsedSessionId, parsedMemberId, turnIndex, score);
+
 		var response = await _liveSessionService.ShiftTurnAsync(
 			new TurnShiftRequestDto
 			{
@@ -106,24 +110,58 @@ public sealed class LiveSessionHub : Hub
 
 		if (response.Success == false || response.Data is null)
 		{
-			// ShiftTurnAsync returns failure when no further turns remain.
-			// Attempt to complete the session automatically and notify all clients.
-			var completeResponse = await _liveSessionService.CompleteSessionAsync(
-				parsedSessionId,
-				Context.ConnectionAborted);
+			// Auto-complete is ONLY triggered when ShiftTurnAsync explicitly signals the
+			// script is finished. Every other failure reason (turn index mismatch, wrong user,
+			// session not active, speaker slot not found, duplicate submit) must surface as a
+			// HubException so the client can react appropriately without ending the session.
+			//
+			// Premature auto-complete is the primary cause of sessions ending unexpectedly:
+			// a stale duplicate CompleteTurn call (same turnIndex after turn already shifted)
+			// returns "The provided turn does not match the active turn" — that is a client
+			// sync error, not a signal that the script is done.
+			const string noFurtherTurnsSignal = "No further turns remain";
 
-			if (completeResponse.Success && completeResponse.Data is not null)
+			if (response.Message?.Contains(noFurtherTurnsSignal, StringComparison.OrdinalIgnoreCase) == true)
 			{
-				await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
-					"SESSION_ENDED",
-					new { sessionId = parsedSessionId, summary = completeResponse.Data },
+				_logger.LogInformation(
+					"No further turns remain for SessionId={SessionId}. Completing session automatically.",
+					parsedSessionId);
+
+				var completeResponse = await _liveSessionService.CompleteSessionAsync(
+					parsedSessionId,
 					Context.ConnectionAborted);
-				return;
+
+				if (completeResponse.Success && completeResponse.Data is not null)
+				{
+					_logger.LogInformation(
+						"Session auto-completed. SessionId={SessionId} TotalTurns={TotalTurns}",
+						parsedSessionId, completeResponse.Data.TotalTurns);
+
+					await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+						"SESSION_ENDED",
+						new { sessionId = parsedSessionId, summary = completeResponse.Data },
+						Context.ConnectionAborted);
+					return;
+				}
+
+				// CompleteSession itself failed — throw a clear error rather than silently dropping.
+				_logger.LogError(
+					"Auto-complete failed after no-further-turns. SessionId={SessionId} Message={Message}",
+					parsedSessionId, completeResponse.Message);
+				throw new HubException($"Session could not be completed: {completeResponse.Message}");
 			}
 
-			// Shift failed for a real reason (wrong turn, wrong user, etc.) — surface it.
+			// ShiftTurn failed for a transient or client-side reason — surface it.
+			// This is NOT a session-ending condition.
+			_logger.LogWarning(
+				"CompleteTurn rejected (non-completion reason). SessionId={SessionId} TurnIndex={TurnIndex} Reason={Reason}",
+				parsedSessionId, turnIndex, response.Message);
 			throw new HubException(response.Message);
 		}
+
+		_logger.LogInformation(
+			"Turn shifted. SessionId={SessionId} NewTurnIndex={NewTurnIndex} NextSpeakerId={NextSpeakerId}",
+			parsedSessionId, response.Data.TurnIndex, response.Data.ActiveMemberId);
 
 		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
 			"TURN_SHIFT",

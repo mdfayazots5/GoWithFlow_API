@@ -163,6 +163,10 @@ Logic source: `ProjectOverview.md` only.
 | apk | Android Mobile Module | Android Mobile Module — Capacitor Setup |
 | mobile | Android Mobile Module | Android Mobile Module — Capacitor Setup |
 | gradle | Android Mobile Module | Android Mobile Module — Capacitor Setup |
+| back button | Android Mobile Module | Android Mobile Module — Back Navigation |
+| back navigation | Android Mobile Module | Android Mobile Module — Back Navigation |
+| backButton | Android Mobile Module | Android Mobile Module — Back Navigation |
+| BackButtonService | Android Mobile Module | Android Mobile Module — Back Navigation |
 
 ## Module List
 

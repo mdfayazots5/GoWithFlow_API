@@ -2479,11 +2479,22 @@ ApiResponse<SessionSummaryResponseDto>
 **SignalR / Realtime Events:**
 - Hub `EndSession(sessionId)` calls `CompleteSessionAsync`
 - Broadcasts `SESSION_ENDED` to `live_{sessionId}`: `{ sessionId, summary: SessionSummaryResponseDto }`
+- Hub `CompleteTurn(...)` also triggers `SESSION_ENDED` automatically when `ShiftTurnAsync` returns `"No further turns remain..."` — the auto-complete path.
 
 **Failure Cases:**
 - `sessionId <= 0` → validation fail
 - Session not found → `"Session was not found."`
 - Summary could not be generated → `"Session summary could not be generated."`
+
+**Session Auto-Completion Guard (CRITICAL — 2026-06-04 fix):**
+- `CompleteTurn` hub method only auto-completes the session when `ShiftTurnAsync` returns a message containing `"No further turns remain"`.
+- All other `ShiftTurnAsync` failures (turn index mismatch, wrong user, session not active, speaker slot not found, duplicate submit) throw `HubException` back to the caller — they do NOT trigger session completion.
+- **Drift prevented:** Prior to this fix, ANY `ShiftTurnAsync` failure (including duplicate `CompleteTurn` with a stale turn index) caused the hub to call `CompleteSessionAsync` and broadcast `SESSION_ENDED`, ending the session prematurely mid-conversation. The fix adds an explicit message check before calling `CompleteSessionAsync`.
+
+**Notes on Known Drift Prevented:**
+- `"The provided turn does not match the active turn"` — can occur on duplicate or stale `CompleteTurn` calls (network retry, auto-submit timer firing late). Now surfaces as `HubException`; does not end session.
+- `"Only the active speaker can complete the current turn"` — rejected `CompleteTurn` from wrong user. Now surfaces as `HubException`; does not end session.
+- `"Speaker slot not found"` — script speaker label / session slot mismatch. Now surfaces as `HubException`; session should not end just because of a slot config error.
 
 ---
 
@@ -2597,8 +2608,8 @@ GetActiveSessionMemberByUserIdAsync → null (IsActive = 0)
 
 | Key | Type | Default | Behaviour |
 |---|---|---|---|
-| `defaultVoiceStarter` | bool | `true` | ⚠ INACTIVE — was auto-start mic 400ms after `ngOnChanges`. Removed from `SpeakerScreenComponent` in Voice Recognition Upgrade. Pref key retained in storage but no longer consumed. |
-| `autoSubmitOnStop` | bool | `false` | ⚠ INACTIVE — was `stopRecording()` auto-firing `onConfirm()`. Removed in Voice Recognition Upgrade. `onDoneSpeaking()` requires explicit user tap. |
+| `defaultVoiceStarter` | bool | `true` | **ACTIVE (2026-06-04)** — Re-implemented in `SpeakerScreenComponent.ngOnChanges()`. On turn change, sets `_pendingAutoStart = true`; `ngAfterViewChecked` fires `voiceRecorder.startRecording()` after 700 ms once the ViewChild is ready. **Platform guard:** suppressed on mobile-web only (`isMobileDevice && !Capacitor.isNativePlatform()`). On Capacitor native Android the native speech plugin starts silently with no bell — auto-start is allowed. On mobile web browsers, the Web Speech API plays a system bell on every `start()` call, so mobile-web users must tap manually. |
+| `autoSubmitOnStop` | bool | `false` | **ACTIVE (2026-06-04)** — Re-implemented in `SpeakerScreenComponent.onRecordingComplete()`. The feedback screen is **always** shown first so users see their score. When this pref is `true`, a 3-second countdown begins immediately after the score screen appears. A pill indicator `"Auto-submitting in Xs — tap below to cancel"` counts down. After 3 s, `onDoneSpeaking()` fires automatically. The timer is cancelled on: manual "Done Speaking" tap, "Try Again" tap (`onRetryRecording()`), Skip tap, `ngOnDestroy()`, and turn change. Users can always interrupt auto-submit by tapping any action button. |
 | `listenVoiceBroadcast` | bool | `false` | On `VOICE_BROADCAST_STARTED`: listener emits `RequestVoiceStream`; speaker creates WebRTC offer in response |
 | `showReReadSkipButtons` | bool | `false` | Shows Skip button below `VoiceRecorderComponent` during recording phase, and Skip + Try Again below `VoiceFeedbackComponent` during feedback phase |
 
@@ -2661,11 +2672,36 @@ Event: bootstrap begins listening for `TURN_SHIFT`, `LISTENER_TAG`, `RE_READ_REQ
 Payload: handled after `SessionRoomComponent.initSession(sessionId)`
 Subscribers: active session members inside the live room
 
+### Session Room — Turn Shift and Completion Flow (STABLE CONTRACT — 2026-06-04)
+
+**Turn shift sequence (normal path):**
+1. Speaker records → `SpeakerScreenComponent.onDoneSpeaking()` → `completeTurnRealtime(sessionId, userId, turnIndex, score)` → hub `CompleteTurn`
+2. Backend: `ShiftTurnAsync` succeeds → broadcasts `TURN_SHIFT` → hub method returns
+3. Frontend receives `TURN_SHIFT` → `handleTurnShift()` → optimistic state update → `loadCurrentTurn()` (canonical confirm)
+4. `completeTurnRealtime` observable resolves → `turnShifted.emit()` → `onTurnShifted()` → `loadCurrentTurn()` (redundant but safe — `updateState()` guard skips re-render if turn index unchanged)
+5. `SpeakerScreenComponent` stays mounted throughout (no loading flash); `ngOnChanges` fires from the optimistic update in step 3
+
+**Critical: `onTurnShifted()` does NOT set `isLoading=true`**
+Setting `isLoading=true` would destroy and recreate `SpeakerScreenComponent`, cancelling its auto-start timer and adding a second 700ms delay before the next recording begins. The loading state is only used on initial bootstrap and explicit retry.
+
+**Session-end sequence (last turn):**
+1. Speaker completes last turn → `completeTurnRealtime(N, N)` → hub `CompleteTurn`
+2. Backend: `ShiftTurnAsync` fails with `"No further turns remain..."` → hub calls `CompleteSessionAsync` → broadcasts `SESSION_ENDED`
+3. Frontend `SESSION_ENDED` handler: sets `_sessionEnded = true` → saves session duration to sessionStorage → navigates to `/session/report/:id`
+4. `completeTurnRealtime` resolves → `turnShifted.emit()` → `onTurnShifted()` → guarded by `_sessionEnded`, returns immediately
+5. Any in-flight `loadCurrentTurn` calls are also guarded and no-op
+
+**`_sessionEnded` guard (critical):** Once `SESSION_ENDED` is received, `_sessionEnded = true` is set. `loadCurrentTurn()`, `onTurnShifted()`, and `handleTurnShift()` all return early. Prevents post-navigation operations against the now-COMPLETED session.
+
+**CompleteTurn error handling (non-completion failures):**
+When `ShiftTurnAsync` fails for reasons other than "no further turns" (turn index mismatch, wrong user, session not active, slot mismatch), the hub throws `HubException`. The `completeTurnRealtime` observable's `error()` callback fires → toast shown → `isSubmitting = false`. The session is NOT ended.
+
 ### Failure Cases
 - Missing `sessionId` route param → room init does not run
 - Guard rejection → navigation blocked before room render
 - Compiler fallback removed while a dependency still requests JIT → browser runtime failure on room navigation
 - Current turn API failure after successful route load → room renders retry state with `loadError`
+- `CompleteTurn` hub rejects (stale turn index, wrong user) → toast `"Failed to advance turn. Please try again."` — session continues
 
 ### Recovery / Fallback Logic
 - `main.ts` imports `@angular/compiler` so JIT-required dependencies do not hard-fail bootstrap
@@ -2772,9 +2808,9 @@ sessionResult: VoiceSessionResult | null
 - Old system: interim results treated as final. Fixed: only `isFinal = true` results collected.
 - Old system: no silence detection → recording ran forever. Fixed: `AudioActivityDetector` VAD + 8s fallback timeout.
 - Old system: no mic permission pre-check → silent failure on first use. Fixed: `requestMicPermission()` before engine starts.
-- `defaultVoiceStarter` and `autoSubmitOnStop` session prefs no longer active — new flow requires explicit user tap for both start and confirm.
+- `defaultVoiceStarter` and `autoSubmitOnStop` session prefs re-activated 2026-06-04 — see "User Session Preferences — Stable Contract" for full behavior. Both were previously stripped during the Voice Recognition Upgrade but have been correctly re-implemented with the new engine.
 - **Drift 11 (2026-06-03): Voice listening unreliable on mobile/tablet — premature stops, double bell, spurious auto-start** — Five converging root causes identified and fixed:
-  1. **Auto-start bell on mobile** — `defaultVoiceStarter: true` (default) caused `SpeakerScreenComponent` to auto-start recording on every device including mobile. Every `recognition.start()` call plays the browser's system speech-recognition bell. On mobile, this fires before the user is ready. Fix: `ngOnChanges` in `SpeakerScreenComponent` now guards `_pendingAutoStart` with `&& !voiceEngine.isMobileDevice` — mobile/tablet users must tap the mic button explicitly.
+  1. **Auto-start bell on mobile web** — `defaultVoiceStarter: true` (default) caused `SpeakerScreenComponent` to auto-start recording on every device including mobile. Every `recognition.start()` call plays the browser's system speech-recognition bell. On mobile web, this fires before the user is ready. Fix: `ngOnChanges` in `SpeakerScreenComponent` guards `_pendingAutoStart` with `&& !isMobileWebOnly` where `isMobileWebOnly = isMobileDevice && !Capacitor.isNativePlatform()`. Mobile web users must tap the mic button explicitly. Capacitor native (Android APK) is exempt — the native speech plugin starts silently with no bell, so auto-start works on native even on mobile hardware. *(Updated 2026-06-04: original fix used `!voiceEngine.isMobileDevice` which also blocked native Android; refined to mobile-web-only guard.)*
   2. **Second bell during speech (`no-speech` retry)** — Mobile Chrome fires `onerror { error: 'no-speech' }` when its own internal silence timer expires (separate from our VAD). The retry path called `startRecognition()` which creates a NEW `SpeechRecognition` instance and calls `.start()` → second system bell, even mid-speech. Fix: if `allFinalTranscripts.length > 0`, `'no-speech'` error now extends the post-final timeout instead of retrying with a new instance. A new recognition instance (and its bell) is only created when the user genuinely has not spoken yet.
   3. **Premature finalization from 2500 ms post-final timer** — Mobile speech API fires partial final results aggressively (after the first few words). Once any final result arrives, the 2500 ms silence timeout began counting. A natural breath or inter-phrase pause > 2.5 s triggered `finalize()` while the user was still speaking. Fix: post-final timeout raised to 4500 ms on mobile (vs 2500 ms on desktop). Fallback (no-finals) timeout raised from 8000 to 12000 ms on mobile.
   4. **VAD fires after startup ambient noise** — `AudioActivityDetector` silence callback fired 1200 ms after the recording started if the user hadn't spoken yet (ambient room noise drove db just above threshold, then dipped below). This caused an immediate stop before any speech. Fix: `_hasSpeechStarted` latch in VAD — silence callback is suppressed until the audio level has exceeded `speechThresholdDB` at least once. Also: `_hasSpoken` flag in `VoiceRecognitionEngine` — VAD silence path additionally requires a final transcript of ≥ 2 words before it can stop recording. VAD silence duration raised from 1200 to 2500 ms on mobile.
@@ -3258,10 +3294,63 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 
 - Updates: `AttemptCount`, `BestScore`, `LastScore`, linked mistake `PracticeCount`
 - Resolves both repractice utterance and linked mistake after 2 consecutive scores > 80
+- Called by `CorrectionRoundComponent.onPracticeAdvanced()` when `skipped = false`
+- NOT called on skip — skipped utterances do not count as attempts
 
 #### POST /api/repractice/{repracticeSessionId}/complete
 
 - Validates ownership; recalculates improvement percent; marks session `COMPLETED`; re-runs badge evaluation
+
+### Frontend Repractice Practice Flow — Stable Contract (2026-06-04)
+
+**Entry point:** `MyMistakesComponent` → `startPractice(sessionId)` → `RepracticeService.generateRepracticeSession()` → navigate to `/repractice/:repracticeSessionId`
+
+**Component hierarchy:**
+```
+CorrectionRoundComponent (orchestrator — /repractice/:id)
+  └── RepracticeSpeakerComponent   (per-utterance UI)
+        ├── VoiceRecorderComponent (reused — identical to live session)
+        └── VoiceFeedbackComponent (reused — identical to live session)
+```
+
+**RepracticeSpeakerComponent** — `Frontend/src/app/modules/repractice/repractice-speaker/repractice-speaker.component.ts`
+
+Inputs:
+- `utterance: RepracticeUtterance` — what to practice
+- `utteranceIndex: number` — progress display and recorder key
+- `totalUtterances: number` — progress display
+
+Output: `practiceAdvanced: EventEmitter<{ score: number; skipped: boolean }>`
+
+**Voice engine:** `VoiceRecognitionEngine` — the production engine, identical to live session. Uses Capacitor native speech plugin on Android, Web Speech API on desktop. Full Levenshtein + Soundex + Indian English phonetic scoring. No legacy `VoiceAnalysisService`.
+
+**Phase state machine:** `'recording' → 'feedback'` (same as `SpeakerScreenComponent`)
+
+**Auto Start:** reads `SessionPreferences.defaultVoiceStarter`. Blocked on mobile web (Web Speech API bell issue), allowed on Capacitor native. 700ms delay after `ngAfterViewChecked`.
+
+**Auto Submit:** reads `SessionPreferences.autoSubmitOnStop`. Always shows feedback screen first. 3-second countdown pill, then emits `practiceAdvanced`. Identical to speaker screen — same preference key, same delay, same countdown UI.
+
+**Try Again:** unlimited (no `maxReReads` cap — repractice is solo, no waiting participant). Resets to recording phase, clears `sessionResult`.
+
+**Skip:** emits `practiceAdvanced({ score: 0, skipped: true })`. Does NOT call `updateAttempt`. Utterance stays unresolved.
+
+**Mistake context display:** shows `mistakeDetail` (struck through, red) and `correctionNote` (highlighted, green) from `RepracticeUtterance` when non-empty. Mistake type badge is colour-coded by type.
+
+**CorrectionRoundComponent** handles:
+- Session load via `getRepracticeSession(id)`
+- Progress bar (coloured segment per utterance: past=blue, current=orange, future=dim)
+- `onPracticeAdvanced(event)` — calls `updateAttempt` if not skipped, then advances index or calls `finishSession`
+- `finishSession()` — calls `completeRepracticeSession()`, shows completion dashboard
+- `restartRound()` — resets index, resolvedCount, improvement, shows utterance[0] again
+
+**Resolved count logic:** Backend resolves after 2 consecutive scores > 80 (tracked server-side via `PATCH /api/repractice/attempt`). Frontend tracks `_consecutivePass` per utterance locally as a UX signal but treats the backend response as authoritative for the completion dashboard.
+
+**Skip behaviour:** Advances to next utterance with no API call. `_consecutivePass` resets to 0.
+
+**Notes on Drift Prevented:**
+- `CorrectionRoundComponent` previously used `VoiceAnalysisService` — a legacy service with naive word-intersection scoring, no Levenshtein/Soundex, no Indian English map, no Capacitor native path, no VAD, no waveform. On Android APK it would never return useful results. Replaced with `VoiceRecognitionEngine` (production engine) via `RepracticeSpeakerComponent`.
+- `VoiceAnalysisService` is no longer imported or used in the repractice module. It remains only as a service file (not deleted — may be referenced elsewhere) but is not wired up to any active component.
+- Feedback UI was a custom pass/fail card. Replaced with `VoiceFeedbackComponent` — same word chips, score bands, and breakdown as the live session speaker screen.
 
 ### Application and Infrastructure Wiring
 
@@ -4422,3 +4511,68 @@ adb connect 192.168.31.203:5555
 - `adb exec-out screencap -p | Set-Content -Encoding Byte` fails in PowerShell 5.1 — PS5.1 cannot pipe binary stdout; use `adb shell screencap -p /sdcard/file.png` → `adb pull` instead
 - Wireless ADB configured: device IP `192.168.31.203`, port `5555` — USB cable no longer required after initial `adb tcpip 5555`
 - Native speech recognition confirmed fully implemented — `@capacitor-community/speech-recognition@7.0.1` is installed and the native path in `voice-recognition.engine.ts` is complete
+- Gradle fails with "Unable to delete directory after 10 attempts" when `android/app/build` exists from a prior WSL2 build — WSL2 cannot delete Windows-filesystem files held open by previous build. Fix: `Remove-Item -Recurse -Force android\app\build` from Windows PowerShell before each Gradle run
+- Gradle fails with "Could not find EOCD in app-debug.apk" when a partial/corrupted APK exists in outputs from a failed previous build — Fix: `Remove-Item -Recurse -Force android\app\build` AND `android\build` from Windows PowerShell before rebuilding
+
+---
+
+## Android Mobile Module — Back Navigation (2026-06-04)
+
+### Entry Points
+All screens in the app — hardware back button on Android device.
+
+### UI Trigger
+Android physical/gesture Back button press (hardware event, not a UI element).
+
+### Implementation
+
+**Service:** `Frontend/src/app/core/services/back-button.service.ts`
+**Package required:** `@capacitor/app@8.1.0` (installed 2026-06-04)
+**Initialized by:** `AppComponent.constructor()` → `this.backButton.init()`
+
+`init()` is async and guards with `Capacitor.isNativePlatform()` — no-op on web.
+On Android it registers a single `App.addListener('backButton', ...)` listener app-wide.
+
+### Business Rules
+
+The listener fires on every Android back press with a `{ canGoBack: boolean }` payload from Capacitor reflecting the WebView's native history state.
+
+Decision tree (evaluated in order):
+
+1. **Blocked routes** — swallow the event entirely (do nothing):
+   - `/live-session/room` — active live session
+   - `/repractice/` — active repractice round
+   Rationale: accidental back press during a session must not exit or navigate away.
+
+2. **Root routes** — exit the app via `App.exitApp()`:
+   - `/auth/login`
+   - `/user/dashboard`
+   - `/admin/dashboard`
+   Also applies if `canGoBack === false` regardless of URL (no WebView history left).
+
+3. **All other routes** — navigate back via `location.back()` (Angular `Location` service).
+   This pops one entry from the WebView history, returning to the previous Angular route.
+
+### Route Coverage
+
+| Route | Back behavior |
+|---|---|
+| `/auth/login` | Exit app |
+| `/auth/register` | → `/auth/login` |
+| `/user/dashboard` | Exit app |
+| `/user/*` (profile, progress, goals, settings, vocabulary, etc.) | → previous screen |
+| `/session/history` | → `/user/dashboard` (via history) |
+| `/session/create`, `/session/invite` | → previous screen |
+| `/session/lobby/:id` | → previous screen |
+| `/session/detail/:id`, `/session/report/:id`, `/session/review/:id` | → previous screen |
+| `/scripts`, `/scripts/upload`, `/scripts/prepare/:id` | → previous screen |
+| `/admin/dashboard` | Exit app |
+| `/admin/*` | → previous screen |
+| `/live-session/room/:id` | Blocked — no action |
+| `/repractice/:id` | Blocked — no action |
+
+### State Transitions
+None — navigation only.
+
+### Notes on Known Drift Prevented
+Prior to 2026-06-04, no `@capacitor/app` listener existed. Capacitor's default Android behavior when no `backButton` listener is registered is to exit the WebView (close the app) on every back press — regardless of navigation history. This caused the reported issue where every back press closed the app instead of navigating to the previous screen. Fixed by registering a centralized `backButton` listener in `BackButtonService`.
