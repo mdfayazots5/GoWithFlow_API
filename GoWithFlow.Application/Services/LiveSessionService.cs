@@ -112,7 +112,20 @@ public sealed class LiveSessionService : ILiveSessionService
 
 		if (nextTurn is null)
 		{
-			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { nextTurnError ?? "No further turns remain in this session. Complete the session." }, "Turn shift completed.");
+			// Two distinct cases must NOT be conflated:
+			//   1. Genuine end of script (nextTurnError is null) → signal session completion.
+			//   2. A real failure creating the next turn (nextTurnError is set) → surface as an error.
+			// The completion signal is carried in Message (TurnShiftSignals.SessionComplete) — the
+			// field the hub inspects — so the last turn reliably triggers auto-completion instead of
+			// throwing a HubException. (Previously the signal lived only in Errors and was missed.)
+			if (nextTurnError is null)
+			{
+				return ApiResponse<TurnStateResponseDto>.FailureResult(
+					new[] { "No further turns remain in this session. Complete the session." },
+					TurnShiftSignals.SessionComplete);
+			}
+
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { nextTurnError }, "Turn shift failed.");
 		}
 
 		return ApiResponse<TurnStateResponseDto>.SuccessResult(nextTurn, "Turn shifted successfully.");

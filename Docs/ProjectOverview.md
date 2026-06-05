@@ -2689,10 +2689,13 @@ Setting `isLoading=true` would destroy and recreate `SpeakerScreenComponent`, ca
 
 **Session-end sequence (last turn):**
 1. Speaker completes last turn → `completeTurnRealtime(N, N)` → hub `CompleteTurn`
-2. Backend: `ShiftTurnAsync` fails with `"No further turns remain..."` → hub calls `CompleteSessionAsync` → broadcasts `SESSION_ENDED`
+2. Backend: `ShiftTurnAsync` finds no next turn and returns a **failure response whose `Message` is the shared `TurnShiftSignals.SessionComplete` constant** (`"No further turns remain"`). The hub matches `response.Message` against that constant → calls `CompleteSessionAsync` → broadcasts `SESSION_ENDED` → `return`. The hub call resolves normally (no HubException).
 3. Frontend `SESSION_ENDED` handler: sets `_sessionEnded = true` → saves session duration to sessionStorage → navigates to `/session/report/:id`
 4. `completeTurnRealtime` resolves → `turnShifted.emit()` → `onTurnShifted()` → guarded by `_sessionEnded`, returns immediately
 5. Any in-flight `loadCurrentTurn` calls are also guarded and no-op
+
+**Completion-signal contract (CRITICAL — do not break):**
+The "session is finished" signal travels in **`ApiResponse.Message`**, set to the shared constant `GoWithFlow.Application.Common.TurnShiftSignals.SessionComplete = "No further turns remain"`. Both `ShiftTurnAsync` (writer) and `LiveSessionHub.CompleteTurn` (reader) reference that one constant. Distinction the service MUST preserve: `nextTurn == null && nextTurnError == null` ⇒ genuine completion (Message = sentinel); `nextTurn == null && nextTurnError != null` ⇒ real failure (Message = `"Turn shift failed."`, NOT the sentinel) so a turn-creation error never masquerades as completion.
 
 **`_sessionEnded` guard (critical):** Once `SESSION_ENDED` is received, `_sessionEnded = true` is set. `loadCurrentTurn()`, `onTurnShifted()`, and `handleTurnShift()` all return early. Prevents post-navigation operations against the now-COMPLETED session.
 
@@ -2714,6 +2717,7 @@ When `ShiftTurnAsync` fails for reasons other than "no further turns" (turn inde
 - Session preference toggle thumbs use explicit `left-0.5` anchoring plus inline transform distance instead of class-only translation so the knob stays visually aligned in rendered HTML
 
 ### Notes on Known Drift Prevented
+- **Drift 12 (2026-06-05): Final "Done Speaking" throws a SignalR error and never completes the session** — Drift type: **response-field / contract drift** (signal carried in the wrong field). On the last turn `ShiftTurnAsync` returned `FailureResult(errors: ["No further turns remain in this session…"], message: "Turn shift completed.")` — the sentinel lived in **`Errors`**, but `LiveSessionHub.CompleteTurn` matched **`Message`** against the literal `"No further turns remain"`. The match failed → the hub fell through to `throw new HubException(response.Message)`, sending the client a SignalR error (ironically `"Turn shift completed."`). The session stayed `ACTIVE`, so every subsequent **Done Speaking** click re-ran the identical path → the same recurring console error; the report was never reached. **Fix (2026-06-05):** introduced shared constant `TurnShiftSignals.SessionComplete = "No further turns remain"` (new file `Application/Common/TurnShiftSignals.cs`); `ShiftTurnAsync` now carries it in **`Message`** for the genuine-completion case (`nextTurnError == null`) and returns `"Turn shift failed."` when `nextTurnError != null`; the hub matches `response.Message` against the same constant. Both sides now reference one value → cannot drift apart. Frontend needed no change — its `SESSION_ENDED` handler + `_sessionEnded` guard already exit gracefully once the broadcast fires; the recurring error disappears because the first click now completes the session. Added explicit final-turn logging in the hub (`TurnIndex` + `MemberId`).
 - Stale docs drift: `ProjectOverview.md` previously stated that `Frontend/src/main.ts` imported `@angular/compiler`, but source had drifted and the import was missing
 - Route compilation drift: the live-session room is documented to resolve through `component: SessionRoomComponent` within the lazy child route contract to reduce runtime JIT-only failures on this page
 - Template compilation drift: session-room settings toggles previously used escaped `[class.bg-white\/15]` and `[class.translate-x-0\.5]` bindings, which broke Angular template parsing and surfaced as unclosed `button` tags during JIT compilation
@@ -2938,6 +2942,29 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 
 > ⚠ The fix above applies to the **mobile WEB** path (Android Chrome, `isCapacitorNative=false`). The installed **Capacitor APK** uses a different code path (`startNativeSession`) documented next. Do not confuse the two.
 
+#### Mobile/Tablet WEB Browser — Secure-Context & Engine Support (2026-06-05)
+
+**Symptom:** Speech recognition works in the installed APK but fails in mobile/tablet browsers (Chrome, Edge).
+
+**Drift type:** Browser-platform contract drift — secure-context requirement + engine-capability mismatch. Masked by a generic `"Speech recognition error: <code>"` message.
+
+**Root cause (confirmed from config + Web Platform contract):**
+1. **Insecure context (primary, affects Chrome too).** The Vite dev server runs `host: '0.0.0.0'`, port 4200, **plain HTTP, no TLS** (`vite.config.ts`); the dev origin resolves to `http://<LAN-IP>:4200` (`environment.ts` default `http://10.147.254.186:4200`). The Web Speech API and `getUserMedia` require `window.isSecureContext === true`. `localhost`/HTTPS qualify; a **LAN IP over HTTP does not**. So on a device browser pointed at the LAN dev server, `webkitSpeechRecognition` exists (looks supported) but `.start()` can never capture audio → silent failure or `not-allowed`/`service-not-allowed`. **This is why the APK works and the browser does not:** the Capacitor WebView loads bundled assets from a secure (`https://localhost` / `capacitor://`) origin and uses the on-device recognizer plugin — neither LAN-secure-context nor cloud-dependent.
+2. **Engine has no speech backend (secondary, Edge/Firefox).** Even on HTTPS, **Edge and Firefox on Android have no speech service**. Only Chrome and Samsung Internet ship Google's backend. Edge-mobile exposes the API but errors `service-not-allowed`/`network`; Firefox lacks `webkitSpeechRecognition` entirely.
+
+**Fix (graceful gating + guidance — no server-side STT):**
+- **Dev server now HTTPS.** `vite.config.ts` adds `@vitejs/plugin-basic-ssl` (self-signed) → `https://<LAN-IP>:4200` is a secure context. Tap through the one-time cert warning on the device. Opt out with `HTTPS=false npm run dev`. The APK is unaffected (it loads bundled assets, not the dev server).
+- **Pre-flight capability guard** in `VoiceRecognitionEngine.startSession()` (web path only): computes `getCapabilities()` and throws an actionable error BEFORE attempting recognition:
+  - `!isSecureContext` → "Speech recognition needs a secure (HTTPS) connection. This page is open over an insecure address (`<origin>`). Open it via https://, or install the GoWithFlow app."
+  - `!hasSpeechApi` → "Speech recognition isn't supported in this browser. Please use Google Chrome, or install the GoWithFlow app."
+- **Error-handler upgrades** (`startRecognition.onerror`): `service-not-allowed` → non-retryable, browser-specific message (names Edge/Firefox when detected); terminal `network` on mobile Edge/Firefox → same guidance instead of an opaque code.
+- **Engine detection** (`detectEngine`): `chrome | edge | firefox | samsung | safari | other` (Samsung/Edge/Firefox tested before Chrome/Safari because their UAs also contain those tokens; `EdgA`/`EdgiOS`/`FxiOS`/`CriOS` handled). Mobile Edge/Firefox flagged `speechSupported=false` for up-front UI guidance, but still allowed to attempt.
+- **Diagnostics:** new Web Speech lifecycle logs (`onstart`, `onaudiostart`, `onspeechstart`, `onspeechend`, `onaudioend`) — the absence of `onaudiostart` after `onstart` is the signature of a blocked path. `getCapabilities()` snapshot logged at session start. Speech Debug page (`/user/speech-debug`) now shows Browser Engine, Secure Context, Origin, Speech Supported, and Blocker rows.
+
+**Public API added:** `VoiceRecognitionEngine.getCapabilities(): VoiceCapabilities` — `{ isCapacitorNative, isSecureContext, hasSpeechApi, browserEngine, origin, online, isMobile, isIOS, speechSupported, blockerReason }`.
+
+**Notes on Drift Prevented:** future agents must (a) keep the dev server on HTTPS for any mobile-browser voice testing — a LAN IP over HTTP will ALWAYS fail the Web Speech path regardless of code; (b) not treat `webkitSpeechRecognition in window === true` as "supported" — it is necessary, not sufficient (secure context + a real speech backend are also required); (c) not attempt to "fix" Edge/Firefox-mobile in-browser — they have no Web Speech backend; the only universal-browser path is server-side STT (explicitly deferred). The APK remains the recommended path for guaranteed mobile voice.
+
 #### Native (Capacitor APK) Speech Path — Stable Contract (2026-06-04)
 > Covers: language resolution, mic-contention, number accuracy, and responsiveness tuning.
 
@@ -3000,14 +3027,17 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 
 #### Browser Compatibility
 
+> **HARD PREREQUISITE for ALL web rows: a secure context (`window.isSecureContext === true`).** The Web Speech API and `getUserMedia` are gated on a secure context. `https://` origins and `localhost`/`127.0.0.1` qualify; a **LAN IP over plain HTTP (e.g. `http://10.x.x.x:4200`) does NOT** — the API surface still exists (`webkitSpeechRecognition in window` is `true`, so it *looks* supported) but `.start()` can never capture audio. See "Mobile/Tablet WEB Browser — Secure-Context & Engine Support" below.
+
 | Browser | Platform | Support |
 |---|---|---|
-| Chrome 100+ | Android / Desktop | ✅ Full (cloud STT) — use `lang=en-IN`, `continuous=true` |
-| Edge 100+ | Desktop / Android | ✅ Full |
+| Chrome 100+ | Android / Desktop | ✅ Full (cloud STT) — requires secure context — use `lang=en-IN`, `continuous=true` desktop / `false` mobile |
+| Edge | **Desktop** | ✅ Full (has speech backend) |
+| Edge | **Android/mobile** | ❌ None — exposes the API but has **no speech service** → `service-not-allowed`/`network`. Gated with a "use Chrome / install the app" message |
 | Safari 15+ | iOS / iPadOS | ⚠ Partial — `continuous=false`, restart on `onend` |
 | Samsung Internet | Android | ✅ Full (Chrome engine) |
-| Firefox | Any | ❌ None — show "Please use Chrome or Edge" |
-| **Capacitor APK** | **Android / iOS** | ⚠ Uses the **device default recognizer** (often offline SODA), NOT cloud. Language depends on installed offline packs — handled by the native language fallback chain (see "Native (Capacitor APK) Speech Path" above). |
+| Firefox | Any | ❌ None — no `webkitSpeechRecognition` → caught by `!hasSpeechApi` guard |
+| **Capacitor APK** | **Android / iOS** | ✅ Uses the **device default recognizer** (often offline SODA), NOT cloud. No secure-context/cloud dependency. Language depends on installed offline packs — handled by the native language fallback chain (see "Native (Capacitor APK) Speech Path" above). |
 
 #### Integration Points
 
@@ -4158,9 +4188,11 @@ All 7 items implemented:
 - Framework: Capacitor 8.4.0 wrapping Angular 19 + Vite (AnalogJS) web app
 - App ID: `com.gowithflow.app`
 - App Name: `GoWithFlow`
+- **App Version: `1.2` (versionCode 4)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05, includes the Web Speech secure-context/capability fix + final-turn completion fix). Bump `versionName` and `versionCode` together on every release.
 - Web Dir: `dist/analog/public` (Vite production build output)
 - Android Scheme: `https` — required for JWT cookies and SignalR auth to function correctly on device
 - Config file: `Frontend/capacitor.config.ts`
+- Distribution APK: `Backend/Docs/Dev/GoWithFlow.apk` (latest) + versioned copy `GoWithFlow-1.2.apk`
 
 ### Android Project Location
 
@@ -4291,16 +4323,25 @@ Copies `dist/analog/public` into the Android project. Confirm output includes:
 
 ---
 
-#### Step 4 — Clear old build dir, then Gradle build (Windows PowerShell)
+#### Step 4 — Clear old build dir, then Gradle build (WSL)
 
 Always clear the build dir first. WSL2 cannot delete intermediates on the Windows filesystem after a previous build — Gradle fails with "Unable to delete directory after 10 attempts".
 
+**SDK-path gotcha (REQUIRED — see Drift below):** `android/local.properties` is regenerated by Android Studio on Windows with `sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk` — a **Windows** path that Gradle, running in WSL/Linux, cannot resolve → `SDK location not found`. The WSL build must use the Linux SDK at `/root/Android/Sdk`. Setting `ANDROID_HOME` does **not** help: the Android Gradle Plugin gives `local.properties` `sdk.dir` precedence over the env var. So temporarily point `local.properties` at the Linux SDK for the build, then restore the Windows path (keeps the Windows/Android-Studio setup working). The block below restores on success or failure:
+
 ```powershell
-Remove-Item -Recurse -Force "C:\Live\GoWithFlow\Frontend\android\app\build" -ErrorAction SilentlyContinue
-wsl --exec bash -c "cd /mnt/c/Live/GoWithFlow/Frontend/android && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -8"
+wsl --exec bash -lc '
+cd /mnt/c/Live/GoWithFlow/Frontend/android &&
+rm -rf app/build 2>/dev/null;
+cp local.properties local.properties.winbak &&
+printf "sdk.dir=/root/Android/Sdk\n" > local.properties &&
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -8;
+status=${PIPESTATUS[0]};
+mv local.properties.winbak local.properties;
+echo "GRADLE_EXIT=$status"'
 ```
 
-Expected last line: `BUILD SUCCESSFUL in Xs`
+Expected: `BUILD SUCCESSFUL in Xs` then `GRADLE_EXIT=0`.
 
 Output APK: `C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`
 
@@ -4368,11 +4409,10 @@ Set-Location "C:\Live\GoWithFlow\Frontend"
 npm run build
 npx cap sync android
 
-# STEP 3: Clear build dir (REQUIRED — WSL2 cannot delete Windows intermediates)
-Remove-Item -Recurse -Force "C:\Live\GoWithFlow\Frontend\android\app\build" -ErrorAction SilentlyContinue
+# STEP 3: (optional) bump version in Frontend/android/app/build.gradle — versionName + versionCode
 
-# STEP 4: Gradle
-wsl --exec bash -c "cd /mnt/c/Live/GoWithFlow/Frontend/android && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -8"
+# STEP 4: Gradle (clears build dir + swaps local.properties to the WSL SDK path, then restores)
+wsl --exec bash -lc 'cd /mnt/c/Live/GoWithFlow/Frontend/android && rm -rf app/build 2>/dev/null; cp local.properties local.properties.winbak && printf "sdk.dir=/root/Android/Sdk\n" > local.properties && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -8; status=${PIPESTATUS[0]}; mv local.properties.winbak local.properties; echo "GRADLE_EXIT=$status"'
 
 # STEP 5: Replace distribution APK
 Remove-Item "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFlow.apk" -ErrorAction SilentlyContinue
@@ -4387,14 +4427,19 @@ adb -s QGCAAETSYXRS95KV install -r "C:\Live\GoWithFlow\Backend\Docs\Dev\GoWithFl
 
 ### Build Process — Full APK Rebuild
 
-Run from WSL2:
+Run from WSL2 (note the `local.properties` swap — see Drift below):
 ```bash
 cd /mnt/c/Live/GoWithFlow/Frontend
 npm run build                          # Angular production build → dist/analog/public
 npx cap sync android                   # copy assets into Android project
 cd android/
-JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug
+cp local.properties local.properties.winbak && printf "sdk.dir=/root/Android/Sdk\n" > local.properties
+JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug; mv local.properties.winbak local.properties
 ```
+
+### Notes on Drift Prevented (Build)
+
+- **Drift (2026-06-05): WSL Gradle build fails with `SDK location not found`** — `Frontend/android/local.properties` is regenerated by Android Studio on Windows with `sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk` (a Windows path). Gradle runs in WSL/Linux and cannot resolve it, and the Android Gradle Plugin gives `local.properties` `sdk.dir` **precedence over `ANDROID_HOME`** — so exporting the env var does not fix it. **Fix:** before the WSL build, swap `local.properties` to `sdk.dir=/root/Android/Sdk` (the Linux SDK, confirmed present alongside `/usr/lib/android-sdk`), then restore the original Windows path so the Windows/Android-Studio workflow keeps working. Baked into Step 4 and the full-sequence block. Drift type: environment/path contract drift.
 
 Output APK (WSL2 path): `Frontend/android/app/build/outputs/apk/debug/app-debug.apk`
 Output APK (Windows path): `C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`

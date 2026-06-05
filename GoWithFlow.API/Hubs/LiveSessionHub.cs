@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using GoWithFlow.Application.Common;
 using GoWithFlow.Application.DTOs.Requests.LiveSession;
 using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.API.Constants;
@@ -119,13 +120,16 @@ public sealed class LiveSessionHub : Hub
 			// a stale duplicate CompleteTurn call (same turnIndex after turn already shifted)
 			// returns "The provided turn does not match the active turn" — that is a client
 			// sync error, not a signal that the script is done.
-			const string noFurtherTurnsSignal = "No further turns remain";
-
-			if (response.Message?.Contains(noFurtherTurnsSignal, StringComparison.OrdinalIgnoreCase) == true)
+			//
+			// The completion signal is the shared TurnShiftSignals.SessionComplete constant,
+			// carried by the service in ApiResponse.Message. (Do NOT switch this back to matching
+			// Errors or an inline literal — that drift caused the last turn to throw instead of
+			// completing.)
+			if (response.Message?.Contains(TurnShiftSignals.SessionComplete, StringComparison.OrdinalIgnoreCase) == true)
 			{
 				_logger.LogInformation(
-					"No further turns remain for SessionId={SessionId}. Completing session automatically.",
-					parsedSessionId);
+					"Final turn completed — no further turns remain for SessionId={SessionId} TurnIndex={TurnIndex} MemberId={MemberId}. Completing session automatically.",
+					parsedSessionId, turnIndex, parsedMemberId);
 
 				var completeResponse = await _liveSessionService.CompleteSessionAsync(
 					parsedSessionId,

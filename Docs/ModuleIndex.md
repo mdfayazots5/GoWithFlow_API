@@ -30,6 +30,12 @@ Logic source: `ProjectOverview.md` only.
 | fuzzy match | Backend Live Session Module | Frontend Voice Recognition Engine |
 | levenshtein | Backend Live Session Module | Frontend Voice Recognition Engine |
 | soundex | Backend Live Session Module | Frontend Voice Recognition Engine |
+| secure context | Backend Live Session Module | Frontend Voice Recognition Engine |
+| web speech | Backend Live Session Module | Frontend Voice Recognition Engine |
+| speech browser | Backend Live Session Module | Frontend Voice Recognition Engine |
+| microphone permission | Backend Live Session Module | Frontend Voice Recognition Engine |
+| speech debug | Backend Live Session Module | Frontend Voice Recognition Engine |
+| getcapabilities | Backend Live Session Module | Frontend Voice Recognition Engine |
 | analysis | Backend Live Session Module | Backend Live Session Module |
 | feedback | Backend Live Session Module | Backend Live Session Module |
 | listener | Backend Live Session Module | Backend Live Session Module |
