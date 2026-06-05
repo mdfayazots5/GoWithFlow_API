@@ -15,20 +15,17 @@ public sealed class SessionRecordingRetentionWorker : BackgroundService
 	private const int BatchSize = 200;
 
 	private readonly IServiceScopeFactory _scopeFactory;
-	private readonly IStorageService _storageService;
 	private readonly CloudflareR2Settings _r2Settings;
 	private readonly ILogger<SessionRecordingRetentionWorker> _logger;
 
 	public SessionRecordingRetentionWorker(
 		IServiceScopeFactory scopeFactory,
-		IStorageService storageService,
 		IOptions<CloudflareR2Settings> r2Options,
 		ILogger<SessionRecordingRetentionWorker> logger)
 	{
-		_scopeFactory   = scopeFactory;
-		_storageService = storageService;
-		_r2Settings     = r2Options.Value;
-		_logger         = logger;
+		_scopeFactory = scopeFactory;
+		_r2Settings   = r2Options.Value;
+		_logger       = logger;
 	}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -56,6 +53,7 @@ public sealed class SessionRecordingRetentionWorker : BackgroundService
 	{
 		using var scope = _scopeFactory.CreateScope();
 		var repository = scope.ServiceProvider.GetRequiredService<ISessionRecordingRepository>();
+		var storageService = scope.ServiceProvider.GetRequiredService<IStorageService>();
 		var expired = await repository.GetExpiredAsync(BatchSize, ct);
 		if (expired.Count == 0)
 		{
@@ -66,7 +64,7 @@ public sealed class SessionRecordingRetentionWorker : BackgroundService
 		{
 			if (!string.IsNullOrEmpty(storageKey))
 			{
-				await _storageService.DeleteAsync(_r2Settings.Buckets.Audio, storageKey, ct);
+				await storageService.DeleteAsync(_r2Settings.Buckets.Audio, storageKey, ct);
 			}
 			await repository.SoftDeleteAsync(recordingId, ct);
 		}

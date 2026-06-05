@@ -1619,6 +1619,26 @@ Body (UpdateReadyStatusRequestDto):
 
 ---
 
+### Flow: Lobby Realtime Membership — Stable Contract (2026-06-05)
+
+**Purpose:** Keep every lobby client's roster + readiness in sync in real time.
+
+**Group membership:** `SessionHub.OnConnectedAsync` adds a connection to `session_{id}` **only if the SignalR URL carries `?sessionId=`** (the frontend `WebsocketService.connect(sessionId, …)` appends it). Auto-reconnect reuses the same URL, so membership is restored on every reconnect.
+
+**Event triggers (who broadcasts what):**
+- **MEMBER_JOINED** — broadcast by the hub `JoinLobby(sessionId, userId)` method. **The frontend MUST invoke `JoinLobby` after connecting** (`LobbyComponent.announceJoin`). Adding the connection to the group via `OnConnectedAsync` does NOT announce the join — without the explicit `JoinLobby` invoke, no `MEMBER_JOINED` is ever emitted and existing members never refresh.
+- **MEMBER_READY** — broadcast by hub `SetReady`; handler patches the member's `ready` flag. If the member is not yet in the local roster, the client falls back to a full `loadLobby()` (covers a missed/out-of-order `MEMBER_JOINED`).
+- **MEMBER_LEFT** — broadcast by hub `LeaveLobby` / grace-window `LobbyReconnectTracker`.
+
+**Frontend handlers (`LobbyComponent.subscribeToLobbyEvents`):** `MEMBER_JOINED` → `loadLobby()`; `MEMBER_READY` → patch (or `loadLobby()` if member unknown); `SESSION_STARTED` → navigate to room; `MEMBER_LEFT` → remove from roster.
+
+**Fallback poll (resilience):** `startSessionActivePoll()` calls `loadLobby()` every 3 s. This converges the roster + readiness within 3 s even if SignalR is degraded or an event was missed, and also catches `SESSION_STARTED`. It is the self-healing net behind the realtime path.
+
+**Notes on Known Drift Prevented:**
+- **Drift (2026-06-05): Host stuck at "1/2", never sees the guest join or become ready.** Root cause: the frontend never invoked the `JoinLobby` hub method, so `MEMBER_JOINED` was **never broadcast**. The host (in the group via `OnConnectedAsync`) received the guest's `MEMBER_READY`, but its handler patched a member not in the roster → silent no-op → count stayed `1/2`. Drift type: **missing client→hub invocation** (the hub method existed and was correct; nothing called it). **Fix:** (a) `LobbyComponent.announceJoin()` invokes `JoinLobby` after connect → `MEMBER_JOINED` fires → existing members `loadLobby()`; (b) `MEMBER_READY` handler does a full `loadLobby()` when the member is unknown; (c) the 3 s poll now refreshes the full roster (was ACTIVE-only); (d) `WebsocketService` logs connect/reconnecting/reconnected/close per hub. Any one of (a)/(c) fixes the symptom; together they are resilient to SignalR drops.
+
+---
+
 ### Flow: Start Session
 
 **Purpose:** Host starts the session, transitions it to ACTIVE, and initializes the first turn.
@@ -3782,7 +3802,9 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 
 **Purpose:** Admin-level feature to group users into cohorts (training batches) and view collective analytics. Enables B2B training use cases with batch reporting and group performance tracking.
 
-**Entry Points:** `/admin/cohorts` — `AdminCohortsComponent`. Nav item "Cohorts" in admin bottom nav.
+**Entry Points:**
+- `/admin/cohorts` — `AdminCohortsComponent` (list/create). Nav item "Cohorts" in the shared admin bottom nav.
+- `/admin/cohorts/:id` — `AdminCohortDetailComponent` (detail). Opened by tapping a cohort card; route lazy-loads the component (`admin.routes.ts`).
 
 **New DB Table:** `tblCohort`
 - `CohortId BIGINT IDENTITY(1,1) PK`
@@ -3819,8 +3841,11 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - `AdminController.cs` — 5 new cohort endpoints
 - `admin.service.ts` — 5 new cohort API methods
 - `admin-cohorts.component.ts` — new admin cohorts management page
-- `admin.routes.ts` — added `/admin/cohorts` route
-- `admin-layout.component.html` — added Cohorts nav item
+- `admin-cohort-detail.component.ts` — cohort detail screen (2026-06-05): header + status, stat cards (members / avg fluency / inactive / most improved), top-grammar-mistake chips, and a responsive member-card roster (sessions / fluency / mistakes per member). Loads `getCohortAnalytics(id)` + `getCohortMembers(id)` via `forkJoin`; `analytics === null` → not-found state. Member cards (not a wide table) keep it mobile-safe. Cohort `isActive` is inferred from members (analytics DTO does not return it). DTOs: `CohortAnalyticsResponseDto` (cohortName, description, memberCount, avgFluencyScore, inactiveCount, topGrammarMistakes[{grammarTag, mistakeCount}], mostImproved{userId, fullName, improvementDelta}), `CohortMemberDto` (userId, fullName, ageGroup, avatarUrl, isActive, sessionCount, avgFluencyScore, totalMistakes, …).
+- `admin.routes.ts` — added `/admin/cohorts` and `/admin/cohorts/:id` routes
+- `admin-layout.component.html` — Cohorts tab now via shared `<app-bottom-nav>` (see Shared Footer Navigation Architecture)
+
+**Notes on Known Drift Prevented:** the `/admin/cohorts/:id` route lazy-loaded `AdminCohortDetailComponent` from an **empty** file (TS2306 "not a module"); the screen was routed but never built. Now implemented against the existing analytics/members endpoints — no new API needed.
 
 ---
 
@@ -4188,7 +4213,7 @@ All 7 items implemented:
 - Framework: Capacitor 8.4.0 wrapping Angular 19 + Vite (AnalogJS) web app
 - App ID: `com.gowithflow.app`
 - App Name: `GoWithFlow`
-- **App Version: `1.2` (versionCode 4)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05, includes the Web Speech secure-context/capability fix + final-turn completion fix). Bump `versionName` and `versionCode` together on every release.
+- **App Version: `1.2` (versionCode 5)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
 - Web Dir: `dist/analog/public` (Vite production build output)
 - Android Scheme: `https` — required for JWT cookies and SignalR auth to function correctly on device
 - Config file: `Frontend/capacitor.config.ts`
@@ -4699,7 +4724,7 @@ $breakpoint-xxs:       360px
 ```
 
 ### What Is Already Correct (do not regress)
-- Bottom nav (`bottom-nav.component.scss`) — reference implementation, do not change.
+- Bottom nav (`bottom-nav.component.scss`) — reference implementation, do not change. Now also powers the Admin shell footer (see "Shared Footer Navigation Architecture" below).
 - Admin layout safe-area handling — `calc(84px + env(safe-area-inset-bottom, 0px))`.
 - Live session room — `max(24px, env(safe-area-inset-bottom, 24px))` bottom padding.
 - Speaker screen `questionFontSize` — clamp() based on utterance length.
@@ -4751,6 +4776,76 @@ All Priority 1 and Priority 2 items from MobileDesignAnalysis.md were implemente
 - `admin-layout.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
 - `bottom-nav.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
 - Template inline styles: `#F59E0B` → `text-gw-warning`, `#E07B39` → `text-gw-accent`, `#2E7D32` → `text-gw-success`
+
+### Shared Footer Navigation Architecture (2026-06-05)
+
+Single reusable footer used by BOTH the User and Admin shells. Previously the Admin shell
+hardcoded its own dark footer (`.footer-nav`/`.footer-nav-item`/`.nav-pill`, Material icons,
+`--gwf-nav-bg` background) inline in `admin-layout.component.html` — a second, divergent design
+pattern. That inline footer and all its SCSS were removed; both shells now render the same
+`<app-bottom-nav>` component and the same `bottom-nav.component.scss` design system.
+
+**Component:** `shared/components/bottom-nav/bottom-nav.component.ts`
+- Exports `interface BottomNavItem { label; path; icon (Lucide); exact? }`.
+- `@Input() items?: BottomNavItem[]` — optional explicit tab set.
+  - Omitted (User, mounted globally in `app.component`): uses default user tabs
+    (Home / Review / Progress / History) + internal role gating
+    (`role === 'USER'` and url not in `/auth /live-session /repractice /admin`).
+  - Supplied (Admin, mounted in `admin-layout`): host owns visibility, so `showNav()` always
+    returns true. Admin tabs: Dashboard / Users / Scripts / Reports / Cohorts.
+- `gridTemplate` getter = `repeat(<items.length>, 1fr)` bound inline → bar auto-adapts to
+  4 (user) or 5 (admin) columns; no hardcoded column count.
+- Icons are Lucide for both shells (admin Material icons were mapped:
+  dashboard→LayoutDashboard, people→Users, menu_book→BookOpen, bar_chart→BarChart3,
+  groups→UsersRound).
+
+**Design system (shared, light theme):** white bar, `height: calc(68px + safe-area-inset-bottom)`,
+inactive `#9ca3af`, active `--gwf-primary` text + `--gwf-primary-light` pill, Lucide size 20,
+top shadow `0 -2px 12px rgba(0,0,0,.06)`. Responsive: centered 480/520px strip ≥700/1024px,
+icon/font shrink ≤360px (handles 5 admin tabs on small phones).
+
+**No double footer:** `app.component` renders the global `<app-bottom-nav>` only when
+`!isAdminRoute()`; admin routes render `admin-layout` which mounts its own `<app-bottom-nav [items]>`.
+
+**Notes on Known Drift Prevented:** the two footers had drifted into separate design systems
+(icon library, theme, active state, class names, column count, missing ≤360px responsive on admin).
+Consolidating onto one component + one SCSS file means future footer changes apply to both shells
+and cannot diverge again. Do not reintroduce a shell-specific footer; add/adjust tabs via the
+`items` input instead.
+
+---
+
+### Dark-Blue Theme Conversion (2026-06-05) — IN PROGRESS
+
+Direction (user-approved): full dark mode — deep-navy page + raised-navy surfaces + light
+text app-wide; eliminate white surfaces. Rollout: foundation + 3 flagship screens first
+(Login, Dashboard, Session Room), then mass-apply to the remaining ~38 screens after approval.
+
+**Two token systems drive the theme (both flipped to dark):**
+- `src/index.css` — Tailwind v4 `@theme --color-gw-*` (drives every `bg-gw-*`/`text-gw-*`/`border-gw-*`
+  utility) + `:root --gw-*`. Flipping these re-themes all utility-based surfaces automatically.
+- `src/styles/styles.scss` — `:root --gwf-*` (drives component `.scss` files). Also fixed hardcoded
+  light Material surfaces there (`.mdc-text-field--filled`, `.mat-mdc-header-row`, scrollbar thumb,
+  `.badge-neutral`).
+
+**Dark palette:** page `#0D1526`, raised surface `#161F38`, border `#25324F`, text `#EAEDF5`,
+muted `#94A1BD`; success `#3DBB6B`, warning `#F5A623`, error `#F2545B`; accents kept (purple/orange/blue).
+
+**Critical drift note — `bg-white` is NOT token-driven:** 256 `bg-white` Tailwind utilities across
+41 files are hardcoded white and do NOT flip with the tokens. They must be converted per-screen,
+typically `bg-white` → `bg-gw-card-bg`. NOTE: a `bg-white` substring match also catches `bg-white/5`,
+`bg-white/[0.04]` etc. (translucent overlays on dark) and toggle-knob whites — those are CORRECT in
+dark mode and must NOT be changed. Verify each occurrence is a solid surface before converting.
+
+**Flagships done:**
+- Login (`login.component.scss`): white card + light inputs/error banner → dark surfaces (page was already a dark-blue gradient).
+- Dashboard (`user-dashboard.component.ts`): 11 `bg-white` cards → `bg-gw-card-bg`; brightened two low-contrast status colors.
+- Session Room (`session-room.component.ts`): NO CHANGE — already fully dark (`bg-[#1A1A2E]` + `focus-mode`); all `bg-white` here are translucent overlays/knobs. The live-session/speaker/listener screens are already dark.
+
+**Pending mass rollout (after approval):** convert remaining solid `bg-white` surfaces + hardcoded
+light hex on the other ~38 screens (Profile, Review/my-mistakes, all Admin screens, session create/
+history/detail, scripts, etc.) + per-screen mobile spacing/viewport tightening. Until then those
+screens render dark-page/white-card (intentionally half-converted at the approval checkpoint).
 
 ---
 
@@ -4825,18 +4920,32 @@ None. Admin polls/refreshes; merge is async and may be PROCESSING when first vie
 ### Retention
 `SessionRecordingRetentionWorker` (daily): deletes expired finals from R2 then soft-deletes the row
 (`expiresat <= now`, 90-day default).
+DI lifetime: the worker is a singleton hosted service. It constructor-injects ONLY singleton/options
+deps (`IServiceScopeFactory`, `IOptions<CloudflareR2Settings>`, `ILogger`). Every scoped dependency —
+`ISessionRecordingRepository` AND `IStorageService` — is resolved from `_scopeFactory.CreateScope()`
+inside `PurgeExpiredAsync`, never via the constructor.
 
 ### Ops / Config
 - ffmpeg + ffprobe must be installed on the API host (or bundled). Paths overridable via
   `appsettings`: `Ffmpeg:FfmpegPath`, `Ffmpeg:FfprobePath` (default `ffmpeg`/`ffprobe` on PATH).
-- DI: `ISessionRecordingRepository`/`Service` (scoped), `ISessionRecordingMergeQueue` (singleton),
-  two `AddHostedService` workers. Storage gained `IStorageService.DownloadToAsync`.
+- DI: `ISessionRecordingRepository`/`Service` (scoped), `IStorageService` (scoped),
+  `ISessionRecordingMergeQueue` (singleton), two `AddHostedService` workers (singletons).
+  Storage gained `IStorageService.DownloadToAsync`.
+- DI lifetime rule for BOTH workers: a hosted service is a singleton, so it must NOT constructor-inject
+  any scoped service (`IStorageService`, repositories, `ISessionRecordingService`). Resolve those from a
+  per-iteration `IServiceScopeFactory.CreateScope()`. Violating this throws at startup:
+  "Cannot consume scoped service ... from singleton IHostedService" (DI validate-on-build).
 
 ### Notes on Known Drift Prevented
 - The host "Record Session" flag was documented (Gap-03) but never persisted server-side — corrected
   here with `recordingenabled` + the host-only PATCH endpoint. Without it the feature is inert.
 - Personal Audio Archive (per-user, opt-in, private) is unchanged and coexists; the consolidated
   recording is a separate admin/host artifact built from the same segments.
+- DI drift (fixed): `SessionRecordingRetentionWorker` originally constructor-injected the scoped
+  `IStorageService`, which crashed API startup with `InvalidOperationException: Cannot consume scoped
+  service 'IStorageService' from singleton IHostedService`. Fixed by resolving `IStorageService` from
+  the same per-sweep scope as the repository. `SessionRecordingMergeWorker` was already correct
+  (resolves `ISessionRecordingService` per scope). Rule documented above to prevent recurrence.
 
 ### Frontend (Angular — implemented, `vite build` green)
 - **Lobby state** now surfaces `recordingEnabled` (`SessionService.GetLobbyStateAsync` reads

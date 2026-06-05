@@ -188,6 +188,12 @@ Logic source: `ProjectOverview.md` only.
 | safe area | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
 | design standards | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
 | breakpoint | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| footer nav | Android Mobile Module | Shared Footer Navigation Architecture |
+| footer navigation | Android Mobile Module | Shared Footer Navigation Architecture |
+| footer tabs | Android Mobile Module | Shared Footer Navigation Architecture |
+| bottom nav | Android Mobile Module | Shared Footer Navigation Architecture |
+| bottom-nav | Android Mobile Module | Shared Footer Navigation Architecture |
+| BottomNavComponent | Android Mobile Module | Shared Footer Navigation Architecture |
 
 ## Module List
 
