@@ -2241,15 +2241,20 @@ ApiResponse<TurnStateResponseDto> — TurnStateResponseDto for the next turn
   (same shape as Get Current Turn response)
 ```
 
-**Business Rules:**
+**Business Rules (ORDER IS CRITICAL — validate-before-mutate):**
 1. `MemberId` must equal authenticated `userId` — only the active speaker can shift
 2. Current turn must have `ActiveMemberId == MemberId` AND `TurnIndex == dto.TurnIndex`
 3. Session must be `ACTIVE`
-4. Mark current turn `COMPLETED` via `uspUpdateTurnStatusByTurnStateId`
-5. Create next turn at `TurnIndex + 1`
-6. Next speaker resolved by matching `tblUtterance.SpeakerLabel` to `tblSessionMember.SlotName` (case-insensitive trim match)
-7. If `nextTurnIndex > orderedUtterances.Count` → no more turns; return error `"No further turns remain in this session. Complete the session."`
-8. `MaxReReads` is always 2 for new turns
+4. **Resolve & validate the next turn FIRST, before any mutation** (`ResolveNextTurnAsync` — pure, no DB writes). This resolves the next speaker by matching `tblUtterance.SpeakerLabel` to `tblSessionMember.SlotName` (case-insensitive trim match) and checks bounds. The current turn is NOT touched yet.
+   - If resolution returns an **error** (no active members, no utterances, slot mismatch) → return failure; current turn stays `ACTIVE`; **session is NOT bricked** and the speaker can retry after the config is fixed.
+   - If `nextTurnIndex > orderedUtterances.Count` → **end of script** (NOT an error): mark the final turn `COMPLETED` and return the completion signal (`Message = TurnShiftSignals.SessionComplete = "No further turns remain"`) so the hub auto-completes the session.
+5. Otherwise **atomic advance** via `CompleteAndAdvanceTurnAsync`: in ONE DB transaction, mark current turn `COMPLETED` (`uspUpdateTurnStatusByTurnStateId`) AND insert the next turn (`uspInsertTurnState`). If the insert fails, the completion is rolled back — the session can never be left without an `ACTIVE` turn.
+6. After a successful advance, re-fetch the canonical current turn (`GetCurrentTurnAsync`) and resolve the avatar URL for the broadcast.
+7. `MaxReReads` is always 2 for new turns
+
+**Repository contract:**
+- `CompleteAndAdvanceTurnAsync(completedTurnStateId, completedStatus, completedBy, completedByIp, nextTurn, ct)` — transactional (mirrors `SessionRepository.CreateSessionAsync` pattern). This is the ONLY path that should mark-complete-then-insert; never call `UpdateTurnStatusAsync(COMPLETED)` followed by a separate `InsertTurnStateAsync` for a shift.
+- `ResolveNextTurnAsync` returns `(TurnState? NextTurn, bool IsEndOfScript, string? Error)`; `CreateNextTurnAsync` (start-session/turn-1 path) wraps it: resolve → insert → read back.
 
 **Next Speaker Resolution:**
 ```
@@ -2277,12 +2282,22 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 - Session not ACTIVE → `"Session must be active to shift turns."`
 - Turn mismatch → `"The provided turn does not match the active turn."`
 - No further turns → `"No further turns remain in this session. Complete the session."`
-- Speaker label not matched → slot mismatch error with active slot list
+- Speaker label not matched (next turn) → `"No active member holds the slot '{speakerLabel}'. Active slots: [{slots}]. Check that the script speaker labels match the session slot names."`
+- Next utterance index exceeds count → `"Turn {n} exceeds the total utterance count ({count}). Session may already be complete."`
+- No active members → `"No active session members found."`
+- Script has no utterances → `"The script linked to this session has no utterances."`
+
+**Error Message Contract (CRITICAL — where the reason lives):**
+- `ShiftTurnAsync` returns `ApiResponse.FailureResult(errors, message)`. The **specific** cause is in `Errors[0]`; `Message` is a generic bucket label that is `"Turn shift failed."` for EVERY non-completion failure.
+- `LiveSessionHub.CompleteTurn` surfaces failures via the `DescribeFailure(response)` helper, which joins `Errors` and falls back to `Message`. So the client `HubException` now carries the specific reason (e.g. `"No active member holds the slot 'Customer'..."`), **not** the generic `"Turn shift failed."`.
+- The completion signal is the exception: it is carried in `Message` (`TurnShiftSignals.SessionComplete` = `"No further turns remain"`) and matched there by the hub before any error is thrown.
 
 **Notes on Known Drift Prevented:**
 - `SpeakerLabel` and `SlotName` matched case-insensitively with trim — prevents mismatches from whitespace or casing differences in script upload vs. session slot assignment
 - Treating `TURN_SHIFT` as a full turn DTO leaves listeners on stale speaker text and blocks the next speaker from seeing the recorder; clients must re-fetch current turn after the event
 - **Speaker name drift (2026-06-03):** `handleTurnShift()` spread `...currentState` into the optimistic update, carrying the previous turn's `activeMemberName`. The `updateState()` guard (which prevents same-`turnIndex` re-fires to avoid double-triggering `ngOnChanges`) blocked the subsequent `loadCurrentTurn()` response from correcting it. Result: when the same role (e.g. "Receptionist") appeared multiple times in the script, every turn transition showed the previous speaker's name until the next turn. **Fix:** `newActiveMemberName` added to the `TURN_SHIFT` hub broadcast and consumed in the optimistic patch in `handleTurnShift`. The name is now correct from the moment the event fires.
+- **Bricked-session on turn shift (2026-06-05, CRITICAL):** `ShiftTurnAsync` marked the current turn `COMPLETED` **before** attempting to create the next turn, with no transaction. When next-turn creation failed — most commonly because the **current turn was the last turn** (`nextTurnIndex > utteranceCount`), but also on a speaker-label/slot mismatch — the current turn was already `COMPLETED` and no `ACTIVE` turn remained. The session was permanently stuck: every subsequent `CompleteTurn` returned `"Session, current turn, or user was not found."` (because `GetCurrentTurnEntityAsync` filters `TurnStatus == 'ACTIVE'`), while voice-analysis saves still "succeeded" against the completed turn (`GetTurnBySessionAndTurnIndexAsync` has no ACTIVE filter), producing the confusing "save OK + shift fail" pair. Reproduced on sessions 93 and 94 at turn 16. **Compounding latent bug:** the end-of-script path never actually fired — `CreateNextTurnAsync` returned an *error* string for `nextTurnIndex > count`, but `ShiftTurnAsync` only treated a `(null, null)` as completion, so the documented "auto-complete on last turn" path (see Session Completion) threw `"Turn shift failed."` and bricked the final turn instead of completing. **Drift type:** missing transaction / mutation-before-validation + stale docs (documented auto-complete behavior not implemented). **Fix:** split resolution from persistence (`ResolveNextTurnAsync`), validate the next turn before any mutation, route true end-of-script to the `SessionComplete` signal, and make complete+insert atomic via `CompleteAndAdvanceTurnAsync`. **Recovery for already-bricked sessions:** they have a `COMPLETED` last turn and no `ACTIVE` turn — finalize them with the **End Session** button (`EndSession` hub → `CompleteSessionAsync`, which does not require an active turn) to get the summary; or start a fresh session.
+- **Generic error masking (2026-06-05):** `LiveSessionHub.CompleteTurn` threw `new HubException(response.Message)`, and `ShiftTurnAsync` stamps `Message = "Turn shift failed."` on every non-completion failure while putting the real cause in `Errors`. Result: the client (and the warning log) only ever saw `HubException: Turn shift failed.` with no way to tell whether it was a turn mismatch, wrong user, or a script speaker-label / session-slot mismatch on the next turn. **Drift type:** stale docs / contract drift — the Failure Cases above claimed specific messages surfaced, but the code surfaced the generic bucket. **Fix:** added `DescribeFailure<T>(ApiResponse<T>)` helper in the hub (joins `Errors`, falls back to `Message`); `CompleteTurn`, `SubmitListenerFeedback`, `RequestReRead`, and `EndSession` now throw the specific reason and log it. The most common underlying cause of a real (non-stale) `CompleteTurn` failure is the next-turn speaker-label/slot mismatch from `CreateNextTurnAsync` — that exact text now reaches the client.
 - **Listener-screen avatar missing (2026-06-04):** `TurnState` had no `activeMemberAvatarUrl` field; `<app-user-avatar>` in listener-screen always fell back to initials. **Fix (full-stack):** `TurnStateResponseDto.ActiveMemberAvatarUrl` added; `LiveSessionRepository.GetCurrentTurnAsync` selects `activeMember.AvatarUrl` (already joined from `tblUser`); `LiveSessionService.ResolveAvatarUrlAsync` resolves R2 key to presigned URL and is called after both the existing-turn and created-turn return paths in `EnsureCurrentTurnAsync` / `CreateNextTurnAsync`; `LiveSessionHub.CompleteTurn` adds `activeMemberAvatarUrl` to the `TURN_SHIFT` broadcast; `TurnState` frontend model adds `activeMemberAvatarUrl?: string | null`; `TurnShiftEvent` type updated; optimistic patch in `handleTurnShift` sets `activeMemberAvatarUrl`; listener-screen template binds `[avatarUrl]="turnState.activeMemberAvatarUrl"` on `app-user-avatar`.
 
 ---
@@ -2517,7 +2532,8 @@ ApiResponse<SessionSummaryResponseDto>
 **Notes on Known Drift Prevented:**
 - `"The provided turn does not match the active turn"` — can occur on duplicate or stale `CompleteTurn` calls (network retry, auto-submit timer firing late). Now surfaces as `HubException`; does not end session.
 - `"Only the active speaker can complete the current turn"` — rejected `CompleteTurn` from wrong user. Now surfaces as `HubException`; does not end session.
-- `"Speaker slot not found"` — script speaker label / session slot mismatch. Now surfaces as `HubException`; session should not end just because of a slot config error.
+- `"No active member holds the slot '...'"` — script speaker label / session slot mismatch on the next turn. Now surfaces as `HubException`; session should not end just because of a slot config error.
+- **All of these specific messages reach the client only because of the 2026-06-05 `DescribeFailure` fix** — previously the hub threw `response.Message` (`"Turn shift failed."`) and the specific reason in `Errors` was dropped. See the Turn Shift flow "Error Message Contract" and "Generic error masking" drift note.
 
 ---
 
@@ -4815,11 +4831,16 @@ and cannot diverge again. Do not reintroduce a shell-specific footer; add/adjust
 
 ---
 
-### Dark-Blue Theme Conversion (2026-06-05) — IN PROGRESS
+### Dark-Blue Theme Conversion (2026-06-05) — REVERTED
 
-Direction (user-approved): full dark mode — deep-navy page + raised-navy surfaces + light
-text app-wide; eliminate white surfaces. Rollout: foundation + 3 flagship screens first
-(Login, Dashboard, Session Room), then mass-apply to the remaining ~38 screens after approval.
+STATUS: abandoned. The token flips in `index.css` and `styles.scss` were reverted by the user;
+the app remains on the LIGHT theme (page `#F4F6F9`, white cards, dark text). The notes below are
+kept only as reference for how a future dark-mode pass would be structured. Do NOT assume dark mode
+is active — `bg-white` cards are correct in the current light theme.
+
+Direction (originally approved, not shipped): full dark mode — deep-navy page + raised-navy surfaces
++ light text app-wide; eliminate white surfaces. Rollout was foundation + 3 flagship screens first
+(Login, Dashboard, Session Room), then mass-apply.
 
 **Two token systems drive the theme (both flipped to dark):**
 - `src/index.css` — Tailwind v4 `@theme --color-gw-*` (drives every `bg-gw-*`/`text-gw-*`/`border-gw-*`
@@ -4846,6 +4867,42 @@ dark mode and must NOT be changed. Verify each occurrence is a solid surface bef
 light hex on the other ~38 screens (Profile, Review/my-mistakes, all Admin screens, session create/
 history/detail, scripts, etc.) + per-screen mobile spacing/viewport tightening. Until then those
 screens render dark-page/white-card (intentionally half-converted at the approval checkpoint).
+
+### Admin Mobile Design System (2026-06-05)
+
+All Admin list screens were redesigned to one mobile-first system modeled on the user
+`session/history` screen. Single source of truth for Admin list UX — reuse, don't fork.
+
+**Shared component:** `shared/components/admin-load-more/admin-load-more.component.ts`
+(`<app-admin-load-more [loading] [hasMore] [loaded] [total] (more)>`). Replaces `mat-paginator`
+on EVERY admin list with the same Load-More (append) pager — touch-friendly, no horizontal scroll.
+Pagination model changed from page-replace (mat-paginator) to append: screens keep a private
+`page`/`pageSize`, reset on filter change, and append on `loadMore()`.
+
+**Standard layout (every admin list):** `max-w-lg mx-auto space-y-4` container → header row
+(icon badge + title + count subtitle + primary action) → search/filter pills → loading skeletons
+(`h-[68-72px] animate-pulse`) → empty-state card → single rounded list card
+(`bg-white rounded-2xl border divide-y divide-gw-bg`) with rows
+(`flex items-center gap-3 px-4 py-3.5`: icon/avatar + truncating meta + right-aligned status badge +
+compact `w-9 h-9` action buttons) → `<app-admin-load-more>`. No `<table>`/`overflow-x-auto` anywhere.
+
+**Per-screen specifics:**
+- `admin/scripts` — table → list card; header/stats(3-up)/search kept; actions view/toggle/download.
+- `admin/users` — Age Group FILTER removed (dropdown + `ageFilterControl` deleted; the Add/Edit
+  modal's `ageGroup` form field is KEPT). Table → list card; filter is now All / Active-only pills;
+  actions view/edit/toggle. Removed horizontal scroll.
+- `admin/reports` — summary stat cards moved ABOVE filters; filters (date range + user) below;
+  table → list card (avatar + sessions/improvement + score badge + View). Stats computed from
+  loaded rows.
+- `admin/cohorts` — single-column standardized cards within `max-w-lg`; added client-side search;
+  create modal kept. No pager (getCohorts returns all).
+- `admin/sessions` — table → list card (icon + name/members/code/date/score + status badge + View);
+  filters are now search + status pills (All/Completed/Abandoned/In Progress) + date-range; paginator
+  → Load-More (append). Stats (total/completed/avg) computed from loaded rows.
+
+**Build note:** `MatPaginator` is now fully removed from the Admin module — the former shared
+~234 kB paginator chunk no longer exists. Not a regression. All five admin list screens
+(scripts, users, reports, cohorts, sessions) now share the one design system + `<app-admin-load-more>`.
 
 ---
 

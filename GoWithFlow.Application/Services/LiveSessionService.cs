@@ -101,34 +101,62 @@ public sealed class LiveSessionService : ILiveSessionService
 			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "The provided turn does not match the active turn." }, "Turn shift failed.");
 		}
 
-		await _liveSessionRepository.UpdateTurnStatusAsync(
+		// CRITICAL: resolve and VALIDATE the next turn BEFORE mutating the current turn.
+		// If the next turn cannot be created (e.g. the next utterance's speaker label matches no
+		// active slot), the current turn must stay ACTIVE. Marking it COMPLETED first — as the old
+		// code did — left the session with no ACTIVE turn and bricked it permanently (every later
+		// CompleteTurn returned "Session, current turn, or user was not found"). See the Turn Shift
+		// flow drift note (2026-06-05) in ProjectOverview.
+		var (nextTurn, isEndOfScript, nextTurnError) = await ResolveNextTurnAsync(
+			session, currentTurnEntity.TurnIndex + 1, user.FullName, cancellationToken);
+
+		if (nextTurnError is not null)
+		{
+			// Current turn is untouched — session is NOT bricked. The caller can fix the script /
+			// slot configuration and retry the same turn.
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { nextTurnError }, "Turn shift failed.");
+		}
+
+		if (isEndOfScript || nextTurn is null)
+		{
+			// Genuine end of script: complete the final turn, then signal session completion.
+			// The signal is carried in Message (TurnShiftSignals.SessionComplete) — the field the
+			// hub inspects — so the last turn triggers auto-completion instead of throwing.
+			await _liveSessionRepository.UpdateTurnStatusAsync(
+				currentTurnEntity.TurnStateId,
+				TurnStatusType.COMPLETED.ToString(),
+				user.FullName,
+				"127.0.0.1",
+				cancellationToken);
+
+			return ApiResponse<TurnStateResponseDto>.FailureResult(
+				new[] { "No further turns remain in this session. Complete the session." },
+				TurnShiftSignals.SessionComplete);
+		}
+
+		// Atomic advance: mark the current turn COMPLETED and insert the next turn in one
+		// transaction. If the insert fails, the completion is rolled back and the current turn
+		// stays ACTIVE — the session can never be left without an active turn.
+		await _liveSessionRepository.CompleteAndAdvanceTurnAsync(
 			currentTurnEntity.TurnStateId,
 			TurnStatusType.COMPLETED.ToString(),
 			user.FullName,
 			"127.0.0.1",
+			nextTurn,
 			cancellationToken);
 
-		var (nextTurn, nextTurnError) = await CreateNextTurnAsync(session, currentTurnEntity.TurnIndex + 1, user.FullName, cancellationToken);
+		var createdTurn = await _liveSessionRepository.GetCurrentTurnAsync(session.SessionId, cancellationToken);
 
-		if (nextTurn is null)
+		if (createdTurn is null)
 		{
-			// Two distinct cases must NOT be conflated:
-			//   1. Genuine end of script (nextTurnError is null) → signal session completion.
-			//   2. A real failure creating the next turn (nextTurnError is set) → surface as an error.
-			// The completion signal is carried in Message (TurnShiftSignals.SessionComplete) — the
-			// field the hub inspects — so the last turn reliably triggers auto-completion instead of
-			// throwing a HubException. (Previously the signal lived only in Errors and was missed.)
-			if (nextTurnError is null)
-			{
-				return ApiResponse<TurnStateResponseDto>.FailureResult(
-					new[] { "No further turns remain in this session. Complete the session." },
-					TurnShiftSignals.SessionComplete);
-			}
-
-			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { nextTurnError }, "Turn shift failed.");
+			return ApiResponse<TurnStateResponseDto>.FailureResult(
+				new[] { "Turn was advanced but the new turn could not be retrieved. Check uspGetCurrentTurnBySessionId." },
+				"Turn shift failed.");
 		}
 
-		return ApiResponse<TurnStateResponseDto>.SuccessResult(nextTurn, "Turn shifted successfully.");
+		createdTurn.ActiveMemberAvatarUrl = await ResolveAvatarUrlAsync(createdTurn.ActiveMemberAvatarUrl, cancellationToken);
+
+		return ApiResponse<TurnStateResponseDto>.SuccessResult(createdTurn, "Turn shifted successfully.");
 	}
 
 	public async Task<ApiResponse<VoiceAnalysisResponseDto>> SaveVoiceAnalysisAsync(SaveVoiceAnalysisRequestDto dto, long userId, CancellationToken cancellationToken = default)
@@ -492,24 +520,34 @@ public sealed class LiveSessionService : ILiveSessionService
 		return await CreateNextTurnAsync(session, 1, requestedBy, cancellationToken);
 	}
 
-	private async Task<(TurnStateResponseDto? Turn, string? Error)> CreateNextTurnAsync(Session session, int nextTurnIndex, string createdBy, CancellationToken cancellationToken)
+	/// <summary>
+	/// Resolves (but does NOT persist) the next turn for a session. Pure validation + construction
+	/// so callers can verify the next turn is creatable BEFORE mutating the current turn.
+	/// Returns:
+	///   - NextTurn set, IsEndOfScript=false, Error=null → a valid next turn ready to insert
+	///   - IsEndOfScript=true                            → the script is finished (no next turn)
+	///   - Error set                                     → next turn cannot be created (surface it)
+	/// </summary>
+	private async Task<(TurnState? NextTurn, bool IsEndOfScript, string? Error)> ResolveNextTurnAsync(
+		Session session, int nextTurnIndex, string createdBy, CancellationToken cancellationToken)
 	{
 		var activeMembers = await _liveSessionRepository.GetActiveSessionMembersBySessionIdAsync(session.SessionId, cancellationToken);
 		var orderedUtterances = await _liveSessionRepository.GetOrderedUtterancesBySessionIdAsync(session.SessionId, cancellationToken);
 
 		if (activeMembers.Count == 0)
 		{
-			return (null, "No active session members found.");
+			return (null, false, "No active session members found.");
 		}
 
 		if (orderedUtterances.Count == 0)
 		{
-			return (null, "The script linked to this session has no utterances.");
+			return (null, false, "The script linked to this session has no utterances.");
 		}
 
 		if (nextTurnIndex > orderedUtterances.Count)
 		{
-			return (null, $"Turn {nextTurnIndex} exceeds the total utterance count ({orderedUtterances.Count}). Session may already be complete.");
+			// Not an error — the script is complete. The caller decides how to finish the session.
+			return (null, true, null);
 		}
 
 		var nextUtterance = orderedUtterances[nextTurnIndex - 1];
@@ -519,24 +557,46 @@ public sealed class LiveSessionService : ILiveSessionService
 		if (activeMember is null)
 		{
 			var activeSlots = string.Join(", ", activeMembers.Select(m => $"'{m.SlotName}'"));
-			return (null, $"No active member holds the slot '{nextUtterance.SpeakerLabel}'. Active slots: [{activeSlots}]. Check that the script speaker labels match the session slot names.");
+			return (null, false, $"No active member holds the slot '{nextUtterance.SpeakerLabel}'. Active slots: [{activeSlots}]. Check that the script speaker labels match the session slot names.");
 		}
 
-		await _liveSessionRepository.InsertTurnStateAsync(
-			new TurnState
-			{
-				SessionId = session.SessionId,
-				TurnIndex = nextTurnIndex,
-				TotalTurns = orderedUtterances.Count,
-				ActiveMemberId = activeMember.UserId,
-				ActiveSlotIndex = activeMember.SlotIndex,
-				UtteranceId = nextUtterance.UtteranceId,
-				MaxReReads = 2,
-				TurnStatus = TurnStatusType.ACTIVE.ToString(),
-				CreatedBy = createdBy,
-				IPAddress = "127.0.0.1"
-			},
-			cancellationToken);
+		var nextTurn = new TurnState
+		{
+			SessionId = session.SessionId,
+			TurnIndex = nextTurnIndex,
+			TotalTurns = orderedUtterances.Count,
+			ActiveMemberId = activeMember.UserId,
+			ActiveSlotIndex = activeMember.SlotIndex,
+			UtteranceId = nextUtterance.UtteranceId,
+			MaxReReads = 2,
+			TurnStatus = TurnStatusType.ACTIVE.ToString(),
+			CreatedBy = createdBy,
+			IPAddress = "127.0.0.1"
+		};
+
+		return (nextTurn, false, null);
+	}
+
+	/// <summary>
+	/// Resolves, inserts, and returns the next turn. Used by the start-session path (turn 1) where
+	/// there is no prior turn to complete. The turn-shift path uses <see cref="ResolveNextTurnAsync"/>
+	/// plus an atomic complete-and-advance instead.
+	/// </summary>
+	private async Task<(TurnStateResponseDto? Turn, string? Error)> CreateNextTurnAsync(Session session, int nextTurnIndex, string createdBy, CancellationToken cancellationToken)
+	{
+		var (nextTurn, isEndOfScript, error) = await ResolveNextTurnAsync(session, nextTurnIndex, createdBy, cancellationToken);
+
+		if (error is not null)
+		{
+			return (null, error);
+		}
+
+		if (isEndOfScript || nextTurn is null)
+		{
+			return (null, $"Turn {nextTurnIndex} exceeds the total utterance count. Session may already be complete.");
+		}
+
+		await _liveSessionRepository.InsertTurnStateAsync(nextTurn, cancellationToken);
 
 		var createdTurn = await _liveSessionRepository.GetCurrentTurnAsync(session.SessionId, cancellationToken);
 

@@ -194,6 +194,12 @@ Logic source: `ProjectOverview.md` only.
 | bottom nav | Android Mobile Module | Shared Footer Navigation Architecture |
 | bottom-nav | Android Mobile Module | Shared Footer Navigation Architecture |
 | BottomNavComponent | Android Mobile Module | Shared Footer Navigation Architecture |
+| admin mobile | Android Mobile Module | Admin Mobile Design System |
+| admin list | Android Mobile Module | Admin Mobile Design System |
+| admin pager | Android Mobile Module | Admin Mobile Design System |
+| load more | Android Mobile Module | Admin Mobile Design System |
+| AdminLoadMoreComponent | Android Mobile Module | Admin Mobile Design System |
+| mat-paginator | Android Mobile Module | Admin Mobile Design System |
 
 ## Module List
 

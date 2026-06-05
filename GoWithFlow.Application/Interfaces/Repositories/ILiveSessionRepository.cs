@@ -15,6 +15,13 @@ public interface ILiveSessionRepository
 
 	Task UpdateTurnStatusAsync(long turnStateId, string turnStatus, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
 
+	/// <summary>
+	/// Atomically marks the current turn COMPLETED and inserts the next turn in a single transaction.
+	/// Prevents the "bricked session" state where the current turn is completed but the next turn
+	/// fails to insert, leaving the session with no ACTIVE turn.
+	/// </summary>
+	Task CompleteAndAdvanceTurnAsync(long completedTurnStateId, string completedStatus, string completedBy, string completedByIp, TurnState nextTurn, CancellationToken cancellationToken = default);
+
 	Task IncrementReReadCountAsync(long turnStateId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default);
 
 	Task<long> InsertVoiceAnalysisAsync(VoiceAnalysis voiceAnalysis, CancellationToken cancellationToken = default);

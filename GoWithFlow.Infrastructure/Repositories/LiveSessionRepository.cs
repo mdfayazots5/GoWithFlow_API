@@ -121,6 +121,58 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}
 
+	public async Task CompleteAndAdvanceTurnAsync(
+		long completedTurnStateId,
+		string completedStatus,
+		string completedBy,
+		string completedByIp,
+		TurnState nextTurn,
+		CancellationToken cancellationToken = default)
+	{
+		var connection = _dbContext.Database.GetDbConnection();
+		await EnsureConnectionOpenAsync(connection, cancellationToken);
+
+		await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+		try
+		{
+			// 1. Mark the current turn COMPLETED.
+			await using (var completeCommand = CreateCommand(connection, "dbo.uspUpdateTurnStatusByTurnStateId"))
+			{
+				completeCommand.Transaction = transaction;
+				completeCommand.Parameters.Add(CreateParameter("@TurnStateId", completedTurnStateId));
+				completeCommand.Parameters.Add(CreateParameter("@TurnStatus", completedStatus));
+				completeCommand.Parameters.Add(CreateParameter("@UpdatedBy", completedBy));
+				completeCommand.Parameters.Add(CreateParameter("@IPAddress", completedByIp));
+				await DbCommandHelper.ExecuteNonQueryAsync(completeCommand, cancellationToken);
+			}
+
+			// 2. Insert the next turn. If this fails, the transaction rolls back and the
+			//    current turn stays ACTIVE — the session is never left without an active turn.
+			await using (var insertCommand = CreateCommand(connection, "dbo.uspInsertTurnState"))
+			{
+				insertCommand.Transaction = transaction;
+				insertCommand.Parameters.Add(CreateParameter("@SessionId", nextTurn.SessionId));
+				insertCommand.Parameters.Add(CreateParameter("@TurnIndex", nextTurn.TurnIndex));
+				insertCommand.Parameters.Add(CreateParameter("@TotalTurns", nextTurn.TotalTurns));
+				insertCommand.Parameters.Add(CreateParameter("@ActiveMemberId", nextTurn.ActiveMemberId));
+				insertCommand.Parameters.Add(CreateParameter("@ActiveSlotIndex", nextTurn.ActiveSlotIndex));
+				insertCommand.Parameters.Add(CreateParameter("@UtteranceId", nextTurn.UtteranceId));
+				insertCommand.Parameters.Add(CreateParameter("@MaxReReads", nextTurn.MaxReReads));
+				insertCommand.Parameters.Add(CreateParameter("@CreatedBy", nextTurn.CreatedBy));
+				insertCommand.Parameters.Add(CreateParameter("@IPAddress", nextTurn.IPAddress));
+				await DbCommandHelper.ExecuteNonQueryAsync(insertCommand, cancellationToken);
+			}
+
+			await transaction.CommitAsync(cancellationToken);
+		}
+		catch
+		{
+			await transaction.RollbackAsync(cancellationToken);
+			throw;
+		}
+	}
+
 	public async Task IncrementReReadCountAsync(long turnStateId, string updatedBy, string ipAddress, CancellationToken cancellationToken = default)
 	{
 		var connection = _dbContext.Database.GetDbConnection();

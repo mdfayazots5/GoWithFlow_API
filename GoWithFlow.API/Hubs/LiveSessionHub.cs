@@ -157,10 +157,16 @@ public sealed class LiveSessionHub : Hub
 
 			// ShiftTurn failed for a transient or client-side reason — surface it.
 			// This is NOT a session-ending condition.
+			//
+			// IMPORTANT: the specific cause lives in response.Errors. response.Message is the
+			// generic bucket label ("Turn shift failed.") that ShiftTurnAsync stamps on every
+			// failure. Surfacing Message alone hides the real reason (turn mismatch, wrong user,
+			// "No active member holds the slot 'X'", etc.) from both the client and the logs.
+			var failureReason = DescribeFailure(response);
 			_logger.LogWarning(
 				"CompleteTurn rejected (non-completion reason). SessionId={SessionId} TurnIndex={TurnIndex} Reason={Reason}",
-				parsedSessionId, turnIndex, response.Message);
-			throw new HubException(response.Message);
+				parsedSessionId, turnIndex, failureReason);
+			throw new HubException(failureReason);
 		}
 
 		_logger.LogInformation(
@@ -195,7 +201,7 @@ public sealed class LiveSessionHub : Hub
 
 		if (response.Success == false)
 		{
-			throw new HubException(response.Message);
+			throw new HubException(DescribeFailure(response));
 		}
 
 		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
@@ -217,14 +223,14 @@ public sealed class LiveSessionHub : Hub
 
 		if (response.Success == false)
 		{
-			throw new HubException(response.Message);
+			throw new HubException(DescribeFailure(response));
 		}
 
 		var currentTurnResponse = await _liveSessionService.GetCurrentTurnAsync(parsedSessionId, Context.ConnectionAborted);
 
 		if (currentTurnResponse.Success == false || currentTurnResponse.Data is null)
 		{
-			throw new HubException(currentTurnResponse.Message);
+			throw new HubException(DescribeFailure(currentTurnResponse));
 		}
 
 		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
@@ -244,7 +250,7 @@ public sealed class LiveSessionHub : Hub
 
 		if (response.Success == false || response.Data is null)
 		{
-			throw new HubException(response.Message);
+			throw new HubException(DescribeFailure(response));
 		}
 
 		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
@@ -370,6 +376,23 @@ public sealed class LiveSessionHub : Hub
 	private static string BuildGroupName(long sessionId)
 	{
 		return $"live_{sessionId}";
+	}
+
+	/// <summary>
+	/// Extracts the specific, actionable failure reason from a service response.
+	/// Service methods stamp a generic bucket label on <c>ApiResponse.Message</c>
+	/// (e.g. "Turn shift failed.") while the real cause lives in <c>ApiResponse.Errors</c>.
+	/// Surfacing only Message hides the diagnostic detail from the client and the logs,
+	/// so prefer the joined Errors and fall back to Message when no errors are present.
+	/// </summary>
+	private static string DescribeFailure<T>(ApiResponse<T> response)
+	{
+		if (response.Errors is { Count: > 0 } errors)
+		{
+			return string.Join(" ", errors);
+		}
+
+		return string.IsNullOrWhiteSpace(response.Message) ? "Operation failed." : response.Message;
 	}
 
 	private async Task<HubConnectionMetadata?> TryBuildConnectionMetadataAsync(CancellationToken cancellationToken)
