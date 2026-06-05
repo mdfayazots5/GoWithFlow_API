@@ -149,6 +149,13 @@ Logic source: `ProjectOverview.md` only.
 | audio archive | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
 | voice archive | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
 | record turns | Phase 3 Features | Phase 3 Step 5 — Live Session Audio Archive |
+| session recording | Backend Session Recording Module | Backend Session Recording Module — Consolidated Session Recording |
+| record session | Backend Session Recording Module | Backend Session Recording Module — Consolidated Session Recording |
+| consolidated recording | Backend Session Recording Module | Backend Session Recording Module — Consolidated Session Recording |
+| merge worker | Backend Session Recording Module | Backend Session Recording Module — Consolidated Session Recording |
+| ffmpeg | Backend Session Recording Module | Backend Session Recording Module — Consolidated Session Recording |
+| recordingenabled | Backend Session Recording Module | Backend Session Recording Module — Consolidated Session Recording |
+| tblsessionrecording | Backend Session Recording Module | Backend Session Recording Module — Consolidated Session Recording |
 | r2 | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
 | cloudflare | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
 | storage | Phase 10 Storage | Phase 10 — Cloudflare R2 Storage Integration |
@@ -229,5 +236,9 @@ Logic source: `ProjectOverview.md` only.
 12. Android Mobile Module
     - Section: `Android Mobile Module — Capacitor Setup`
     - Purpose: Capacitor 8.4.0 config, Android project structure, build process, Gradle setup, Java 21 requirement, APK generation, device installation via Windows ADB, known limitations
+
+13. Backend Session Recording Module
+    - Section: `Backend Session Recording Module — Consolidated Session Recording`
+    - Purpose: one consolidated .m4a per session merged server-side (ffmpeg) from per-turn segments; host recordingenabled flag + toggle endpoint, tblSessionRecording, merge + retention background workers, admin single-recording API. Full design: `Backend/Docs/Dev/SessionRecordingArchitecture.md`
     - Section: `Android Mobile Module — Mobile Design Standards`
     - Purpose: Mobile UX audit findings, design standards, typography scale, touch target rules, safe-area requirements, color token additions, implementation priorities. Full doc: `Backend/Docs/MobileDesignAnalysis.md`

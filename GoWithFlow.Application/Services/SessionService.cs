@@ -25,6 +25,7 @@ public sealed class SessionService : ISessionService
 	private readonly IUserRepository _userRepository;
 	private readonly IScriptRepository _scriptRepository;
 	private readonly ISessionRepository _sessionRepository;
+	private readonly ISessionRecordingRepository _sessionRecordingRepository;
 	private readonly ILiveSessionService _liveSessionService;
 	private readonly IStorageService _storageService;
 	private readonly CloudflareR2Settings _r2Settings;
@@ -33,6 +34,7 @@ public sealed class SessionService : ISessionService
 		IUserRepository userRepository,
 		IScriptRepository scriptRepository,
 		ISessionRepository sessionRepository,
+		ISessionRecordingRepository sessionRecordingRepository,
 		ILiveSessionService liveSessionService,
 		IStorageService storageService,
 		IOptions<CloudflareR2Settings> r2Options)
@@ -40,6 +42,7 @@ public sealed class SessionService : ISessionService
 		_userRepository = userRepository;
 		_scriptRepository = scriptRepository;
 		_sessionRepository = sessionRepository;
+		_sessionRecordingRepository = sessionRecordingRepository;
 		_liveSessionService = liveSessionService;
 		_storageService = storageService;
 		_r2Settings = r2Options.Value;
@@ -168,6 +171,7 @@ public sealed class SessionService : ISessionService
 		}
 
 		lobbyState.CanStart = ResolveCanStart(lobbyState);
+		lobbyState.RecordingEnabled = await _sessionRecordingRepository.GetRecordingEnabledAsync(sessionId, cancellationToken);
 		await ResolveLobbyAvatarsAsync(lobbyState, cancellationToken);
 
 		return ApiResponse<LobbyStateResponseDto>.SuccessResult(lobbyState, "Lobby state retrieved successfully.");

@@ -17,6 +17,13 @@ RUN dotnet publish -c Release -o /app/publish
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
+
+# ffmpeg + ffprobe: required by the Phase 16 session-recording merge worker to concatenate
+# per-turn audio segments into one .m4a. Installed on PATH (matches Ffmpeg config defaults).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV DOTNET_ENVIRONMENT=Production
 ENV DOTNET_hostBuilder__reloadConfigOnChange=false

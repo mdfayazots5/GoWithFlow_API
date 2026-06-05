@@ -84,6 +84,7 @@ public static class ApiRoutes
 		public const string Ready = "ready";
 		public const string Start = "{sessionId:long}/start";
 		public const string End = "{sessionId:long}/end";
+		public const string Recording = "{sessionId:long}/recording";
 		public const string History = "history";
 		public const string Leave = "{sessionId:long}/leave";
 		public const string CompleteAbsolute = "~/api/sessions/{sessionId:long}/complete";

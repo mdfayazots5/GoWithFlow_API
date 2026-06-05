@@ -2936,6 +2936,44 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 
 **VoiceFeedbackComponent change:** `showDetailedBreakdown` set to `true` by default — full comparison panel always visible without requiring user click.
 
+> ⚠ The fix above applies to the **mobile WEB** path (Android Chrome, `isCapacitorNative=false`). The installed **Capacitor APK** uses a different code path (`startNativeSession`) documented next. Do not confuse the two.
+
+#### Native (Capacitor APK) Speech Path — Stable Contract (2026-06-04)
+> Covers: language resolution, mic-contention, number accuracy, and responsiveness tuning.
+
+**Applies to:** Android/iOS APK where `Capacitor.isNativePlatform() === true`. This path uses `@capacitor-community/speech-recognition` v7 (`startNativeSession` in `voice-recognition.engine.ts`). The Web Speech API is NOT available here.
+
+**Drift type:** DB/API contract drift equivalent — *device speech-engine contract drift*. The native plugin drives the device's **default** recognizer, which is frequently the **offline SODA engine** (`com.google.android.tts/GoogleTTSRecognitionService`), NOT the cloud recognizer used by desktop/mobile Chrome.
+
+**Root cause (confirmed on device QGCAAETSYXRS95KV — iQOO IV2201, Android 13, 2026-06-04):**
+1. **Offline-only recognizer + language-pack mismatch.** The offline SODA engine only serves languages whose offline model is **installed**. Device locale was `en-GB`; logcat (`LanguagePackMaintenance: Ideal set: [en-GB_v3071]`) showed **only en-GB installed**. The old code hard-requested `en-IN` then `en-US` — neither installed → recognizer errored → no transcript → "No speech detected".
+2. **Swallowed error channel.** In `partialResults` mode the plugin's `start()` calls `call.resolve()` immediately; a later `onError()` rejects that **already-resolved** call (swallowed) and emits **no** `listeningState` event. The old en-US fallback was keyed on `listeningState:stopped`, which **never fired** on this error — the session hung until the 20 s hard timeout. The old code comment claiming "listeningState:stopped is the only JS-visible signal on onError" was factually wrong.
+3. **Why it "reappeared".** The previously-working version used the Web Speech API (cloud STT, en-IN supported). The 2026-06-03 Capacitor wrap switched mobile to the native offline recognizer, reintroducing the failure. **This is also why desktop ≠ mobile** (desktop still uses cloud Web Speech).
+
+**API constraints that shape the fix:**
+- `getSupportedLanguages()` is **unavailable on Android 13+** — cannot query supported languages at runtime.
+- `start({ language })` — `language` is **optional**; omitting it makes the plugin use `Locale.getDefault()` = device locale = the installed pack (guaranteed-available fallback).
+
+**Fix — language fallback chain + keep-alive + cache (`startNativeSession`):**
+1. **Candidate chain** (`buildLanguageCandidates`, de-duplicated): `[cachedLang, deviceEnglishVariant, en-IN, en-US, en-GB, undefined]`. `deviceEnglishVariant` = `navigator.language` if it is `en-*`, else `en-<REGION>` derived from the locale. `undefined` = omit language → device default (`Locale.getDefault()`, the installed pack).
+2. **Same-language keep-alive (7 s), NOT a short watchdog.** A bad language is silent *and* errorless — but so is a working recognizer while the user is still reading. The earlier 4 s watchdog conflated the two and tore down the working en-GB recognizer (confirmed on device: it thrashed the whole chain every 4 s and the user never got a window to speak). Replaced by: if no signal in 7 s, **relisten on the SAME language** (Android `SpeechRecognizer` is single-utterance; a slow starter just produces no signal). Only after `MAX_SILENT_RESTARTS` (2) silent relistens does it advance to the next candidate.
+3. **`langConfirmed` latch.** Set on the first `started`/`partial`; once set the language is never switched again. On confirmation the working language is cached in `localStorage['gwf_voice_lang']` so later turns succeed on attempt 0.
+4. **Token-guarded attempts (`attemptToken`).** Each (re)start bumps a token; stale callbacks from a superseded attempt are ignored.
+5. **Finalize triggers:** silence timer (**1.2 s** after last new partial — tuned for snappy, Duolingo-like stop) → finalize; `listeningState:stopped` with transcript → finalize; hard ceiling 30 s; external stop (`_intentionalStop`) → finalize with whatever was captured.
+6. **Terminal failure** (chain exhausted with no working language) → actionable error: "…download an English voice model in Settings → Voice input…".
+
+**Mic-contention fix (PROVEN root cause of "No speech detected" even with a valid language):** `VoiceBroadcastService.startBroadcast()` opened `getUserMedia` (`AUDIO_SOURCE_VOICE_COMMUNICATION`) the instant recording began, which **preempted** the native recognizer's `AUDIO_SOURCE_VOICE_RECOGNITION` capture (device log: `getInputForAttr() source 7` opening after `source 6`). Two processes cannot share one Android mic, and the native `SpeechRecognizer` cannot be fed an external stream. **Fix:** `startBroadcast()` early-returns on `Capacitor.isNativePlatform()` — the recognizer keeps exclusive mic access. **Product decision (confirmed):** on the APK, live WebRTC broadcast is OFF; scoring (on-device, free, offline) takes priority. Live broadcast remains available on web/desktop.
+
+**Accuracy fix — number normalization (`TranscriptNormalizer.numbersToDigits`):** the recognizer emits digits ("305", "25") while scripts may use words; the scorer's Levenshtein/Soundex cannot bridge "305"↔"three oh five". Both spoken and expected sides are now canonicalized to digits before scoring. Handles digit-sequences ("three oh five"→"305", "double five"→"55") and cardinals ("twenty five"→"25", "three hundred five"→"305"). Display text is unaffected (uses the raw transcript).
+
+**Responsiveness fixes:**
+- `VoiceRecognitionEngine.prewarm()` — pre-loads the SODA model (brief start+stop) so the first tap is instant. Called from `SpeakerScreenComponent` in **manual** mode (in auto-start mode the auto-start itself is the warm-up). Guarded: native-only, once per app run, idle-only, never prompts, never stops a real session.
+- Auto-start delay trimmed 700 ms → 300 ms.
+
+**Diagnostics:** all native logs prefixed `[VRE]` → `adb logcat | grep VRE`. Key lines: `Native session start` (chain + cachedLang), `Native start()` (per attempt + lang), `Native language confirmed`, `Native relisten`, `Keep-alive`.
+
+**Notes on Drift Prevented:** the native path is now resilient to whatever English pack the device has installed, independent of locale, and self-heals via caching. Future agents must: (a) NOT reintroduce a hard-coded `en-IN`/`en-US`-only assumption; (b) remember native `onError` is invisible to JS in `partialResults` mode — use timeouts/keep-alive, never rely on an error/`stopped` signal to detect a bad language; (c) NOT re-enable `startBroadcast()` mic capture on native (it starves the recognizer); (d) keep number normalization applied to BOTH sides of the comparison.
+
 #### VoiceFeedbackComponent — UI Defaults
 
 - `showDetailedBreakdown` defaults to `true` — full comparison panel (You said / Expected) is always visible on result, no click needed.
@@ -2964,11 +3002,12 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 
 | Browser | Platform | Support |
 |---|---|---|
-| Chrome 100+ | Android / Desktop | ✅ Full — use `lang=en-IN`, `continuous=true` |
+| Chrome 100+ | Android / Desktop | ✅ Full (cloud STT) — use `lang=en-IN`, `continuous=true` |
 | Edge 100+ | Desktop / Android | ✅ Full |
 | Safari 15+ | iOS / iPadOS | ⚠ Partial — `continuous=false`, restart on `onend` |
 | Samsung Internet | Android | ✅ Full (Chrome engine) |
 | Firefox | Any | ❌ None — show "Please use Chrome or Edge" |
+| **Capacitor APK** | **Android / iOS** | ⚠ Uses the **device default recognizer** (often offline SODA), NOT cloud. Language depends on installed offline packs — handled by the native language fallback chain (see "Native (Capacitor APK) Speech Path" above). |
 
 #### Integration Points
 
@@ -4667,3 +4706,114 @@ All Priority 1 and Priority 2 items from MobileDesignAnalysis.md were implemente
 - `admin-layout.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
 - `bottom-nav.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
 - Template inline styles: `#F59E0B` → `text-gw-warning`, `#E07B39` → `text-gw-accent`, `#2E7D32` → `text-gw-success`
+
+---
+
+## Backend Session Recording Module — Consolidated Session Recording (Phase 16, 2026-06-05)
+
+Backend implemented and building. Replaces the fragmented per-turn admin recordings view with ONE
+consolidated `.m4a` per session, merged server-side from the existing per-turn audio segments
+(shared with the personal Audio Archive). Design: `Backend/Docs/Dev/SessionRecordingArchitecture.md`.
+
+### Entry Points
+- Host toggle (lobby): `PATCH /api/sessions/{sessionId}/recording`
+- Admin view: `GET /api/admin/sessions/{sessionId}/recordings`
+- Trigger: `LiveSessionService.CompleteSessionAsync` (session completion) enqueues the merge.
+
+### UI Trigger
+Host enables "Record Session" in the lobby → persists `tblSession.recordingenabled = true`.
+On session completion the merge is queued automatically. Admin opens a session → sees one recording.
+
+### Request / Response Contracts
+- `PATCH /api/sessions/{sessionId}/recording` — host-only. Body: `{ "enabled": bool }`.
+  Success `200 { data: bool }`; non-host → `403` `"Only the session host can change recording…"`.
+- `GET /api/admin/sessions/{sessionId}/recordings` — ADMIN+ActiveUser. Returns **single**
+  `SessionRecordingDto` (or `data: null` if none):
+  `{ recordingId, sessionId, status, audioUrl, format, durationSecs, sizeBytes, segmentCount,
+  participants:[{userId,name,turns}], failureReason, createdAt, completedAt }`.
+  `status` ∈ CAPTURING | PENDING_MERGE | PROCESSING | READY | FAILED. `audioUrl` is a presigned
+  R2 URL (120-min) only when `status = READY`; null otherwise.
+
+### Validation
+- Toggle: caller must be the session host (`tblsession.hostuserid` match) — enforced in the UPDATE.
+- Admin read: `[AdminOnly]` + `[ActiveUser]` policies.
+
+### Database / Stored Procedures
+- `ALTER TABLE tblsession ADD recordingenabled BOOLEAN NOT NULL DEFAULT FALSE` — the host flag was
+  previously **frontend/localStorage only** (Gap-03 was never persisted server-side); the backend
+  had no way to know recording was enabled. This column is required for any merge to fire.
+- New table `tblsessionrecording` (one row per session, partial-unique on `sessionid WHERE isdeleted=false`):
+  `recordingid, sessionid, storagekey, status, format, durationsecs, sizebytes, segmentcount,
+  participantsjson(jsonb), failurereason, attemptcount, createdat, completedat, expiresat, isdeleted`.
+- Migrations: `Migrations/PostgreSQL/AddSessionRecording_Phase16.sql` (production/Supabase) +
+  `Migrations/SqlServer/AddSessionRecording_Phase16.sql` (dev parity). **Not yet run against Supabase.**
+- Segments source: reuses `IAudioArchiveRepository.GetAllBySessionAsync` (ordered by turn) — no new
+  segment table. `AudioArchiveItemDto` gained `UserId` (mapped from `aa.userid`) for participant rollup.
+- Raw-SQL repository (`SessionRecordingRepository`) targets PostgreSQL, matching the
+  `GetAllBySessionAsync` precedent (lowercase columns, `now() AT TIME ZONE 'utc'`, `::jsonb` cast).
+
+### Business Rules (merge pipeline)
+1. On completion, if `recordingenabled` → `CreateOrGetAsync` inserts a `PENDING_MERGE` row
+   (`createdat` = session `StartedDate`, `expiresat` = +90 days) and enqueues `sessionId`.
+2. Merge worker claims the row via `TryClaimForMergeAsync` (PENDING_MERGE/FAILED → PROCESSING,
+   `attemptcount++`). READY/already-claimed rows are skipped (single-merge idempotency).
+3. Download ordered segments from `gwf-audio`; ffmpeg concat filter
+   (`[0:a][1:a]…concat=n=N:v=0:a=1,loudnorm[out]`) → AAC 96 kbps, 48 kHz mono, `+faststart` `.m4a`.
+4. ffprobe duration; upload final to `sessions/{sessionId}/recording/session_{sessionId}.m4a`;
+   `MarkReadyAsync` sets storagekey, duration, size, segmentcount, participantsjson, `completedat`.
+5. Zero segments → `MarkFailedAsync "No audio segments were captured for this session."`.
+
+### State Transitions
+`tblsessionrecording.status`: (insert) PENDING_MERGE → PROCESSING → READY | FAILED.
+FAILED is re-claimable (retry) until `attemptcount >= 3`.
+
+### Realtime Events
+None. Admin polls/refreshes; merge is async and may be PROCESSING when first viewed.
+
+### Failure Cases / Recovery
+- ffmpeg missing on host → `MarkFailedAsync` with "Is ffmpeg installed and on PATH?"; row retryable.
+- Merge exception → row FAILED with truncated reason; segments retained for re-merge.
+- Worker restart → `SessionRecordingMergeWorker.RecoverPendingAsync` re-enqueues PENDING_MERGE/FAILED
+  rows (`attemptcount < 3`) on startup (queue is in-process, non-durable).
+- Recording never breaks session completion: `EnsureRecordingQueuedAsync` is fully self-guarding.
+
+### Retention
+`SessionRecordingRetentionWorker` (daily): deletes expired finals from R2 then soft-deletes the row
+(`expiresat <= now`, 90-day default).
+
+### Ops / Config
+- ffmpeg + ffprobe must be installed on the API host (or bundled). Paths overridable via
+  `appsettings`: `Ffmpeg:FfmpegPath`, `Ffmpeg:FfprobePath` (default `ffmpeg`/`ffprobe` on PATH).
+- DI: `ISessionRecordingRepository`/`Service` (scoped), `ISessionRecordingMergeQueue` (singleton),
+  two `AddHostedService` workers. Storage gained `IStorageService.DownloadToAsync`.
+
+### Notes on Known Drift Prevented
+- The host "Record Session" flag was documented (Gap-03) but never persisted server-side — corrected
+  here with `recordingenabled` + the host-only PATCH endpoint. Without it the feature is inert.
+- Personal Audio Archive (per-user, opt-in, private) is unchanged and coexists; the consolidated
+  recording is a separate admin/host artifact built from the same segments.
+
+### Frontend (Angular — implemented, `vite build` green)
+- **Lobby state** now surfaces `recordingEnabled` (`SessionService.GetLobbyStateAsync` reads
+  `ISessionRecordingRepository.GetRecordingEnabledAsync` — no stored-proc change). `LobbyStateResponseDto.RecordingEnabled`.
+- **Host toggle** (`lobby.component.ts`) persists via `PATCH /api/sessions/{id}/recording`
+  (optimistic + revert on failure) and sets `AudioArchiveService.sessionRecordingEnabled`.
+- **All-participant capture:** `AudioArchiveService.shouldCapture()` = host session recording OR
+  personal consent. `speaker-screen` gates `enableAudioCapture` + clip upload on `shouldCapture()`,
+  so every participant uploads turn clips when the host records (was: only opted-in users).
+- **Facilitator capture:** `VoiceRecognitionEngine.startStandaloneCapture/stopStandaloneCapture`
+  (standalone `MediaRecorder`, no recognition) — `speaker-screen` starts it on facilitator
+  read-aloud turns and uploads on "Done". (No-op on Capacitor native — getUserMedia blocked, same
+  limitation as existing archive capture.)
+- **Admin UI** (`admin-session-detail.component.ts`): music-player redesign of the single
+  `SessionRecordingDto` — play/pause, scrubber, ±10s, status states (Ready/Processing/Failed/None),
+  participant chips, download. `AdminService.getSessionRecording` returns the single object.
+
+### Ops status (2026-06-05)
+- **Migration: DONE** — `AddSessionRecording_Phase16.sql` applied & verified on production Supabase
+  (`recordingenabled` column, `tblsessionrecording` table, unique index all confirmed). Idempotent.
+  (SQL Server file is dev-parity only; this deployment is PostgreSQL.)
+- **ffmpeg on Render: DONE in image** — `Backend/Dockerfile` runtime stage now `apt-get install -y ffmpeg`.
+  Requires a **Render redeploy** to take effect. `appsettings.json` has an `Ffmpeg` block
+  (`FfmpegPath`/`FfprobePath` default to PATH).
+- **Local dev ffmpeg** — install for local testing only (`winget install Gyan.FFmpeg`); not needed for prod.

@@ -28,6 +28,7 @@ public sealed class LiveSessionService : ILiveSessionService
 	private readonly IMistakeService _mistakeService;
 	private readonly IVocabularyService _vocabularyService;
 	private readonly IStorageService _storageService;
+	private readonly ISessionRecordingService _sessionRecordingService;
 	private readonly CloudflareR2Settings _r2Settings;
 
 	public LiveSessionService(
@@ -38,16 +39,18 @@ public sealed class LiveSessionService : ILiveSessionService
 		IMistakeService mistakeService,
 		IVocabularyService vocabularyService,
 		IStorageService storageService,
+		ISessionRecordingService sessionRecordingService,
 		IOptions<CloudflareR2Settings> r2Options)
 	{
-		_userRepository        = userRepository;
-		_sessionRepository     = sessionRepository;
-		_liveSessionRepository = liveSessionRepository;
-		_userService           = userService;
-		_mistakeService        = mistakeService;
-		_vocabularyService     = vocabularyService;
-		_storageService        = storageService;
-		_r2Settings            = r2Options.Value;
+		_userRepository          = userRepository;
+		_sessionRepository       = sessionRepository;
+		_liveSessionRepository   = liveSessionRepository;
+		_userService             = userService;
+		_mistakeService          = mistakeService;
+		_vocabularyService       = vocabularyService;
+		_storageService          = storageService;
+		_sessionRecordingService = sessionRecordingService;
+		_r2Settings              = r2Options.Value;
 	}
 
 	public async Task<ApiResponse<TurnStateResponseDto>> GetCurrentTurnAsync(long sessionId, CancellationToken cancellationToken = default)
@@ -388,6 +391,10 @@ public sealed class LiveSessionService : ILiveSessionService
 		{
 			summary.VocabularySummary = await _vocabularyService.GetSessionVocabularySummaryAsync(sessionId, vocabularyLearnerId.Value, cancellationToken);
 		}
+
+		// If the host enabled "Record Session", queue the consolidated recording merge.
+		// Fire-and-await but never let recording failures break completion (method is self-guarding).
+		await _sessionRecordingService.EnsureRecordingQueuedAsync(sessionId, cancellationToken);
 
 		await ResolveAvatarUrlsAsync(summary, cancellationToken);
 		return ApiResponse<SessionSummaryResponseDto>.SuccessResult(summary, "Session completed successfully.");

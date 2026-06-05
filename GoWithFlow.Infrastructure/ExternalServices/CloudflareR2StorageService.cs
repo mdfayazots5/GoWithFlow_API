@@ -92,6 +92,35 @@ public sealed class CloudflareR2StorageService : IStorageService
         return Task.FromResult(url);
     }
 
+    public async Task DownloadToAsync(
+        string bucketName,
+        string objectKey,
+        Stream destination,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var request = new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key        = objectKey
+            };
+
+            using var response = await _s3.GetObjectAsync(request, cancellationToken);
+            await response.ResponseStream.CopyToAsync(destination, cancellationToken);
+
+            _logger.LogInformation(
+                "R2 download complete. Bucket={Bucket} Key={Key}", bucketName, objectKey);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            _logger.LogError(ex,
+                "R2 download failed. Bucket={Bucket} Key={Key} StatusCode={StatusCode}",
+                bucketName, objectKey, ex.StatusCode);
+            throw new StorageException(bucketName, objectKey, "File download from storage failed.", ex);
+        }
+    }
+
     public async Task DeleteAsync(
         string bucketName,
         string objectKey,

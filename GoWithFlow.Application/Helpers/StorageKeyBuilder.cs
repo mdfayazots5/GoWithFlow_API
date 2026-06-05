@@ -23,6 +23,13 @@ public static class StorageKeyBuilder
     public static string AudioArchiveClip(long sessionId, int turnIndex, long userId)
         => $"sessions/{sessionId}/turns/{turnIndex}/{userId}_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.webm";
 
+    /// <summary>
+    /// Final consolidated session recording (one per session). Produced by the merge worker
+    /// from the ordered per-turn segments stored under sessions/{sessionId}/turns/...
+    /// </summary>
+    public static string SessionRecordingFinal(long sessionId, string extension = "m4a")
+        => $"sessions/{sessionId}/recording/session_{sessionId}.{extension}";
+
     public static bool IsR2Key(string? value)
         => !string.IsNullOrEmpty(value)
            && !value.StartsWith('/')

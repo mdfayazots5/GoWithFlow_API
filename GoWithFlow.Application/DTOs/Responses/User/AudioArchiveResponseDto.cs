@@ -6,6 +6,8 @@ public sealed class AudioArchiveItemDto
 
 	public long SessionId { get; set; }
 
+	public long UserId { get; set; }
+
 	public int TurnIndex { get; set; }
 
 	public string AudioUrl { get; set; } = string.Empty;

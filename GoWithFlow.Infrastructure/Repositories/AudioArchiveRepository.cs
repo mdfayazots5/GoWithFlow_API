@@ -84,6 +84,7 @@ public sealed class AudioArchiveRepository : IAudioArchiveRepository
 			{
 				ArchiveId    = reader.GetInt64(reader.GetOrdinal("archiveid")),
 				SessionId    = reader.GetInt64(reader.GetOrdinal("sessionid")),
+				UserId       = reader.GetInt64(reader.GetOrdinal("userid")),
 				TurnIndex    = reader.GetInt32(reader.GetOrdinal("turnindex")),
 				AudioUrl     = reader.GetString(reader.GetOrdinal("storagekey")),
 				DurationSecs = reader.GetInt32(reader.GetOrdinal("durationsecs")),

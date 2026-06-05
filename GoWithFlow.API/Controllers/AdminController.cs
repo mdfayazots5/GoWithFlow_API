@@ -16,12 +16,14 @@ namespace GoWithFlow.API.Controllers;
 public sealed class AdminController : ControllerBase
 {
 	private readonly IAdminService _adminService;
-	private readonly IAudioArchiveService _audioArchiveService;
+	private readonly ISessionRecordingService _sessionRecordingService;
 
-	public AdminController(IAdminService adminService, IAudioArchiveService audioArchiveService)
+	public AdminController(
+		IAdminService adminService,
+		ISessionRecordingService sessionRecordingService)
 	{
 		_adminService = adminService;
-		_audioArchiveService = audioArchiveService;
+		_sessionRecordingService = sessionRecordingService;
 	}
 
 	[HttpGet(ApiRoutes.Admin.Dashboard)]
@@ -144,10 +146,11 @@ public sealed class AdminController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
 	}
 
+	// One consolidated recording per session (Phase 16). Replaces the per-turn clip list.
 	[HttpGet(ApiRoutes.Admin.SessionRecordings)]
 	public async Task<IActionResult> GetSessionRecordingsAsync(long sessionId, CancellationToken cancellationToken)
 	{
-		var response = await _audioArchiveService.GetAdminSessionRecordingsAsync(sessionId, cancellationToken);
+		var response = await _sessionRecordingService.GetAdminSessionRecordingAsync(sessionId, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 

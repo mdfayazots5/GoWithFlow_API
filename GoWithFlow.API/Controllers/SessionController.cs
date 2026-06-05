@@ -15,11 +15,16 @@ public sealed class SessionController : ControllerBase
 {
 	private readonly ISessionService _sessionService;
 	private readonly ISessionInvitationService _invitationService;
+	private readonly ISessionRecordingService _sessionRecordingService;
 
-	public SessionController(ISessionService sessionService, ISessionInvitationService invitationService)
+	public SessionController(
+		ISessionService sessionService,
+		ISessionInvitationService invitationService,
+		ISessionRecordingService sessionRecordingService)
 	{
 		_sessionService = sessionService;
 		_invitationService = invitationService;
+		_sessionRecordingService = sessionRecordingService;
 	}
 
 	[HttpPost]
@@ -62,6 +67,14 @@ public sealed class SessionController : ControllerBase
 	{
 		var response = await _sessionService.EndSessionAsync(sessionId, cancellationToken);
 		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
+	// Host-only: toggle "Record Session" before the session starts (persists tblSession.recordingenabled).
+	[HttpPatch(ApiRoutes.Session.Recording)]
+	public async Task<IActionResult> SetRecordingEnabledAsync(long sessionId, [FromBody] UpdateRecordingRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _sessionRecordingService.SetRecordingEnabledAsync(sessionId, GetUserId(), dto.Enabled, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status403Forbidden);
 	}
 
 	[HttpGet(ApiRoutes.Session.History)]

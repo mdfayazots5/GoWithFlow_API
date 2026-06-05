@@ -21,6 +21,16 @@ public interface IStorageService
         int expiryMinutes,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Downloads an object's bytes to <paramref name="destination"/>. Used by the session-recording
+    /// merge worker to pull per-turn segments before concatenation.
+    /// </summary>
+    Task DownloadToAsync(
+        string bucketName,
+        string objectKey,
+        Stream destination,
+        CancellationToken cancellationToken = default);
+
     Task DeleteAsync(
         string bucketName,
         string objectKey,

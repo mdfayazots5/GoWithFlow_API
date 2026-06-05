@@ -21,4 +21,7 @@ public sealed class LobbyStateResponseDto
 	public List<LobbyMemberDto> Members { get; set; } = new();
 
 	public bool CanStart { get; set; }
+
+	/// <summary>Phase 16: host enabled "Record Session" — drives all-participant audio capture.</summary>
+	public bool RecordingEnabled { get; set; }
 }
