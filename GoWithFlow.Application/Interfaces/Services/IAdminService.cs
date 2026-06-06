@@ -30,6 +30,8 @@ public interface IAdminService
 
 	Task<ApiResponse<PagedResult<AdminSessionHistoryItemDto>>> GetSessionHistoryAsync(AdminSessionHistoryFilterRequestDto dto, CancellationToken cancellationToken = default);
 
+	Task<ApiResponse<AdminSessionHistoryItemDto>> GetSessionByIdAsync(long sessionId, CancellationToken cancellationToken = default);
+
 	Task<ApiResponse<CohortResponseDto>> CreateCohortAsync(CreateCohortRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<List<CohortResponseDto>>> GetAllCohortsAsync(CancellationToken cancellationToken = default);

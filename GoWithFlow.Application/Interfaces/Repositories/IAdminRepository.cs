@@ -28,6 +28,8 @@ public interface IAdminRepository
 
 	Task<PagedResult<AdminSessionHistoryItemDto>> GetSessionHistoryAsync(AdminSessionHistoryFilterRequestDto dto, CancellationToken cancellationToken = default);
 
+	Task<AdminSessionHistoryItemDto?> GetSessionByIdAsync(long sessionId, CancellationToken cancellationToken = default);
+
 	Task<long> InsertCohortAsync(CreateCohortRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default);
 
 	Task<List<CohortResponseDto>> GetAllCohortsAsync(CancellationToken cancellationToken = default);

@@ -440,6 +440,62 @@ public sealed class AdminRepository : IAdminRepository
 		};
 	}
 
+	// Single session by id, enriched identically to the history list projection. Backs the admin
+	// session-detail page on direct navigation / refresh (where no router state is available).
+	public async Task<AdminSessionHistoryItemDto?> GetSessionByIdAsync(long sessionId, CancellationToken cancellationToken = default)
+	{
+		var session = await _dbContext.Sessions
+			.AsNoTracking()
+			.Where(s => s.SessionId == sessionId && s.IsDeleted == false)
+			.Select(s => new
+			{
+				s.SessionId,
+				s.SessionName,
+				s.JoinCode,
+				s.Status,
+				s.SessionDuration,
+				s.ActualDurationSec,
+				SessionDate = s.EndedDate ?? s.StartedDate ?? s.DateCreated,
+				HostName    = s.Host != null ? s.Host.FullName : string.Empty
+			})
+			.FirstOrDefaultAsync(cancellationToken);
+
+		if (session is null)
+		{
+			return null;
+		}
+
+		var memberCount = await _dbContext.Set<SessionMember>()
+			.AsNoTracking()
+			.CountAsync(m => m.SessionId == sessionId && m.IsDeleted == false, cancellationToken);
+
+		var fluencyAvg = await _dbContext.VoiceAnalyses
+			.AsNoTracking()
+			.Where(v => v.SessionId == sessionId && v.IsDeleted == false)
+			.Select(v => (decimal?)v.FluencyScore)
+			.AverageAsync(cancellationToken) ?? 0m;
+
+		var mistakeCount = await _dbContext.Mistakes
+			.AsNoTracking()
+			.CountAsync(m => m.SessionId == sessionId && m.IsDeleted == false, cancellationToken);
+
+		return new AdminSessionHistoryItemDto
+		{
+			SessionId   = session.SessionId,
+			SessionName = session.SessionName,
+			JoinCode    = session.JoinCode,
+			HostName    = session.HostName,
+			Status      = session.Status,
+			SessionDate = session.SessionDate,
+			DurationMin = session.ActualDurationSec.HasValue && session.ActualDurationSec.Value > 0
+				? (int)Math.Ceiling(session.ActualDurationSec.Value / 60.0)
+				: session.SessionDuration,
+			MemberCount  = memberCount,
+			AvgFluency   = fluencyAvg,
+			MistakeCount = mistakeCount
+		};
+	}
+
 	public async Task<long> InsertCohortAsync(CreateCohortRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default)
 	{
 		await using var command = await CreateStoredProcedureCommandAsync("dbo.uspInsertCohort", cancellationToken);

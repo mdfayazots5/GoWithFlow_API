@@ -937,6 +937,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 - `PUT /api/admin/users/{userId}` — update user profile; **multipart/form-data** (`[FromForm]`); same fields as create (all optional except `fullName`, `mobileNumber`, `ageGroup`, `preferredHintLanguage`); if `avatar` is provided, uploads and returns new presigned URL in `data` field; `data` is null if no avatar uploaded; **`POST /api/admin/users/{userId}/avatar` removed** (2026-06-03 — merged into PUT)
   - Notes on Drift (2026-06-03): `UpdateUserByAdminAsync` used `CreateParameter("@fn", ...)` which normalizes names to `p_fn` for PostgreSQL (designed for stored procs). The raw UPDATE SQL used `@fn`, causing `42601: syntax error at or near "=@"`. Fix: replaced with `cmd.CreateParameter()` directly (bypasses normalizer). Rule: for raw SQL commands in UserRepository, always use `cmd.CreateParameter()` — never the `CreateParameter()` helper method.
 - `GET /api/admin/sessions/history` — paginated admin session history with filters
+- `GET /api/admin/sessions/{sessionId}` — ADMIN; single session summary by id. Returns `ApiResponse<AdminSessionHistoryItemDto>` (same shape as one history row: sessionName, joinCode, hostName, memberCount, status, sessionDate, durationMin, avgFluency, mistakeCount). 200 on found, 404 with "Session not found" otherwise, 400 if `sessionId <= 0`. Backed by `IAdminService.GetSessionByIdAsync` → `IAdminRepository.GetSessionByIdAsync` (EF Core; same member/fluency/mistake enrichment as the history projection). Added 2026-06-06 so the admin session-detail page survives direct navigation / refresh (previously it only worked via router state — see Admin Session Detail special case).
 - `GET /api/admin/sessions/{sessionId}/recordings` — ADMIN; returns all audio archive clips for a session across all users; each clip includes `UserName` (speaker name), `TurnIndex`, presigned `AudioUrl` (120-min expiry); backed by `IAudioArchiveService.GetAdminSessionRecordingsAsync` → `IAudioArchiveRepository.GetAllBySessionAsync` (raw SQL join to `tblUser`)
 
 ### Admin Session History — Stable Flow Contract
@@ -3704,7 +3705,7 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 
 **After:** Clicking the View/Eye button navigates to the detail route. Detail pages have a back button (`routerLink` to the list). List pages are now lean: only the minimal columns needed for identification and quick actions remain visible.
 
-**Sessions detail special case:** There is no `GET /api/admin/sessions/{id}` API endpoint. The sessions list component passes the session object via Angular router state (`router.navigate([...], { state: { session } })`). The detail component reads it from `history.state.session`. If navigated directly (e.g., page refresh), the "Session not found" state shows with a back link. This is acceptable behaviour for an admin tool where primary flow is always list → detail.
+**Sessions detail navigation (updated 2026-06-06):** The sessions list still passes the session object via Angular router state (`router.navigate([...], { state: { session } })`) — the fast path, no fetch. The detail component reads `history.state.session` when present. On direct navigation / refresh (no router state) it now calls `adminService.getSession(id)` → `GET /api/admin/sessions/{sessionId}` and shows a header + body skeleton (`sessionLoading` signal) while fetching; the "Session not found" state only renders when the fetch completes with no session (`!session() && !sessionLoading()`). Notes on Drift: previously NO single-session endpoint existed, so a refresh always showed "Session not found" — documented as "acceptable" but actually a dead-end. Fixed by adding the endpoint (see Admin endpoints list above) and the fallback fetch.
 
 **Edit modal (Users):** The Add/Edit User modal was kept on the list page (`/admin/users`) since it is a lightweight inline form already embedded in `AdminUsersComponent`. The detail page (`/admin/users/:id`) is view-only with Activate/Deactivate and View Full Report actions.
 
@@ -4757,8 +4758,44 @@ Rules for new screens: (1) initialize the `loading` signal to `true` so the FIRS
 - **Admin Users** (`admin-users.component`) — **bug fixed**: `loading` initialized `false` and never set `true` on first load, so the initial mount flashed the "No users found" empty state before data; now initialized `true` and uses `app-skeleton-list`.
 - **Login** (`login.component`) — branded `LoaderService.show('Signing you in…')` across the auth round-trip + redirect; hidden after `router.navigate(...).finally()`; destination skeleton takes over.
 
-### Rollout checklist for remaining data screens (apply the standard pattern)
-User: my-mistakes, progress/improvement-tracker, interview-performance, learning-goals, session history/detail, scripts library/upload, invitations, profile. Admin: dashboard, session-detail, user-detail-report, reports. Session/Live: lobby, create-session. Each: init `loading=true`, wrap data region in `app-loading-state` with the matching skeleton preset, set loading=false in next+error. The top progress bar + branded loader already apply globally with no per-screen work.
+### Rollout completed across all data screens (2026-06-06)
+Every screen in the original checklist has been brought to the standard. Disposition per screen
+(build verified: `vite build` ✓ exit 0, `tsc --noEmit` ✓ exit 0):
+
+**Converted to gate first paint (added `loading`/`error`, wrapped data region in `app-loading-state`
+or gated skeleton, init `loading=true`, set false in next+error):**
+- User `improvement-tracker` — was fully ungated (null `data()` flashed every section's empty state);
+  now `loading`/`error` signals + `app-loading-state` (stat-grid + 2 card skeletons), retry → `loadData()`.
+- User `session-detail` — was ungated (score ring rendered 0%, sections empty then snapped in); now
+  `load(id)`/`reload()` with `loading`/`error`, `app-loading-state` (card + list skeleton).
+- User `profile` — primary data comes from cached `UserStateService` signals; gated on `!profile()`
+  with a skeleton (card + stat-grid + card) so a hard refresh doesn't flash a blank hero. Sign Out
+  stays outside the gate (always available). `retryable=false` (no fetch to retry).
+- Admin `user-detail-report` — **init bug fixed**: `loading` was `false` (flashed "No report data"
+  before fetch); now `true`, header skeleton + body skeleton (2 tables + 2 cards).
+- Admin `reports` — **same init bug fixed** (`loading` `false`→`true`); ad-hoc `animate-pulse` rows
+  replaced with `app-skeleton-list`.
+
+**Already gated correctly — only swapped spinner/ad-hoc placeholder for the shared skeleton kit:**
+- User `my-mistakes` (already compliant, left as-is — uses shared `app-skeleton-list` + custom empty).
+- User `interview-performance`, `learning-goals` — spinner → `app-skeleton-card`/`-list`.
+- User `invitations` (`my-invitations`) — spinner → `app-skeleton-list`.
+- User `session-history`, `script-library` — ad-hoc `animate-pulse` → `app-skeleton-list`.
+- Admin `dashboard` — two panel spinners → `app-skeleton-list [bare]` (KPI inline pulses kept; they
+  are geometry-matched and cause no shift).
+- Admin `session-detail` — recording-panel spinner → `app-skeleton-card` (session data itself is
+  passed synchronously via `history.state`, no flash).
+
+**Intentionally NOT wrapped (no first-paint data fetch / special case — documented so a future pass
+does not "fix" them):**
+- `script-upload`, `create-session` — multi-step / single forms. No initial data region; their async
+  ops (validate, save, prompt fetch, create) already show inline button/progress indicators. (Also
+  fixed a header typo "UPOLAD"→"UPLOAD" in script-upload.)
+- `lobby` — realtime screen. Null state already renders a coherent loading representation (hero
+  "Loading session…", room code `———`, dashed "Open Slot" rows) and self-heals via SignalR + 3s
+  poll. A hard skeleton gate over a continuously-polling critical path adds risk without UX gain.
+
+The top progress bar + branded loader continue to apply globally with no per-screen work.
 
 ### Notes on Drift Prevented
 - `LoaderService` previously existed with a `LoaderComponent` mounted in the shell but was NEVER invoked (`show()/hide()` had zero call sites) — dead global loader. Now driven by explicit blocking flows; ambient activity handled by the separate non-blocking top bar so the full-screen loader does not flicker on every XHR.
@@ -5002,6 +5039,68 @@ compact `w-9 h-9` action buttons) → `<app-admin-load-more>`. No `<table>`/`ove
 
 ---
 
+## Session Room UX Redesign (2026-06-06 — ALL PHASES 0–5 IMPLEMENTED, build verified)
+
+Full audit + redesign plan: `Backend/Docs/SessionRoomRedesign.md`. Covers the live Session
+Room only (`Frontend/src/app/modules/live-session/*`). All six phases are built and
+build-verified.
+
+### Phase 2–5 (layout, hierarchy, responsive, polish) — 2026-06-06
+- **Sticky action dock** (`.action-dock`, `position: sticky; bottom: 0`, safe-area gradient)
+  in `speaker-screen` + `listener-screen` — primary action always reachable; the stage
+  (`flex-1 min-h-0 overflow-y-auto`) is the only scroll region.
+- **Responsive stage** — container unlocked from hard `max-w-[480px]` to
+  `max-w-[480px] md:max-w-[680px] lg:max-w-[760px]`, `px-4 md:px-6`, `pt-3 md:pt-5`.
+- **Settings → bottom-sheet overlay** (`session-room`) — floats above content (grabber,
+  backdrop, close) instead of the old in-flow dropdown that pushed the live turn down.
+- **Leave → in-app sheet** (`showLeaveConfirm`, Stay/Leave) replacing native `confirm()`.
+- **First-run orientation hint** (`showOrientation`, once per device via
+  `gwf_session_room_seen`; role-aware copy).
+- Removed misleading listener "Your Turn Is Next" footer (no next-speaker data exists).
+
+### Implemented 2026-06-06 (Phase 0 + Phase 1) — build verified
+
+**Phase 0 — capability source of truth.** New `SessionCapabilitiesService`
+(`core/services/session-capabilities.service.ts`): `isNative` and
+`canBroadcastVoice = !isNative`. Single place that decides whether WebRTC peer voice
+broadcast is possible (false on native APK — recognizer owns the mic exclusively).
+
+**Phase 1 — hide non-functional / misleading UI.**
+- `session-room.component.ts`: "Hear Speaker's Voice" settings toggle is wrapped in
+  `@if (capabilities.canBroadcastVoice)` — hidden on native APK where it was a no-op.
+- `listener-screen.component.ts`: the animated sound-wave bars are now wrapped in
+  `@if (voiceBroadcast.isReceivingAudio())` — they only render while real peer audio is
+  actually streaming (never on native), instead of animating decoratively at all times.
+  The "Live Audio" badge was already gated on `isReceivingAudio()`.
+- `voice-broadcast.service.ts`: `startBroadcast()` and `handleBroadcastStarted()` now guard
+  on `capabilities.canBroadcastVoice` instead of an inline `Capacitor.isNativePlatform()`
+  check — removes the duplicated platform check that let "shown" drift from "works".
+
+Refinement vs. original plan: Auto-Start Mic / Auto Submit are NOT hidden from listeners.
+Turns rotate, so every participant is a speaker on their own turns → those prefs are
+universally relevant. Only the platform-broken broadcast control was gated.
+
+Key confirmed findings (validated against source):
+- **No tablet/desktop layout exists** — room is locked to `max-w-[480px]` centered
+  (`session-room.component.ts:167`).
+- **"Hear Speaker's Voice" is dead on the APK.** `VoiceBroadcastService.startBroadcast()`
+  returns early on `Capacitor.isNativePlatform()` (`voice-broadcast.service.ts:45-48`)
+  because the native Google `SpeechRecognizer` (pronunciation scoring) needs exclusive mic
+  access and Android cannot reliably share the mic. The settings toggle + listener "Live
+  Audio" badge are still rendered on native → users enable a feature that can never work.
+  This is the reported "voice/speaker feature shown on mobile but broken" bug. Fix = gate
+  toggle + badge on a `canBroadcastVoice` capability (false on native).
+- Listener sound-wave bars (`listener-screen.component.ts:71-79`) are a **fake CSS
+  animation**, not real audio — misleading.
+- `SessionPreferencesService` prefs are **not role-aware**: listeners see speaker-only
+  toggles (Auto-Start Mic, Auto Submit); speakers on native see a dead broadcast toggle.
+
+Proposed direction: 3-zone CSS grid shell (`auto / 1fr / auto`) with a pinned action dock
+(fixes primary-action-below-fold scroll bug), role×platform-filtered settings, a single
+`SessionCapabilities` source of truth, and responsive mobile/tablet/desktop layouts.
+
+---
+
 ## Backend Session Recording Module — Consolidated Session Recording (Phase 16, 2026-06-05)
 
 Backend implemented and building. Replaces the fragmented per-turn admin recordings view with ONE
@@ -5202,3 +5301,119 @@ archive consent is on). Should be re-derived from server/turn state, not the lob
 
 Note: session 97 (and 96) cannot be recovered — their source turn clips were never captured. This
 fix only affects sessions recorded AFTER the new APK is installed.
+
+---
+
+## Secret Management & Security Architecture (Review 2026-06-06 — Remediation PENDING)
+
+STATUS: **Security review complete. Remediation NOT yet applied. P0 credential rotation is mandatory
+and must be done by a human in the Cloudflare / Supabase dashboards.** This section is the single
+source of truth for the next "secrets hardening" phase — it captures findings, evidence, the target
+architecture, and the migration plan so the work can be executed without re-auditing.
+
+### Scope reviewed
+`appsettings.json`, `appsettings.Development.json`, `appsettings.Production.json`,
+Frontend `environment.ts` / `environment.prod.ts`, `Backend/Dockerfile`, `Backend/.gitignore`,
+`Program.cs` config wiring (`IConfiguration` → `IOptions<JwtSettings>`/`<CloudflareR2Settings>`).
+
+### CRITICAL findings — live secrets committed in plaintext
+The following live credentials are present in source-controlled config and MUST be treated as
+**compromised** (Render deploys from Git → assume they are in remote history):
+
+| Secret | Location | Notes |
+|---|---|---|
+| Supabase Postgres password (full DSN, prod DB, **superuser** `postgres.<project>`) | `appsettings.json` ConnectionStrings:PostgreSQL; `appsettings.Development.json` | grants full DB access to all user data |
+| Cloudflare R2 `AccessKeyId` + `SecretAccessKey` | `appsettings.json` CloudflareR2; `appsettings.Development.json` | read/write/delete on gwf-audio, gwf-avatars, gwf-scripts, gwf-exports |
+| JWT `SecretKey` (HS256 symmetric, weak/guessable literal) | `appsettings.json` JwtSettings | **forge any user/ADMIN token → bypasses ALL authorization**; highest impact |
+
+Root cause: `Backend/.gitignore` deliberately force-tracks the secret files:
+```
+appsettings.*.json
+!appsettings.json              # re-includes base (live R2 + DB + JWT)
+!appsettings.Development.json  # re-includes Development (live R2 + DB)
+```
+
+### Secondary findings
+- **Docker image leakage:** `Dockerfile` does `COPY . .` then `dotnet publish`, baking
+  `appsettings.json` (with secrets) into image layers. Env-var overrides change *values used* at
+  runtime, not *files shipped* — anyone pulling the image can extract the secrets. Need a
+  `.dockerignore`.
+- **Prod connection-string drift:** `Program.cs` reads `GetConnectionString(databaseProvider)` where
+  `databaseProvider == "PostgreSQL"` (`builder.Configuration["DatabaseProvider"]`). But
+  `appsettings.Production.json` defines `ConnectionStrings:DefaultConnection` — which is **never read**.
+  Production MUST set env var `ConnectionStrings__PostgreSQL`; otherwise the app silently falls back to
+  the committed Supabase prod DSN. Fix the placeholder name to `PostgreSQL`.
+- **Least privilege:** app logs in as the Supabase superuser; should use a scoped app role.
+- **Data Protection keys:** ASP.NET Core key ring is likely on Render's ephemeral filesystem → resets
+  across deploys (invalidates issued tokens). Persist to a Render Disk or DB.
+- **No secret scanning** in pre-commit / CI.
+
+### Verified SAFE (do not regress)
+- **Frontend bundle is clean.** `environment.ts` / `environment.prod.ts` contain only public API/WS
+  URLs (`https://gowithflow-api.onrender.com`). No keys reach the browser. JWT key is symmetric and
+  used server-side only — never sent to the client. (Requirement: "no secret in frontend bundle" — PASS.)
+- `appsettings.Production.json` already uses placeholders and is git-ignored.
+- Env-var override path works: `WebApplication.CreateBuilder` layers Environment Variables over
+  appsettings (double-underscore = section nesting, e.g. `JwtSettings__SecretKey`,
+  `CloudflareR2__SecretAccessKey`, `ConnectionStrings__PostgreSQL`).
+
+### Sensitive-data inventory (never plaintext / never in Git)
+1. DB connection string + password (Supabase Postgres)
+2. JWT `SecretKey` (+ any refresh-token encryption key if added)
+3. Cloudflare R2 `AccessKeyId` + `SecretAccessKey`
+4. Future third-party keys (OTP/SMS/email provider, payments, server-side LLM/Claude key for the
+   prompt helper, hosted log-sink credentials)
+
+Non-secret (safe in config/Git): bucket names, endpoints/URLs, token TTLs, CORS allow-list,
+file-size limits, ffmpeg paths, JWT `Issuer`/`Audience`.
+
+### Target architecture (decision)
+- **Secret store:** Baseline = **Render Environment Groups + Secret Files** (native to host, free,
+  already supported by the config layering). Target = **Doppler or Infisical** as the central source
+  of truth that syncs to Render + CI + local dev (versioning, RBAC, audit, rotation reminders).
+- **Rejected for current scale:** Azure Key Vault / AWS Secrets Manager (not on those clouds),
+  HashiCorp Vault (ops overhead). Revisit only if consolidating onto a single cloud.
+- **Local dev:** **.NET User Secrets** (`dotnet user-secrets`, `UserSecretsId` in the API csproj) or
+  Doppler local injection — never shared appsettings files.
+- **App-level encryption:** NOT required for the secrets themselves (the store encrypts at rest;
+  custom crypto just adds another key to protect). DO use ASP.NET Core **Data Protection** (persisted
+  key ring) for app-issued tokens, and consider **column-level encryption** (pgcrypto / envelope) for
+  sensitive user PII at rest (mobile numbers used for login, audio metadata) — a separate data-at-rest
+  concern from secret management.
+- **Rotation:** JWT — dual-key overlap (accept old+new, sign new, then drop old) on a 90-day cadence;
+  R2 — new key pair → deploy → revoke old; DB — rotate in Supabase + switch to least-privilege role.
+
+### Migration plan (phased — next phase executes Phase 0/1 first)
+- **Phase 0 — Contain (HUMAN, do first):** rotate JWT key, R2 key pair, and DB password (all burned);
+  create a least-privilege Supabase app role (stop using superuser).
+- **Phase 1 — Repo hygiene (code/config, agent can do):** replace real values in `appsettings.json` +
+  `appsettings.Development.json` with placeholders; fix `.gitignore` (drop the `!appsettings.json` /
+  `!appsettings.Development.json` re-includes, keep base appsettings secret-free); add `.dockerignore`
+  excluding dev/local secret files; add `gitleaks` pre-commit + CI gate. Purge Git history
+  (`git filter-repo`/BFG) OR rely on Phase 0 rotation to neutralize leaked values.
+- **Phase 2 — Local dev:** move dev secrets to .NET User Secrets (`UserSecretsId`).
+- **Phase 3 — Runtime config:** set Render env vars (`ConnectionStrings__PostgreSQL`,
+  `JwtSettings__SecretKey`, `CloudflareR2__AccessKeyId`, `CloudflareR2__SecretAccessKey`) in an
+  Environment Group; fix the `DefaultConnection`→`PostgreSQL` placeholder mismatch; then (target) wire
+  Doppler/Infisical → Render.
+- **Phase 4 — Harden:** persist Data Protection key ring off ephemeral disk; implement JWT dual-key
+  rotation; confirm prod relies on env only (no secret files in image).
+
+### Risk register
+| # | Risk | Severity |
+|---|---|---|
+| R1 | Forgeable admin JWTs via committed weak symmetric key | Critical |
+| R2 | Live R2 storage credentials in Git | Critical |
+| R3 | Live prod DB superuser password in Git | Critical |
+| R4 | `.gitignore` force-tracks secret files (root cause R1–R3) | High |
+| R5 | Secrets baked into Docker image layers | High |
+| R6 | Prod falls back to committed DSN if `ConnectionStrings__PostgreSQL` unset (placeholder mismatch) | High |
+| R7 | App DB login uses superuser, not least-privilege role | Medium |
+| R8 | Data Protection keys likely ephemeral on Render | Medium |
+| R9 | No secret scanning in CI/pre-commit | Medium |
+| — | Frontend bundle secret exposure | None found (PASS) |
+
+### Notes on Drift Prevented
+- Documents the committed-secret exposure and the `appsettings.Production.json` `DefaultConnection`
+  vs. code `PostgreSQL` mismatch so the next phase does not re-discover them. When Phase 1/3 land,
+  update the CRITICAL findings table to "remediated" and record the new env-var contract here.

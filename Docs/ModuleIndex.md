@@ -180,6 +180,13 @@ Logic source: `ProjectOverview.md` only.
 | back navigation | Android Mobile Module | Android Mobile Module — Back Navigation |
 | backButton | Android Mobile Module | Android Mobile Module — Back Navigation |
 | BackButtonService | Android Mobile Module | Android Mobile Module — Back Navigation |
+| session room | Backend Live Session Module | Session Room UX Redesign |
+| session room ux | Backend Live Session Module | Session Room UX Redesign |
+| session room redesign | Backend Live Session Module | Session Room UX Redesign |
+| speaker screen | Backend Live Session Module | Session Room UX Redesign |
+| listener screen | Backend Live Session Module | Session Room UX Redesign |
+| voice broadcast | Backend Live Session Module | Session Room UX Redesign |
+| hear speaker | Backend Live Session Module | Session Room UX Redesign |
 | mobile design | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
 | mobile ux | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
 | responsive | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
@@ -221,6 +228,32 @@ Logic source: `ProjectOverview.md` only.
 | spinner | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
 | flicker | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
 | layout shift | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| secret | Secret Management & Security | Secret Management & Security Architecture |
+| secrets | Secret Management & Security | Secret Management & Security Architecture |
+| secret management | Secret Management & Security | Secret Management & Security Architecture |
+| api key | Secret Management & Security | Secret Management & Security Architecture |
+| api keys | Secret Management & Security | Secret Management & Security Architecture |
+| jwt secret | Secret Management & Security | Secret Management & Security Architecture |
+| connection string secret | Secret Management & Security | Secret Management & Security Architecture |
+| credentials | Secret Management & Security | Secret Management & Security Architecture |
+| appsettings | Secret Management & Security | Secret Management & Security Architecture |
+| environment variable | Secret Management & Security | Secret Management & Security Architecture |
+| env var | Secret Management & Security | Secret Management & Security Architecture |
+| vault | Secret Management & Security | Secret Management & Security Architecture |
+| key vault | Secret Management & Security | Secret Management & Security Architecture |
+| secrets manager | Secret Management & Security | Secret Management & Security Architecture |
+| doppler | Secret Management & Security | Secret Management & Security Architecture |
+| infisical | Secret Management & Security | Secret Management & Security Architecture |
+| r2 key | Secret Management & Security | Secret Management & Security Architecture |
+| rotate secret | Secret Management & Security | Secret Management & Security Architecture |
+| rotation | Secret Management & Security | Secret Management & Security Architecture |
+| gitignore | Secret Management & Security | Secret Management & Security Architecture |
+| gitleaks | Secret Management & Security | Secret Management & Security Architecture |
+| dockerignore | Secret Management & Security | Secret Management & Security Architecture |
+| data protection | Secret Management & Security | Secret Management & Security Architecture |
+| security review | Secret Management & Security | Secret Management & Security Architecture |
+| security audit | Secret Management & Security | Secret Management & Security Architecture |
+| secret exposure | Secret Management & Security | Secret Management & Security Architecture |
 
 ## Module List
 
@@ -285,3 +318,7 @@ Logic source: `ProjectOverview.md` only.
 14. Frontend Loading Framework
     - Section: `Frontend Loading & Skeleton Framework`
     - Purpose: project-wide loading strategy — branded full-screen `LoaderService`/`LoaderComponent`, non-blocking `TopProgressBarComponent` + `loadingInterceptor`/`HttpActivityService`, skeleton kit (`@shared/ui/skeleton`) and `LoadingStateComponent` per-section wrapper; standard pattern + rollout checklist so future pages auto-follow
+
+15. Secret Management & Security
+    - Section: `Secret Management & Security Architecture`
+    - Purpose: secrets hardening — security review findings (live JWT/R2/DB credentials committed in plaintext, `.gitignore` force-tracking, Docker image leakage), sensitive-data inventory, target architecture (Render env groups → Doppler/Infisical), phased migration plan, risk register. STATUS: review complete, remediation PENDING (Phase 0 credential rotation is human-only)

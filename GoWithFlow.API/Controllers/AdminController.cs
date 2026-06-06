@@ -104,6 +104,13 @@ public sealed class AdminController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
+	[HttpGet(ApiRoutes.Admin.SessionById)]
+	public async Task<IActionResult> GetSessionByIdAsync(long sessionId, CancellationToken cancellationToken)
+	{
+		var response = await _adminService.GetSessionByIdAsync(sessionId, cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK, StatusCodes.Status404NotFound);
+	}
+
 	[HttpGet(ApiRoutes.Admin.ExportReports)]
 	public async Task<IActionResult> ExportReportsAsExcelAsync([FromQuery] AdminReportFilterRequestDto dto, CancellationToken cancellationToken)
 	{

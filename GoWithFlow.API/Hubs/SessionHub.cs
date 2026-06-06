@@ -75,9 +75,10 @@ public sealed class SessionHub : Hub
 				// Only schedule deactivation when the session is still in LOBBY status.
 				// When the session is ACTIVE, disconnecting from the session hub is expected
 				// (the user navigated to the live session room) and must not mark them as left.
-				if (string.Equals(lobbyStateResponse.Data?.Status, "LOBBY", StringComparison.OrdinalIgnoreCase))
+				var lobbyData = lobbyStateResponse.Data;
+				if (lobbyData is not null && string.Equals(lobbyData.Status, "LOBBY", StringComparison.OrdinalIgnoreCase))
 				{
-					var leavingMember = lobbyStateResponse.Data.Members.FirstOrDefault(member => member.UserId == connectionInfo.UserId);
+					var leavingMember = lobbyData.Members.FirstOrDefault(member => member.UserId == connectionInfo.UserId);
 					var slotIndex = leavingMember?.SlotIndex ?? 0;
 
 					// Schedule the leave with a 20-second grace window so page reloads do not

@@ -116,7 +116,7 @@ public sealed class RepracticeService : IRepracticeService
 				OriginalUtteranceId = mistake.UtteranceId,
 				EnglishText = mistake.UtteranceText,
 				HintText = hintText,
-				MistakeType = mistake.MistakeType,
+				MistakeType = mistake.MistakeType ?? string.Empty,
 				MistakeDetail = mistake.MistakeDetail,
 				CorrectionNote = correctionNote,
 				CreatedBy = user.FullName,

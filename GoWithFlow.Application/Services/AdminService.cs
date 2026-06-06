@@ -428,6 +428,23 @@ public sealed class AdminService : IAdminService
 		return ApiResponse<PagedResult<AdminSessionHistoryItemDto>>.SuccessResult(result, "Session history retrieved successfully.");
 	}
 
+	public async Task<ApiResponse<AdminSessionHistoryItemDto>> GetSessionByIdAsync(long sessionId, CancellationToken cancellationToken = default)
+	{
+		if (sessionId <= 0)
+		{
+			return ApiResponse<AdminSessionHistoryItemDto>.FailureResult(new[] { "SessionId must be greater than zero." }, "Validation failed.");
+		}
+
+		var result = await _adminRepository.GetSessionByIdAsync(sessionId, cancellationToken);
+
+		if (result is null)
+		{
+			return ApiResponse<AdminSessionHistoryItemDto>.FailureResult(new[] { "Session not found." }, "Session retrieval failed.");
+		}
+
+		return ApiResponse<AdminSessionHistoryItemDto>.SuccessResult(result, "Session retrieved successfully.");
+	}
+
 	public async Task<ApiResponse<CohortResponseDto>> CreateCohortAsync(CreateCohortRequestDto dto, string createdBy, string ipAddress, CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrWhiteSpace(dto.CohortName))
