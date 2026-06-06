@@ -12,7 +12,7 @@ public interface IRepracticeService
 
 	Task<ApiResponse<PagedResult<RepracticeSessionResponseDto>>> GetRepracticeHistoryAsync(long userId, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
 
-	Task<ApiResponse<bool>> UpdateAttemptAsync(UpdateAttemptRequestDto dto, long userId, CancellationToken cancellationToken = default);
+	Task<ApiResponse<UpdateAttemptResponseDto>> UpdateAttemptAsync(UpdateAttemptRequestDto dto, long userId, CancellationToken cancellationToken = default);
 
 	Task<ApiResponse<CompleteRepracticeResponseDto>> CompleteRepracticeSessionAsync(long repracticeSessionId, long userId, CancellationToken cancellationToken = default);
 

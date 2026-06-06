@@ -200,6 +200,27 @@ Logic source: `ProjectOverview.md` only.
 | load more | Android Mobile Module | Admin Mobile Design System |
 | AdminLoadMoreComponent | Android Mobile Module | Admin Mobile Design System |
 | mat-paginator | Android Mobile Module | Admin Mobile Design System |
+| full-bleed | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| flush | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| white background | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| user-content-area | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| login | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| login redesign | Android Mobile Module | Android Mobile Module — Mobile Design Standards |
+| loader | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| loading | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| loading state | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| skeleton | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| shimmer | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| progress bar | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| top progress bar | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| branded loader | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| full-screen loader | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| LoaderService | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| LoadingState | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| HttpActivity | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| spinner | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| flicker | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
+| layout shift | Frontend Loading Framework | Frontend Loading & Skeleton Framework |
 
 ## Module List
 
@@ -260,3 +281,7 @@ Logic source: `ProjectOverview.md` only.
     - Purpose: one consolidated .m4a per session merged server-side (ffmpeg) from per-turn segments; host recordingenabled flag + toggle endpoint, tblSessionRecording, merge + retention background workers, admin single-recording API. Full design: `Backend/Docs/Dev/SessionRecordingArchitecture.md`
     - Section: `Android Mobile Module — Mobile Design Standards`
     - Purpose: Mobile UX audit findings, design standards, typography scale, touch target rules, safe-area requirements, color token additions, implementation priorities. Full doc: `Backend/Docs/MobileDesignAnalysis.md`
+
+14. Frontend Loading Framework
+    - Section: `Frontend Loading & Skeleton Framework`
+    - Purpose: project-wide loading strategy — branded full-screen `LoaderService`/`LoaderComponent`, non-blocking `TopProgressBarComponent` + `loadingInterceptor`/`HttpActivityService`, skeleton kit (`@shared/ui/skeleton`) and `LoadingStateComponent` per-section wrapper; standard pattern + rollout checklist so future pages auto-follow

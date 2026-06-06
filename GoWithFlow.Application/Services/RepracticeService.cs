@@ -5,6 +5,7 @@ using GoWithFlow.Application.Interfaces.Repositories;
 using GoWithFlow.Application.Interfaces.Services;
 using GoWithFlow.Domain.Entities;
 using GoWithFlow.Domain.Enums;
+using Microsoft.Extensions.Logging;
 
 namespace GoWithFlow.Application.Services;
 
@@ -15,49 +16,74 @@ public sealed class RepracticeService : IRepracticeService
 	private readonly IUserRepository _userRepository;
 	private readonly IUserService _userService;
 	private readonly ISessionRepository _sessionRepository;
+	private readonly ILogger<RepracticeService> _logger;
 
 	public RepracticeService(
 		IMistakeRepository mistakeRepository,
 		IRepracticeRepository repracticeRepository,
 		IUserRepository userRepository,
 		IUserService userService,
-		ISessionRepository sessionRepository)
+		ISessionRepository sessionRepository,
+		ILogger<RepracticeService> logger)
 	{
 		_mistakeRepository = mistakeRepository;
 		_repracticeRepository = repracticeRepository;
 		_userRepository = userRepository;
 		_userService = userService;
 		_sessionRepository = sessionRepository;
+		_logger = logger;
 	}
 
 	private static readonly int[] ReviewIntervals = { 1, 3, 7, 14, 30 };
 
 	public async Task<ApiResponse<RepracticeSessionResponseDto>> GenerateRepracticeSessionAsync(GenerateRepracticeRequestDto dto, long userId, CancellationToken cancellationToken = default)
 	{
-		if (dto.SourceSessionId <= 0 || userId <= 0)
+		if (userId <= 0 || (!dto.IncludeAllSessions && dto.SourceSessionId <= 0))
 		{
 			return ApiResponse<RepracticeSessionResponseDto>.FailureResult(new[] { "SourceSessionId and UserId must be greater than zero." }, "Validation failed.");
 		}
 
 		var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
-		var sourceSession = await _sessionRepository.GetSessionBySessionIdAsync(dto.SourceSessionId, cancellationToken);
 
-		if (user is null || sourceSession is null)
+		if (user is null)
 		{
-			return ApiResponse<RepracticeSessionResponseDto>.FailureResult(new[] { "User or source session was not found." }, "Repractice generation failed.");
+			return ApiResponse<RepracticeSessionResponseDto>.FailureResult(new[] { "User was not found." }, "Repractice generation failed.");
 		}
 
-		var mistakes = await _mistakeRepository.GetUnresolvedMistakesAsync(userId, dto.SourceSessionId, cancellationToken);
+		// "Practice All Mistakes" (IncludeAllSessions) pulls every unresolved mistake across all
+		// sessions — the SP treats sessionFilter = 0 as "all sessions". Per-row practice restricts
+		// to the supplied session. Without this, "Practice All" silently practiced only one session's
+		// mistakes and skipped the rest (the reported "stops prematurely / skips pending items" bug).
+		var sessionFilter = dto.IncludeAllSessions ? 0L : dto.SourceSessionId;
+
+		if (!dto.IncludeAllSessions)
+		{
+			var sourceSession = await _sessionRepository.GetSessionBySessionIdAsync(dto.SourceSessionId, cancellationToken);
+			if (sourceSession is null)
+			{
+				return ApiResponse<RepracticeSessionResponseDto>.FailureResult(new[] { "Source session was not found." }, "Repractice generation failed.");
+			}
+		}
+
+		var mistakes = await _mistakeRepository.GetUnresolvedMistakesAsync(userId, sessionFilter, cancellationToken);
+
+		_logger.LogInformation(
+			"Repractice generation requested. UserId={UserId}, IncludeAllSessions={IncludeAllSessions}, RequestedSessionId={RequestedSessionId}, UnresolvedMistakes={MistakeCount}",
+			userId, dto.IncludeAllSessions, dto.SourceSessionId, mistakes.Count);
 
 		if (mistakes.Count == 0)
 		{
 			return ApiResponse<RepracticeSessionResponseDto>.FailureResult(new[] { "No unresolved mistakes were found for repractice generation." }, "Repractice generation failed.");
 		}
 
+		// tblRepracticeSession.SourceSessionId is NOT NULL with an FK to tblSession, so the stored
+		// anchor must be a real session. For all-sessions mode derive it from the first loaded mistake.
+		var anchorSessionId = dto.IncludeAllSessions ? mistakes[0].SessionId : dto.SourceSessionId;
+
 		var repracticeSession = new RepracticeSession
 		{
 			UserId = userId,
-			SourceSessionId = dto.SourceSessionId,
+			SourceSessionId = anchorSessionId,
 			TotalMistakes = mistakes.Count,
 			Status = RepracticeStatusType.PENDING.ToString(),
 			CreatedBy = user.FullName,
@@ -151,11 +177,11 @@ public sealed class RepracticeService : IRepracticeService
 		return ApiResponse<PagedResult<RepracticeSessionResponseDto>>.SuccessResult(result, "Repractice history retrieved successfully.");
 	}
 
-	public async Task<ApiResponse<bool>> UpdateAttemptAsync(UpdateAttemptRequestDto dto, long userId, CancellationToken cancellationToken = default)
+	public async Task<ApiResponse<UpdateAttemptResponseDto>> UpdateAttemptAsync(UpdateAttemptRequestDto dto, long userId, CancellationToken cancellationToken = default)
 	{
 		if (dto.RepracticeUtteranceId <= 0 || dto.Score < 0 || dto.Score > 100 || userId <= 0)
 		{
-			return ApiResponse<bool>.FailureResult(new[] { "RepracticeUtteranceId, Score, and UserId are invalid." }, "Validation failed.");
+			return ApiResponse<UpdateAttemptResponseDto>.FailureResult(new[] { "RepracticeUtteranceId, Score, and UserId are invalid." }, "Validation failed.");
 		}
 
 		var user = await _userRepository.GetByUserIdAsync(userId, cancellationToken);
@@ -163,17 +189,34 @@ public sealed class RepracticeService : IRepracticeService
 
 		if (user is null || repracticeUtterance?.RepracticeSession is null)
 		{
-			return ApiResponse<bool>.FailureResult(new[] { "User or repractice utterance was not found." }, "Repractice attempt failed.");
+			return ApiResponse<UpdateAttemptResponseDto>.FailureResult(new[] { "User or repractice utterance was not found." }, "Repractice attempt failed.");
 		}
 
 		if (repracticeUtterance.RepracticeSession.UserId != userId)
 		{
-			return ApiResponse<bool>.FailureResult(new[] { "This repractice utterance does not belong to the current user." }, "Repractice attempt failed.");
+			return ApiResponse<UpdateAttemptResponseDto>.FailureResult(new[] { "This repractice utterance does not belong to the current user." }, "Repractice attempt failed.");
 		}
 
 		await _repracticeRepository.UpdateRepracticeUtteranceAttemptAsync(dto.RepracticeUtteranceId, dto.Score, user.FullName, "127.0.0.1", cancellationToken);
 
-		return ApiResponse<bool>.SuccessResult(true, "Repractice attempt updated successfully.");
+		// Re-read the authoritative post-update state so the client reflects server-side resolution
+		// (resolves after two consecutive scores > 80) instead of guessing locally.
+		var updated = await _repracticeRepository.GetRepracticeUtteranceEntityAsync(dto.RepracticeUtteranceId, cancellationToken);
+
+		var result = new UpdateAttemptResponseDto
+		{
+			RepracticeUtteranceId = dto.RepracticeUtteranceId,
+			IsResolved   = updated?.IsResolved ?? false,
+			AttemptCount = updated?.AttemptCount ?? 0,
+			BestScore    = updated?.BestScore ?? 0m,
+			LastScore    = updated?.LastScore ?? dto.Score
+		};
+
+		_logger.LogInformation(
+			"Repractice attempt recorded. UserId={UserId}, RepracticeUtteranceId={UtteranceId}, Score={Score}, AttemptCount={AttemptCount}, IsResolved={IsResolved}",
+			userId, dto.RepracticeUtteranceId, dto.Score, result.AttemptCount, result.IsResolved);
+
+		return ApiResponse<UpdateAttemptResponseDto>.SuccessResult(result, "Repractice attempt updated successfully.");
 	}
 
 	public async Task<ApiResponse<CompleteRepracticeResponseDto>> CompleteRepracticeSessionAsync(long repracticeSessionId, long userId, CancellationToken cancellationToken = default)

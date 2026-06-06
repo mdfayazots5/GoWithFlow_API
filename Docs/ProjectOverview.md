@@ -3362,7 +3362,8 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 ### Request and Response Contracts
 
 - Request DTOs: `MistakeFilterRequestDto`, `GenerateRepracticeRequestDto`, `UpdateAttemptRequestDto`
-- Response DTOs: `MistakeResponseDto`, `MistakeSummaryResponseDto`, `RepracticeSessionResponseDto`, `RepracticeUtteranceResponseDto`, `GrammarProgressResponseDto`
+- Response DTOs: `MistakeResponseDto`, `MistakeSummaryResponseDto`, `RepracticeSessionResponseDto`, `RepracticeUtteranceResponseDto`, `GrammarProgressResponseDto`, `CompleteRepracticeResponseDto`, `UpdateAttemptResponseDto`
+- `GenerateRepracticeRequestDto`: `{ SourceSessionId: long, IncludeAllSessions: bool }`
 
 ### API Surface
 
@@ -3382,13 +3383,19 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 
 #### POST /api/repractice/generate
 
-- Loads unresolved mistakes for authenticated user and source session; creates one repractice session with one repractice utterance per mistake
-- Request body: `{ sourceSessionId: long }` — must be > 0 (FluentValidation: `GreaterThan(0)`)
+- Loads unresolved mistakes for the authenticated user; creates one repractice session with one repractice utterance per mistake
+- Request body: `{ sourceSessionId: long, includeAllSessions: bool }`
+  - `includeAllSessions = false` (per-row "practice"): restricts to `sourceSessionId`; FluentValidation requires `SourceSessionId > 0` (`.When(!IncludeAllSessions)`)
+  - `includeAllSessions = true` ("Practice All Mistakes"): pulls EVERY unresolved mistake across ALL sessions; `sourceSessionId` may be 0
+- Mistake selection: `RepracticeService` computes `sessionFilter = IncludeAllSessions ? 0 : SourceSessionId` and calls `IMistakeRepository.GetUnresolvedMistakesAsync(userId, sessionFilter)`. The stored procedure `uspGetUnresolvedMistakeByUserId` treats `@SourceSessionId = 0` as "all sessions" (`AND (p_sourcesessionid = 0 OR mst.sessionid = p_sourcesessionid)`).
+- FK anchor: `tblRepracticeSession.SourceSessionId` is **NOT NULL with FK → tblSession(SessionId)**, so it must store a real session. In all-sessions mode the service derives the anchor from `mistakes[0].SessionId` (a guaranteed-valid session); it is provenance only and does not affect which mistakes were practiced.
 - Frontend: `MyMistakesComponent` at `/user/my-mistakes`
-  - "Practice All Mistakes" button passes `+mistakes()[0].sessionId` — uses the first loaded mistake's sessionId
-  - Individual row "practice" button passes `+mistake.sessionId` — uses that specific mistake's sessionId
-  - `Mistake.sessionId` is type `string` in the frontend model; coerced to `number` with unary `+` before passing to `RepracticeService.generateRepracticeSession(sourceSessionId: number)`
-- Notes on Drift: Bug fixed 2026-06-02 — both button handlers were sending `0` as `sourceSessionId` (button called `startPractice()` with no args defaulting to `0`; row buttons hardcoded `startPractice(0)`). API validation rejected `SourceSessionId <= 0`. Fix: read `sessionId` from loaded mistake records.
+  - "Practice All Mistakes" CTA → `practiceAll()` → `startPractice(0, true)` → all unresolved mistakes across all sessions. CTA is gated on `summary().pendingMistakes > 0` (NOT on the tab-filtered list).
+  - Individual row "practice" button → `startPractice(+mistake.sessionId, false)` — that specific session only
+  - `RepracticeService.generateRepracticeSession(sourceSessionId: number, includeAllSessions = false)`
+- Notes on Drift:
+  - **Drift fixed 2026-06-02 (request drift):** both button handlers were sending `0` as `sourceSessionId`; API rejected `SourceSessionId <= 0`. Interim fix read `sessionId` from the loaded mistake record.
+  - **Drift fixed 2026-06-06 (logic drift — REGRESSION introduced by the 2026-06-02 fix):** sending `mistakes[0].sessionId` made "Practice All Mistakes" generate a round from only ONE session's mistakes while the CTA badge advertised the full cross-session pending count. Users practiced a subset and the round "stopped early / skipped pending items." Root cause: the generate path always filtered by a single session even though the SP already supported `0 = all`, and the `NOT NULL` FK on `SourceSessionId` blocked passing `0` directly. Fix: explicit `IncludeAllSessions` flag drives the mistake query with `0` while a derived real session satisfies the FK.
 
 #### GET /api/repractice/{repracticeSessionId}
 
@@ -3401,15 +3408,16 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 #### PATCH /api/repractice/attempt
 
 - Updates: `AttemptCount`, `BestScore`, `LastScore`, linked mistake `PracticeCount`
-- Resolves both repractice utterance and linked mistake after 2 consecutive scores > 80
-- Called by `CorrectionRoundComponent.onPracticeAdvanced()` when `skipped = false`
+- Resolves both repractice utterance and linked mistake after **2 consecutive scores > 80** (SP `uspUpdateRepracticeUtteranceAttempt`: `v_shouldresolve := (p_score > 80 AND previous_lastscore > 80)`). Because each utterance is shown once per pass, resolution requires either a "Try Again → Done" producing two recorded attempts, or a second round via "Practice Again".
+- Response DTO: `UpdateAttemptResponseDto { repracticeUtteranceId, isResolved, attemptCount, bestScore, lastScore }` — the service re-reads the utterance post-update so the client reflects authoritative server-side resolution (added 2026-06-06). Previously returned `bool` only.
+- Called by `CorrectionRoundComponent.onPracticeAdvanced()` when `skipped = false`. The component adds `repracticeUtteranceId` to a resolved-id `Set` when `isResolved = true` and updates the live "X RESOLVED" counter from `Set.size` (race-free).
 - NOT called on skip — skipped utterances do not count as attempts
 
 #### POST /api/repractice/{repracticeSessionId}/complete
 
 - Validates ownership; recalculates improvement percent; marks session `COMPLETED`; re-runs badge evaluation
 
-### Frontend Repractice Practice Flow — Stable Contract (2026-06-04)
+### Frontend Repractice Practice Flow — Stable Contract (2026-06-04, updated 2026-06-06)
 
 **Entry point:** `MyMistakesComponent` → `startPractice(sessionId)` → `RepracticeService.generateRepracticeSession()` → navigate to `/repractice/:repracticeSessionId`
 
@@ -3445,20 +3453,25 @@ Output: `practiceAdvanced: EventEmitter<{ score: number; skipped: boolean }>`
 **Mistake context display:** shows `mistakeDetail` (struck through, red) and `correctionNote` (highlighted, green) from `RepracticeUtterance` when non-empty. Mistake type badge is colour-coded by type.
 
 **CorrectionRoundComponent** handles:
-- Session load via `getRepracticeSession(id)`
+- Session load via `getRepracticeSession(id)`. On load it seeds a `_resolvedIds: Set<number>` and the `resolvedCount` signal from any utterances already `isResolved` (supports resumed/second rounds).
 - Progress bar (coloured segment per utterance: past=blue, current=orange, future=dim)
-- `onPracticeAdvanced(event)` — calls `updateAttempt` if not skipped, then advances index or calls `finishSession`
-- `finishSession()` — calls `completeRepracticeSession()`, shows completion dashboard
-- `restartRound()` — resets index, resolvedCount, improvement, shows utterance[0] again
+- `onPracticeAdvanced(event)` — when `!skipped`, calls `updateAttempt`; on the response, if `isResolved` and not already counted, adds the id to `_resolvedIds` and sets `resolvedCount = _resolvedIds.size`. Then `advanceToNext()` runs **synchronously** (progression does NOT block on the attempt API — mirrors the Room speaker flow which advances the turn immediately).
+- `advanceToNext()` — increments index; shows `utterances[nextIndex]`; when `nextIndex >= length` calls `finishSession()`. Processes EVERY loaded utterance one-by-one until the end.
+- `finishSession()` — calls `completeRepracticeSession()`, sets `resolvedCount` from the authoritative backend `resolvedCount`, shows completion dashboard
+- `restartRound()` — reloads the session via `loadSession()` (re-seeds resolved state from the backend), resets index/improvement, shows utterance[0] again
 
-**Resolved count logic:** Backend resolves after 2 consecutive scores > 80 (tracked server-side via `PATCH /api/repractice/attempt`). Frontend tracks `_consecutivePass` per utterance locally as a UX signal but treats the backend response as authoritative for the completion dashboard.
+**Resolved count logic (2026-06-06):** Resolution is authoritative server-side (2 consecutive scores > 80). The component reflects it from the `UpdateAttemptResponseDto.isResolved` flag into a `_resolvedIds` Set — there is NO local "consecutive pass" guessing. The completion dashboard uses the backend `resolvedCount` from `POST /complete`.
 
-**Skip behaviour:** Advances to next utterance with no API call. `_consecutivePass` resets to 0.
+**Skip behaviour:** Advances to next utterance with no API call. Does not affect `_resolvedIds`.
+
+**Logging (2026-06-06):** Full `[Repractice]` console lifecycle logging added across the flow — generate request/response (`RepracticeService`), session load, per-utterance advance, attempt record + resolution, skip, try-again, recording complete, voice error, auto-submit schedule, finish, restart. Backend `RepracticeService` logs generate (scope + mistake count) and each attempt (score, attemptCount, isResolved) via `ILogger<RepracticeService>`. This mirrors the `[Speaker]` logging already present in `SpeakerScreenComponent`.
 
 **Notes on Drift Prevented:**
 - `CorrectionRoundComponent` previously used `VoiceAnalysisService` — a legacy service with naive word-intersection scoring, no Levenshtein/Soundex, no Indian English map, no Capacitor native path, no VAD, no waveform. On Android APK it would never return useful results. Replaced with `VoiceRecognitionEngine` (production engine) via `RepracticeSpeakerComponent`.
 - `VoiceAnalysisService` is no longer imported or used in the repractice module. It remains only as a service file (not deleted — may be referenced elsewhere) but is not wired up to any active component.
 - Feedback UI was a custom pass/fail card. Replaced with `VoiceFeedbackComponent` — same word chips, score bands, and breakdown as the live session speaker screen.
+- **Resolved-counter race (fixed 2026-06-06):** the old `_consecutivePass` counter was incremented inside the async `updateAttempt` callback but reset to `0` synchronously by `advanceToNext()` before that callback fired, so it never reached 2 and the live "RESOLVED" counter was permanently stuck at 0. Replaced with the server-authoritative `_resolvedIds` Set keyed on the attempt response.
+- **Single-session "Practice All" (fixed 2026-06-06):** see `POST /api/repractice/generate` drift note — the CTA now practices all pending mistakes across all sessions.
 
 ### Application and Infrastructure Wiring
 
@@ -4229,11 +4242,11 @@ All 7 items implemented:
 - Framework: Capacitor 8.4.0 wrapping Angular 19 + Vite (AnalogJS) web app
 - App ID: `com.gowithflow.app`
 - App Name: `GoWithFlow`
-- **App Version: `1.2` (versionCode 5)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
+- **App Version: `1.3` (versionCode 6)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix) → 1.3 (vc 6, 2026-06-05: production distribution build from current `main`, no logic change). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
 - Web Dir: `dist/analog/public` (Vite production build output)
 - Android Scheme: `https` — required for JWT cookies and SignalR auth to function correctly on device
 - Config file: `Frontend/capacitor.config.ts`
-- Distribution APK: `Backend/Docs/Dev/GoWithFlow.apk` (latest) + versioned copy `GoWithFlow-1.2.apk`
+- Distribution APK: `Backend/Docs/Dev/GoWithFlow.apk` (latest = 1.3) + versioned copy `GoWithFlow-1.3.apk`. Prior: `GoWithFlow-1.2.apk` retained.
 
 ### Android Project Location
 
@@ -4368,21 +4381,19 @@ Copies `dist/analog/public` into the Android project. Confirm output includes:
 
 Always clear the build dir first. WSL2 cannot delete intermediates on the Windows filesystem after a previous build — Gradle fails with "Unable to delete directory after 10 attempts".
 
-**SDK-path gotcha (REQUIRED — see Drift below):** `android/local.properties` is regenerated by Android Studio on Windows with `sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk` — a **Windows** path that Gradle, running in WSL/Linux, cannot resolve → `SDK location not found`. The WSL build must use the Linux SDK at `/root/Android/Sdk`. Setting `ANDROID_HOME` does **not** help: the Android Gradle Plugin gives `local.properties` `sdk.dir` precedence over the env var. So temporarily point `local.properties` at the Linux SDK for the build, then restore the Windows path (keeps the Windows/Android-Studio setup working). The block below restores on success or failure:
+**SDK-path gotcha (REQUIRED — see Drift below):** `android/local.properties` is regenerated by Android Studio on Windows with `sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk` — a **Windows** path that Gradle, running in WSL/Linux, cannot resolve → `SDK location not found`. The WSL build must use the Linux SDK at `/root/Android/Sdk` (verified present: build-tools 34.0.0/35.0.0, platforms android-34/35/36). Setting `ANDROID_HOME` does **not** help: the Android Gradle Plugin gives `local.properties` `sdk.dir` precedence over the env var. So point `local.properties` at the Linux SDK for the build, then restore the Windows path (keeps the Windows/Android-Studio setup working).
 
-```powershell
-wsl --exec bash -lc '
-cd /mnt/c/Live/GoWithFlow/Frontend/android &&
-rm -rf app/build 2>/dev/null;
-cp local.properties local.properties.winbak &&
-printf "sdk.dir=/root/Android/Sdk\n" > local.properties &&
-JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -8;
-status=${PIPESTATUS[0]};
-mv local.properties.winbak local.properties;
-echo "GRADLE_EXIT=$status"'
+**CRITICAL — do NOT write `local.properties` with `printf "...\n"` through PowerShell `wsl --exec` (see Drift 2026-06-05 #2).** PowerShell→`wsl.exe` argument translation strips the backslash in `\n`, so `printf` writes the literal path `sdk.dir=/root/Android/Sdkn` (trailing `n`, nonexistent) → `SDK location not found`. The `cp local.properties local.properties.winbak` step then propagates the corrupt value into the backup, so the restore also writes garbage. **Reliable method:** write `local.properties` directly with an editor/Write tool (one line, `sdk.dir=/root/Android/Sdk`), run Gradle, then write it back to the Windows path. Equivalent build invoked through the **Bash tool** (true Linux shell, no `wsl.exe` arg translation) where `\n` survives:
+
+```bash
+# 1. Set Linux SDK path (write file directly — NOT via printf through PowerShell)
+#    local.properties content: sdk.dir=/root/Android/Sdk
+wsl --exec bash -lc 'cd /mnt/c/Live/GoWithFlow/Frontend/android && rm -rf app/build 2>/dev/null; JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug --no-daemon 2>&1 | tail -15; echo "GRADLE_EXIT=${PIPESTATUS[0]}"'
+# 2. After build, restore local.properties to: sdk.dir=C:/Users/mdfay/AppData/Local/Android/Sdk
 ```
 
-Expected: `BUILD SUCCESSFUL in Xs` then `GRADLE_EXIT=0`.
+Expected: `BUILD SUCCESSFUL in Xs` then `GRADLE_EXIT=0`. Verify the version with aapt:
+`/root/Android/Sdk/build-tools/35.0.0/aapt dump badging app/build/outputs/apk/debug/app-debug.apk | grep package` → `versionCode='6' versionName='1.3'`.
 
 Output APK: `C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`
 
@@ -4481,6 +4492,8 @@ JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug; mv local.p
 ### Notes on Drift Prevented (Build)
 
 - **Drift (2026-06-05): WSL Gradle build fails with `SDK location not found`** — `Frontend/android/local.properties` is regenerated by Android Studio on Windows with `sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk` (a Windows path). Gradle runs in WSL/Linux and cannot resolve it, and the Android Gradle Plugin gives `local.properties` `sdk.dir` **precedence over `ANDROID_HOME`** — so exporting the env var does not fix it. **Fix:** before the WSL build, swap `local.properties` to `sdk.dir=/root/Android/Sdk` (the Linux SDK, confirmed present alongside `/usr/lib/android-sdk`), then restore the original Windows path so the Windows/Android-Studio workflow keeps working. Baked into Step 4 and the full-sequence block. Drift type: environment/path contract drift.
+
+- **Drift (2026-06-05) #2: `printf "sdk.dir=/root/Android/Sdk\n"` through PowerShell `wsl --exec` corrupts `local.properties`** — hit during the 1.3 build. PowerShell→`wsl.exe` argument translation strips the backslash in `\n`, so `printf` receives `sdk.dir=/root/Android/Sdk\n` as `sdk.dir=/root/Android/Sdkn` and writes that literal trailing `n`. Result: `sdk.dir` points at the nonexistent `/root/Android/Sdkn` → Gradle `SDK location not found` even though `/root/Android/Sdk` is valid. **Worse:** the documented swap does `cp local.properties local.properties.winbak` *before* overwriting, and on a retry that copies the already-corrupt value into the backup, so the `mv` restore writes garbage back — and the original Windows path was lost. **Fix:** never write `local.properties` via `printf "...\n"` piped through PowerShell `wsl.exe`. Write the file directly (Write tool / editor) as a single line `sdk.dir=/root/Android/Sdk`, build, then write it back to `sdk.dir=C:/Users/mdfay/AppData/Local/Android/Sdk`. The Bash tool (real Linux shell) is also safe because there is no `wsl.exe` arg translation. The `.winbak` swap dance is discouraged — prefer two explicit direct writes. Drift type: build-script / shell-escaping drift. Diagnostic tell: `cat -A local.properties` shows a trailing `n` with no `$` (newline) before it.
 
 Output APK (WSL2 path): `Frontend/android/app/build/outputs/apk/debug/app-debug.apk`
 Output APK (Windows path): `C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`
@@ -4707,6 +4720,52 @@ Prior to 2026-06-04, no `@capacitor/app` listener existed. Capacitor's default A
 
 ---
 
+## Frontend Loading & Skeleton Framework (2026-06-06)
+
+### Purpose
+Project-wide loading strategy eliminating partial renders, layout shift, flicker, and blank
+sections on data-driven screens. Applies to Admin, User, Public, mobile and desktop. Three layers:
+
+1. **Branded full-screen loader** — blocking ops only (initial bootstrap, login + redirect, route data).
+2. **Top progress bar** — always-on, non-blocking ambient indicator for navigation + foreground HTTP.
+3. **Skeletons + LoadingState wrapper** — per-section placeholders for cards/lists/tables/dashboards.
+
+### Components (all standalone, OnPush)
+- `LoaderService` (`@core/services/loader.service`) — ref-counted full-screen loader state + message; `show(msg?)`, `hide()`, `reset()`. Use ONLY for blocking flows; never for ordinary list/detail fetches.
+- `LoaderComponent` (`app-loader`, `@shared/components/loader`) — branded full-screen overlay (animated brand ring + GoWithFlow wordmark + message). Mounted once in `AppComponent`. Driven by `LoaderService`.
+- `HttpActivityService` (`@core/services/http-activity`) — signal counter of in-flight foreground requests; `isActive` computed.
+- `loadingInterceptor` (`@core/interceptors/loading.interceptor`) — increments/decrements `HttpActivityService` per request. Skips background/streaming calls (`/hubs/`, `negotiate`, `/voice`, `/audio`) and any request marked via `withBackground()` context or `X-Background` header (header stripped before send). Registered FIRST in `withInterceptors([loadingInterceptor, authInterceptor])`.
+- `TopProgressBarComponent` (`app-top-progress-bar`, `@shared/components/top-progress-bar`) — fixed 3px gradient bar; shows on router `NavigationStart` or HTTP activity. Anti-flicker: 120ms show-delay + 400ms min-visible. Mounted at top of `AppComponent` shell (outside scroll area → zero layout shift).
+- Skeleton kit (`@shared/ui/skeleton`):
+  - `SkeletonComponent` (`app-skeleton`) — primitive shimmer block; inputs `width`, `height`, `rounded`, `block`. Uses global `@keyframes gwf-shimmer` + `--gwf-skeleton-base/--gwf-skeleton-sheen` tokens (styles.scss). Honors `prefers-reduced-motion`.
+  - Presets: `app-skeleton-text` (lines), `app-skeleton-card`, `app-skeleton-list` (rows; `header`/`avatar`/`trailing` toggles), `app-skeleton-stat-grid` (cols), `app-skeleton-table` (rows×cols).
+- `LoadingStateComponent` (`app-loading-state`, `@shared/ui/loading-state`) — the scalable per-section pattern. Inputs `loading`/`error`/`empty` (+ messages, `retryable`, `hasErrorSlot`/`hasEmptySlot`); `retry` output. State precedence loading → error → empty → content. Content slot is NOT rendered until `loading` is false (Rule 1: no partial data). Projection slots `[skeleton]`, `[error]`, `[empty]`, default.
+
+### Standard pattern for any data-driven screen (Rule 10 — future pages auto-follow)
+```html
+<app-loading-state [loading]="loading()" [error]="error()" [empty]="rows().length === 0"
+                   emptyMessage="No records yet." (retry)="reload()">
+  <ng-container skeleton><app-skeleton-list [rows]="6"></app-skeleton-list></ng-container>
+  <!-- default slot: real content, rendered only when loaded -->
+  @for (row of rows(); track row.id) { ... }
+</app-loading-state>
+```
+Rules for new screens: (1) initialize the `loading` signal to `true` so the FIRST paint is the skeleton, not an empty-state flash; (2) set `loading=false` in BOTH `next` and `error`; (3) pick the skeleton preset whose geometry matches the real content to keep CLS ≈ 0; (4) use `LoaderService` only for blocking/whole-page operations.
+
+### Reference conversions completed (2026-06-06)
+- **User Dashboard** (`user-dashboard.component`) — data region gated on `showDashSkeleton = !dashboard() && dashboardLoading()` (skeleton card + 2 list skeletons); static greeting/quick-actions paint instantly; falls through to content + empty states on error (no infinite skeleton).
+- **Admin Users** (`admin-users.component`) — **bug fixed**: `loading` initialized `false` and never set `true` on first load, so the initial mount flashed the "No users found" empty state before data; now initialized `true` and uses `app-skeleton-list`.
+- **Login** (`login.component`) — branded `LoaderService.show('Signing you in…')` across the auth round-trip + redirect; hidden after `router.navigate(...).finally()`; destination skeleton takes over.
+
+### Rollout checklist for remaining data screens (apply the standard pattern)
+User: my-mistakes, progress/improvement-tracker, interview-performance, learning-goals, session history/detail, scripts library/upload, invitations, profile. Admin: dashboard, session-detail, user-detail-report, reports. Session/Live: lobby, create-session. Each: init `loading=true`, wrap data region in `app-loading-state` with the matching skeleton preset, set loading=false in next+error. The top progress bar + branded loader already apply globally with no per-screen work.
+
+### Notes on Drift Prevented
+- `LoaderService` previously existed with a `LoaderComponent` mounted in the shell but was NEVER invoked (`show()/hide()` had zero call sites) — dead global loader. Now driven by explicit blocking flows; ambient activity handled by the separate non-blocking top bar so the full-screen loader does not flicker on every XHR.
+- Per-screen skeletons were ad-hoc `animate-pulse` divs duplicated across ~16 components with inconsistent geometry. Replaced by the shared skeleton kit; admin-users converted as reference.
+
+---
+
 ## Android Mobile Module — Mobile Design Standards (2026-06-04)
 
 ### Reference Document
@@ -4792,6 +4851,43 @@ All Priority 1 and Priority 2 items from MobileDesignAnalysis.md were implemente
 - `admin-layout.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
 - `bottom-nav.component.scss`: `#0D1526` → `var(--gwf-nav-bg)`
 - Template inline styles: `#F59E0B` → `text-gw-warning`, `#E07B39` → `text-gw-accent`, `#2E7D32` → `text-gw-success`
+
+### Full-Bleed Shell Routes + Login Redesign (2026-06-06)
+
+**Problem fixed:** the user shell (`app.component`) wraps all non-admin routes in
+`.user-content-area`, which forces `padding: 16px`. The shell/body background is
+`--gwf-bg: #F4F6F9` (near-white). On self-contained full-screen routes (login, register,
+live-session, repractice) the header and bottom nav are hidden, but the 16px padding still
+showed the near-white shell background as a frame around each page's own full-screen surface,
+and the extra vertical padding pushed a `100dvh` page past the viewport → unwanted scroll.
+
+**Shell contract (`app.component.ts`):**
+- `fullBleedRoutes = ['/auth', '/live-session', '/repractice']` — single source of truth.
+- `isFullBleed()` = url matches that list. `showHeader()` / `showBottomNav()` now derive from it
+  (header still also hidden on `'/'`). These three route states can no longer drift apart.
+- Template binds `[class.flush]="isFullBleed()"` on `.user-content-area`.
+- `.user-content-area.flush { padding: 0; }` — full-bleed pages own their entire layout +
+  background; no light frame, no added height. Mirrors how admin routes render full-screen.
+- Keep `.no-bottom-pad` (zeroes only bottom padding) for non-full-bleed pages with no nav.
+
+**Login redesign (`auth/login`):** dark gradient theme retained (already audited as correct).
+- Page shell: `min-height: 100%` (fills flush content area) with safe-area-aware padding
+  (`max(clamp(...), env(safe-area-inset-top/bottom))`). Short-viewport (`max-height: 720px`)
+  rule anchors to top + tightens gaps so the form never forces a scroll.
+- Card: added "Welcome back" title + subtitle for hierarchy.
+- Fields: leading Lucide icons (Smartphone, Lock) via `.field-control`/`.field-icon`; icon
+  recolors to accent on input focus. Password field has a show/hide toggle button
+  (`showPassword` signal, Eye/EyeOff) with `aria-label` + `title`.
+- Mobile input hygiene: `inputmode="numeric"`, `autocomplete="tel" / "current-password"`,
+  `enterkeyhint`, `id`/`for` label association.
+- Added footer link "Create an account" → `/auth/register` (register already linked back to
+  login; this closes the round-trip gap).
+- Hardcoded `#5C35A8` → `var(--gwf-primary)` for logo/button.
+
+**Notes on Known Drift Prevented:** header / nav / padding visibility were three independent
+`hideOn` lists that could diverge; now all derive from `fullBleedRoutes`. The white-frame issue
+was a shell-level bug affecting every full-bleed route, not a login-only CSS problem — fixing it
+in the shell cleans up login, register, live-session and repractice in one place.
 
 ### Shared Footer Navigation Architecture (2026-06-05)
 
@@ -5014,11 +5110,15 @@ inside `PurgeExpiredAsync`, never via the constructor.
   so every participant uploads turn clips when the host records (was: only opted-in users).
 - **Facilitator capture:** `VoiceRecognitionEngine.startStandaloneCapture/stopStandaloneCapture`
   (standalone `MediaRecorder`, no recognition) — `speaker-screen` starts it on facilitator
-  read-aloud turns and uploads on "Done". (No-op on Capacitor native — getUserMedia blocked, same
-  limitation as existing archive capture.)
+  read-aloud turns and uploads on "Done". (On Capacitor native this now uses
+  `capacitor-voice-recorder` instead of getUserMedia — see "KNOWN FAILURE … / Fix applied (2026-06-06)".)
 - **Admin UI** (`admin-session-detail.component.ts`): music-player redesign of the single
   `SessionRecordingDto` — play/pause, scrubber, ±10s, status states (Ready/Processing/Failed/None),
   participant chips, download. `AdminService.getSessionRecording` returns the single object.
+  - FAILED state: when `failureReason` contains "no audio segments" (computed `isNoSegmentsFailure`),
+    an extra italic hint is shown ("…participants may have used an app version that couldn't capture
+    audio") so admins don't misread the capture-platform limitation as a server/merge bug. (2026-06-06)
+    A manual "Retry merge" admin action was considered but NOT implemented (retries remain automatic, capped at 3).
 
 ### Ops status (2026-06-05)
 - **Migration: DONE** — `AddSessionRecording_Phase16.sql` applied & verified on production Supabase
@@ -5028,3 +5128,77 @@ inside `PurgeExpiredAsync`, never via the constructor.
   Requires a **Render redeploy** to take effect. `appsettings.json` has an `Ffmpeg` block
   (`FfmpegPath`/`FfprobePath` default to PATH).
 - **Local dev ffmpeg** — install for local testing only (`winget install Gyan.FFmpeg`); not needed for prod.
+
+### KNOWN FAILURE — No audio captured on the mobile app (verified 2026-06-06, session 97)
+
+**Symptom:** `GET /api/admin/sessions/{id}/recordings` returns `status=FAILED`,
+`failureReason="No audio segments were captured for this session."` even though recording was
+enabled and a full session ran.
+
+**Verified diagnosis (production Supabase + R2, session 97):**
+- `tblsession.recordingenabled = TRUE`, `status=COMPLETED`, `actualdurationsec=618` (real 10-min session).
+- `tblvoiceanalysis` = **28 rows** for session 97 → turns happened and **recognition worked**.
+- `tblaudioarchive` for 97 = **0 rows**; R2 `gwf-audio/sessions/97/` = **0 objects** → **no clip was ever
+  uploaded**. `tblsessionrecording` = FAILED, `attemptcount=3` (retries exhausted, working as designed).
+- Contrast: session 95 (web) = 16 turns + 7 clips ✓; sessions 96 & 97 (app) = turns but 0 clips ✗.
+
+**Root cause (SAVE/capture side, NOT get side — the merge query is correct):** turn-audio capture
+relies on the browser `MediaRecorder` fed by `navigator.mediaDevices.getUserMedia({audio:true})`,
+opened **concurrently with the active speech recognizer** in
+`voice-recognition.engine.ts` (`startRecording`, captureAudio branch ~L360, and
+`startStandaloneCapture` which already early-returns on native). On the **Capacitor native Android
+app** the native `@capacitor-community/speech-recognition` plugin owns the mic, so the WebView
+`getUserMedia` call throws and is **silently swallowed** (`catch {}`) → `lastAudioBlob` stays null →
+the upload at `speaker-screen.component.ts` L233 is skipped → zero segments → merge FAILED. Android
+does not allow a second `AudioRecord`/`MediaRecorder` session while the native `SpeechRecognizer`
+holds the mic, so per-turn capture + native recognition cannot run simultaneously as currently
+architected. Net: **consolidated session recording cannot capture audio on the native app**; it only
+works on the web client. No native voice-recorder plugin is installed (only speech-recognition).
+
+**Secondary fragility (web):** the capture flag `AudioArchiveService.sessionRecordingEnabled` is an
+in-memory root-singleton set ONLY in `lobby.component` from lobby state. A mid-session page reload /
+deep-link into `/live-session` resets it to false → web capture silently stops (unless personal
+archive consent is on). Should be re-derived from server/turn state, not the lobby singleton alone.
+
+**Fix applied (2026-06-06) — native audio capture added (web build verified; on-device validation pending):**
+- Added dependency `capacitor-voice-recorder@7.0.6` (peer `@capacitor/core >=7.0.0`, satisfied by 8.4.0).
+  Web build green. Android `RECORD_AUDIO` + `MODIFY_AUDIO_SETTINGS` already in the manifest — no manifest change.
+- `voice-recognition.engine.ts` now captures turn audio on native via the plugin (web path unchanged):
+  - New `startNativeClipCapture()` / `stopNativeClipCapture()` (base64 → Blob → `lastAudioBlob`),
+    plus `base64ToBlob`. Field `nativeClipCapturing`.
+  - **Recognition turns:** recorder is started ONLY after recognition is confirmed running
+    (inside `confirmLanguage`) and stopped/collected in the single `settle()` finalize gate
+    BEFORE the promise resolves (so the speaker screen's upload at L233 sees the blob). Strictly
+    best-effort and wrapped in try/catch — if a device disallows capture concurrent with the
+    native `SpeechRecognizer`, recognition/scoring is unaffected (degrades to the old no-capture
+    behaviour). `settle()` adds zero delay when no capture was active.
+  - **Facilitator read-aloud turns:** no recognizer runs, so the mic is free — `startStandaloneCapture`
+    /`stopStandaloneCapture` now use the plugin on native (was a hard no-op). Reliable here.
+  - `stopSession()` also stops any active native capture (idempotent).
+- **Open risk / next step:** Android generally disallows a second mic capture while the system
+  `SpeechRecognizer` is active, so concurrent capture on recognition turns is DEVICE-DEPENDENT.
+  Facilitator turns should always capture. Requires `npx cap sync android` + APK rebuild + on-device
+  test (run a recording-enabled session, then confirm `tblaudioarchive`/R2 `sessions/{id}/turns/` fill
+  and the recording goes READY). If recognition turns don't capture on target devices, the fallback
+  is a record-then-recognize re-architecture (single mic owner) — not done here.
+- Clip key/format: native blob is `audio/aac`; stored under the existing `.webm`-suffixed key
+  (`StorageKeyBuilder.AudioArchiveClip`). The ffmpeg merge re-encodes and detects container by
+  content, so the cosmetic extension mismatch is harmless.
+
+**>>> PENDING ACTIONS — DO THESE WHEN BUILDING THE NEXT APP VERSION (not done yet):**
+1. [ ] `cd Frontend && npm install` (pulls `capacitor-voice-recorder@7.0.6`, already in package.json).
+2. [ ] `cd Frontend && npm run build` then `npx cap sync android` (registers the native plugin in the Android project).
+3. [ ] Rebuild + install the APK on a real device (Java 21; see "Android Mobile Module — Capacitor Setup").
+4. [ ] On-device test: host enables "Record Session", run a full session (speak several turns),
+       end it. Then verify the capture actually worked:
+       - `tblaudioarchive` has rows for that sessionid, AND R2 `gwf-audio/sessions/{id}/turns/...` has objects.
+       - `GET /api/admin/sessions/{id}/recordings` eventually returns `status=READY` (not FAILED).
+5. [ ] If recognition-turn capture is empty on the device (Android blocked concurrent mic with the
+       `SpeechRecognizer`) but facilitator turns captured → the best-effort path is being blocked.
+       Fallback then required: record-then-recognize re-architecture (single mic owner) — NOT done yet.
+6. [ ] (Optional, separate web bug) Re-derive `AudioArchiveService.sessionRecordingEnabled` from
+       server/turn state instead of the lobby-only singleton, so a mid-session reload doesn't stop
+       web capture. Independent of the native work above.
+
+Note: session 97 (and 96) cannot be recovered — their source turn clips were never captured. This
+fix only affects sessions recorded AFTER the new APK is installed.
