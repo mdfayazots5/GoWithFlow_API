@@ -435,6 +435,7 @@ CREATE OR REPLACE FUNCTION uspinsertuser(
     p_fullname              VARCHAR(128),
     p_mobilenumber          VARCHAR(16),
     p_email                 VARCHAR(128) DEFAULT NULL,
+    p_passwordhash          VARCHAR(512) DEFAULT NULL,
     p_agegroup              VARCHAR(32)  DEFAULT NULL,
     p_preferredhintlanguage VARCHAR(32)  DEFAULT NULL,
     p_avatarurl             VARCHAR(256) DEFAULT NULL,
@@ -457,7 +458,7 @@ BEGIN
         createdby, ipaddress
     )
     VALUES (
-        p_fullname, p_mobilenumber, p_email, NULL, p_agegroup,
+        p_fullname, p_mobilenumber, p_email, p_passwordhash, p_agegroup,
         p_preferredhintlanguage, p_avatarurl, p_groupcode, p_role,
         p_createdby, p_ipaddress
     )

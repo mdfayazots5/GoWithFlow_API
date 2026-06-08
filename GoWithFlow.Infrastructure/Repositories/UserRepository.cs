@@ -55,6 +55,10 @@ public sealed class UserRepository : GenericRepository<User>, IUserRepository
 		command.Parameters.Add(CreateParameter("@FullName", user.FullName));
 		command.Parameters.Add(CreateParameter("@MobileNumber", user.MobileNumber));
 		command.Parameters.Add(CreateParameter("@Email", user.Email));
+		// PasswordHash was previously never passed — admin-created users got a NULL hash and
+		// could never log in. The PG function binds parameters by name (p_passwordhash), so the
+		// position of this parameter is irrelevant.
+		command.Parameters.Add(CreateParameter("@PasswordHash", user.PasswordHash));
 		command.Parameters.Add(CreateParameter("@AgeGroup", user.AgeGroup));
 		command.Parameters.Add(CreateParameter("@PreferredHintLanguage", user.PreferredHintLanguage));
 		command.Parameters.Add(CreateParameter("@AvatarUrl", user.AvatarUrl));

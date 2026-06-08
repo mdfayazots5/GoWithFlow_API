@@ -812,6 +812,23 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 }
 ```
 
+**Frontend UI — `ImprovementTrackerComponent` (`/user/progress`, heading "Progress Journey"):**
+Single hub page (max-w-lg, mobile-first). Section order, top → bottom:
+1. **Stats grid** (2×2): Sessions, Avg Score, Resolved, Streak — from `StatsHeader`.
+2. **Score Trend** ("Last 10 Sessions") — `RecentSessions`; shows real `SessionName`, date, fluency/confidence %.
+3. **Grammar Focus** — `GrammarProgress` merged with grammar-trend endpoint (Improving/Stable/Regressing badge).
+4. **Badges Earned** — `BadgesEarned`.
+5. **Quick Links** (3 cards, all routes verified live):
+   - "Interview Performance" → `/user/interview-performance` (`InterviewPerformanceComponent` — readiness score & trends)
+   - "Vocabulary Bank" → `/user/vocabulary` (`VocabularyBankComponent` — words practiced)
+   - "Pronunciation Timeline" → `/user/pronunciation-timeline` (`PronunciationTimelineComponent` — problem words & session history)
+6. **Repractice History** — `RepracticeHistory` list; improvement % + status per card.
+
+**UI Copy Rephrase (2026-06-08) — user-friendliness pass on Repractice History cards:**
+- Was: card title `Session #{{ sourceSessionId }}` (raw internal session id, meaningless to users) + `{completedRounds}/{totalMistakes} rounds` + raw `status` (e.g. `IN_PROGRESS`).
+- Now: title `Mistake Repractice`; subtitle `{date} · {completedRounds} of {totalMistakes} mistakes practiced`; status humanized via `statusLabel()` (underscores → spaces).
+- **Recommended future enhancement (NOT done — needs backend):** `RepracticeHistory` DTO has no source-session name, only `SourceSessionId`. To show the originating script/session name on these cards, add `SourceSessionName` to `uspgetrepracticesessionlistbyuserid` + DTO + `RepracticeHistoryItem` model.
+
 **Stored Procedures (PostgreSQL):**
 | Call | SP | Returns |
 |---|---|---|
@@ -933,7 +950,11 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
   - Notes on Drift (2026-06-03): `uspgetuserreportsummarylist` did not return `avatarurl`. Migration 33 added it to the `userreport` CTE (select + group by) and final SELECT. Live function signature verified via `pg_get_functiondef` before writing — used unqualified `CHARACTER VARYING` / `NUMERIC` / `TIMESTAMP` to match live declaration exactly.
 - `GET /api/admin/reports/users/{userId}` — user header, session history, mistake breakdown, weekly scores
 - `GET /api/admin/reports/export` — generates Excel in-memory via `ClosedXML`; **Phase 10 (R2):** uploads to `gwf-exports` bucket; key `exports/{userId}/{yyyyMMdd_HHmmss}.xlsx`; returns `ApiResponse<string>` where `Data` = presigned URL (30-minute expiry); controller no longer streams bytes
+  - **Frontend download contract:** `admin.service.ts.exportReports()` requests JSON (default responseType) and maps `res.data` → presigned URL string; `AdminReportsComponent.exportReport()` triggers download via a transient `<a href=presignedUrl download>` anchor click. The presigned URL must be hit by a **direct browser navigation, NOT HttpClient** — the app's auth interceptor would attach an `Authorization` header and break the AWS4 (`X-Amz-Signature`) signature.
+  - Notes on Drift (2026-06-08): **"Invalid format" Excel on admin reports export.** After the Phase 10 R2 migration the backend stopped streaming bytes and returned `ApiResponse<string>` (presigned URL), but the frontend was never updated — `exportReports()` still used `responseType: 'blob'`, so the JSON envelope text was saved as a `.xlsx` and Excel rejected it. Classic request/response drift (stale frontend after backend contract change). Fix: service returns the URL string; component downloads from the presigned URL via anchor navigation (no `responseType: 'blob'`, no HttpClient fetch of R2).
 - `POST /api/admin/users` — create new user; **multipart/form-data** (`[FromForm]`); fields: `fullName`, `mobileNumber`, `email?`, `ageGroup`, `preferredHintLanguage`, `password?`, `avatar?` (IFormFile); if `avatar` is provided, uploads to `gwf-avatars` bucket via `AdminService.UploadAvatarInternalAsync`, saves R2 key to `tblUser.AvatarUrl`; returns `AdminCreateUserResponseDto` including `avatarUrl` (presigned, 1440-min) or null
+  - **Password persistence contract:** `AdminService.CreateUserAsync` hashes `dto.Password` via PBKDF2 (`HashPassword`: 16-byte salt, 100k iterations, SHA-256, 32-byte hash) into `user.PasswordHash`, then `UserRepository.InsertUserAsync` → PG function `uspinsertuser` → `tblUser.PasswordHash`. The C# parameter name `@PasswordHash` is bound by name to `p_passwordhash` (PG named-arg call `p_passwordhash => @p_passwordhash`, see `DbCommandHelper.PreparePostgreSqlFunctionInvocation`). `password` is optional; when blank, `PasswordHash` is stored NULL and login is impossible until set via the update endpoint.
+  - Notes on Drift (2026-06-08): **Admin-created users could never log in — password silently dropped at TWO layers.** The UI (`admin.service.ts` appends `password` to FormData) and `AdminService` (hashes correctly) were fine, but (1) `UserRepository.InsertUserAsync` never added an `@PasswordHash` parameter, and (2) `uspinsertuser` had **no `p_passwordhash` parameter** and hard-coded `NULL` into the `passwordhash` column. The auth flow then rejected the user (`PasswordHash` missing → 401). Fix: repository now passes `@PasswordHash`; `uspinsertuser` gained `p_passwordhash VARCHAR(512)` and writes it (canonical `06_stored_procedures.sql` updated for fresh builds; **migration 36** drops the old 10-arg overload and recreates for deployed DBs — required because adding a parameter creates a *new* overload that named-arg calls could mis-resolve). The `PUT` update path already wrote `passwordhash` correctly and was not affected. Rule: when a PG insert function is called via this codebase's named-arg binding, every entity field that must persist needs **both** a `CreateParameter("@X", ...)` in the repository **and** a matching `p_x` parameter wired into the function's INSERT — a missing column param fails silently (no error, NULL stored).
 - `PUT /api/admin/users/{userId}` — update user profile; **multipart/form-data** (`[FromForm]`); same fields as create (all optional except `fullName`, `mobileNumber`, `ageGroup`, `preferredHintLanguage`); if `avatar` is provided, uploads and returns new presigned URL in `data` field; `data` is null if no avatar uploaded; **`POST /api/admin/users/{userId}/avatar` removed** (2026-06-03 — merged into PUT)
   - Notes on Drift (2026-06-03): `UpdateUserByAdminAsync` used `CreateParameter("@fn", ...)` which normalizes names to `p_fn` for PostgreSQL (designed for stored procs). The raw UPDATE SQL used `@fn`, causing `42601: syntax error at or near "=@"`. Fix: replaced with `cmd.CreateParameter()` directly (bypasses normalizer). Rule: for raw SQL commands in UserRepository, always use `cmd.CreateParameter()` — never the `CreateParameter()` helper method.
 - `GET /api/admin/sessions/history` — paginated admin session history with filters
@@ -2897,6 +2918,41 @@ startSession(expectedText): Promise<VoiceSessionResult>
 stopSession(): void
 ```
 
+#### Web Startup Watchdog — "Stuck on Requesting microphone…" Fix (2026-06-08)
+
+**Drift type:** Missing-fallback / state-machine drift on the WEB path (desktop & mobile-web). Symptom reproduced on desktop Chrome at `https://<LAN-IP>:4200/repractice/56` (self-signed cert): the recorder sat on **"Requesting microphone…"** and never advanced to "Listening".
+
+**Root cause:** `state$` goes `requesting` in `startSession()` and only advances to `listening` *inside* `startRecognition()`. Between them sit three awaits — `requestMicPermission()`, `vad.start()`, and the optional `captureAudio` `getUserMedia`. The recorder **disables the mic button while state is `requesting`** (`voice-recorder.component.html`), so if any of those awaits *throws* (e.g. `vad.start()` was awaited with **no try/catch** — a `getUserMedia` rejection from a mic held by another app/tab left `state$` stuck on `requesting` even though the promise rejected) or *never settles* (ignored permission prompt, OS audio hang), the UI wedged permanently with no error and no way to retry. Unlike the native path, the web path had **no watchdog/hard-ceiling** covering the pre-recognition phase.
+
+**Fix (`voice-recognition.engine.ts`):**
+1. **`startWebRecognition(expectedText, gen)`** — the permission→VAD→recognizer startup now runs inside a `Promise.race` against a **12 s mic watchdog**. If `listening` is not reached in time (guard: still `requesting` AND same `gen`), the watchdog bumps `_sessionGen` (so a late `getUserMedia` aborts as `SUPERSEDED`), stops the VAD, sets `state$ = 'error'`, and rejects with an actionable message ("…allowed mic access… no other app is using it, then tap the mic to try again"). The orphaned startup's late rejection is swallowed (`startup.catch(()=>{})`) to avoid an unhandledrejection.
+2. **State-leave guarantee** — `startSession()` wraps `startWebRecognition()` in try/catch: any non-`SUPERSEDED` throw stops the VAD and forces `state$ = 'error'` before re-throwing, so `requesting` is **never** the terminal state. The recorder re-enables the mic button on `error` (retry works).
+3. Watchdog cleared the instant `state$` becomes `listening` (`startRecognition`) — recognition itself may legitimately run far longer than 12 s — and in `stopSession()`.
+
+**Notes on Drift Prevented:** future agents must keep the web pre-recognition phase covered by the watchdog and the `state$ → error` guarantee. `requesting` must always resolve to `listening` or `error`; never leave a `getUserMedia`/`vad.start()` await able to strand `state$`. This is the web-path analogue of the native keep-alive/hard-ceiling. The fix does NOT grant mic permission — if the OS/browser denies or the prompt is ignored, the user now sees a clear error + retry instead of an eternal spinner.
+
+#### Repractice ↔ Session Room Parity — Sticky captureAudio Drift (2026-06-08)
+
+**Drift type:** Shared-singleton state leakage. Repractice recognition reached `listening`, the mic opened (`onaudiostart` fired), but **no `onresult`** arrived → "No speech detected" — while the Session Room speaker worked on the same browser.
+
+**Root cause:** `VoiceRecognitionEngine` is a `providedIn:'root'` **singleton**; its `captureAudio` flag (set by `enableAudioCapture()`) is **sticky** — never auto-reset. `SpeakerScreenComponent` sets it **every turn** (`enableAudioCapture(audioArchiveSvc.shouldCapture())`). `RepracticeSpeakerComponent` never set it, so it **inherited** whatever the last Session Room left on the engine. If that was capture-ON, `startSession()` opened an **extra `getUserMedia` + MediaRecorder** stream alongside the VAD stream and the recognition stream — three concurrent desktop mic captures starve the Web Speech recognizer (mic opens but it receives no audio → empty transcript). The Room "worked" only because it configures the flag deterministically each turn.
+
+**Fix (`repractice-speaker.component.ts` `ngOnChanges`):** mirror the Room's engine setup — call `voiceEngine.enableAudioCapture(false)` (repractice has no audio-archive need) before auto-start, plus `prewarm()` in manual mode and a 300 ms auto-start delay for full parity. Now repractice runs the same minimal 2-stream path (VAD + recognition) as a capture-disabled Room turn.
+
+**Notes on Drift Prevented:** any component that drives the shared engine must **explicitly set `enableAudioCapture()`** for its own needs — never assume the default. Sticky singleton flags (`captureAudio`, and by the same token the language cache) leak across feature boundaries (Room → Repractice). When a voice feature "works in one screen but not another" with the *same* engine, suspect leftover singleton state before suspecting the engine path.
+
+#### VoiceRecorderComponent — Zone-Safe State Updates (2026-06-08)
+
+**Drift type:** Angular zone / change-detection drift. Symptom: recognition reached `listening` and captured audio (scoring worked), but the recorder UI stayed on **"Requesting microphone…"** and never showed the listening/waveform view.
+
+**Root cause:** `VoiceRecognitionEngine` advances `state$` to `listening` from inside an async chain that runs **after** `navigator.mediaDevices.getUserMedia()` / `vad.start()`. zone.js does not reliably reschedule native-API promise continuations back into the Angular zone, so `state$.next('listening')` fired **outside** the zone → the recorder's `subscribe` set `this.state` but **no change-detection tick ran** → the template kept the stale label. The Session Room masked this with constant broadcast + SignalR activity (frequent incidental CD ticks); repractice is idle, so it exposed the latent bug.
+
+**Fix (`voice-recorder.component.ts`):** inject `NgZone` and run the `state$` and `interimTranscript$` subscription updates through `zone.run(...)`, guaranteeing a CD tick regardless of the emitting zone. Applies to **every** consumer of the recorder (Room + Repractice).
+
+**Notes on Drift Prevented:** UI bound to `VoiceRecognitionEngine` streams must not assume the engine emits in the Angular zone — it frequently does not (post-`getUserMedia` continuations). Keep recorder state/interim updates wrapped in `zone.run`. Do not "fix" this by adding incidental activity (e.g. a broadcast) to force ticks — that only masks it.
+
+**Concurrency contract (added 2026-06-06):** the engine is a `providedIn:'root'` **singleton** with a single shared `state$`. Only one session may run at a time. `startSession()` carries a monotonic `_sessionGen` token (bumped on every `startSession()`/`stopSession()`); after each internal `await` it re-checks the token and, if superseded, throws the static sentinel `VoiceRecognitionEngine.SUPERSEDED` and aborts **without mutating `state$`** — the superseding session owns state. Callers (`VoiceRecorderComponent.startRecording()`) must (1) early-return if state is `requesting`/`listening`/`processing` to avoid launching a duplicate, and (2) swallow `SUPERSEDED` rather than surfacing it as an error. This prevents the "stuck on Requesting microphone…" wedge when auto-start (`defaultVoiceStarter`) races a manual mic tap — see the repractice flow drift note.
+
 #### VoiceSessionResult Shape
 
 ```typescript
@@ -3473,6 +3529,9 @@ Output: `practiceAdvanced: EventEmitter<{ score: number; skipped: boolean }>`
 - Feedback UI was a custom pass/fail card. Replaced with `VoiceFeedbackComponent` — same word chips, score bands, and breakdown as the live session speaker screen.
 - **Resolved-counter race (fixed 2026-06-06):** the old `_consecutivePass` counter was incremented inside the async `updateAttempt` callback but reset to `0` synchronously by `advanceToNext()` before that callback fired, so it never reached 2 and the live "RESOLVED" counter was permanently stuck at 0. Replaced with the server-authoritative `_resolvedIds` Set keyed on the attempt response.
 - **Single-session "Practice All" (fixed 2026-06-06):** see `POST /api/repractice/generate` drift note — the CTA now practices all pending mistakes across all sessions.
+- **Drift (fixed 2026-06-06): "Start voice" stuck on "Requesting microphone…" / phantom skip of utterance 0.** Symptom (production web, `/repractice/:id`, desktop Chrome): tapping the mic showed "Requesting microphone…" and never advanced to listening; console showed `[Repractice] skip … utteranceIndex: 0` followed by auto-start + recording on utterance 1. **Root cause — double `startSession()` on the singleton `VoiceRecognitionEngine`.** `defaultVoiceStarter` (default `true`) makes `RepracticeSpeakerComponent.ngAfterViewChecked` auto-call `voiceRecorder.startRecording()` 700 ms after each utterance renders; when the user *also* taps the mic, two `startSession()` runs overlap on the one shared `state$`. `startSession()` sets `state='requesting'` then **awaits** `requestMicPermission()`/`vad.start()` before reaching `'listening'`. The lone guard `if (state !== 'idle') stopSession()` only resets state for the later caller; the earlier call's promise had already passed that line and continued after its await with **no supersession check**, setting `'listening'` and starting a `SpeechRecognition` that was immediately orphaned (`this.recognition` overwritten). The orphan's `onend`/`onerror` acted on the foreign instance → double bell, "already started" throw, and — when the race landed during the permission await — `state$` wedged on `'requesting'`. The mic button is `[disabled]` while `'requesting'`, so the user could not recover and tapped SKIP (the index-0 skip log); skip→advance re-armed auto-start, which then ran cleanly on utterance 1 (the `score:18` log). Same defect class as live-speaker Drift 5, never guarded on the repractice/recorder path. **Fix (two layers, root cause):** (a) `VoiceRecognitionEngine` now carries a monotonic `_sessionGen` token — bumped on every `startSession()` and `stopSession()`; `startSession()` captures its generation and re-checks after each `await` (permission, `vad.start`, capture `getUserMedia`, pre-recognizer), throwing `VoiceRecognitionEngine.SUPERSEDED` to abort a stale continuation **without touching `state$`** (the superseding session owns it). (b) `VoiceRecorderComponent.startRecording()` early-returns if state is `requesting`/`listening`/`processing` (kills the duplicate at the source — auto-start vs. manual tap) and swallows the `SUPERSEDED` sentinel so no spurious `recordingComplete`/error is emitted. Drift type: frontend concurrency / shared-singleton state drift. Files: `core/services/voice/voice-recognition.engine.ts`, `modules/voice/voice-recorder/voice-recorder.component.ts`.
+  - **Drift (fixed 2026-06-06, follow-up — the actual confirmed root cause): `Speech recognition error: aborted` rejects the whole session.** Live `[VDIAG]` tracing on desktop Chrome proved the concurrency guard above was working (single `startSession`, `gen:1` — no overlap), so the double-start theory was NOT the cause here. The real sequence: mic opens (`onstart`/`onaudiostart`), the user pauses to read the sentence, the recognizer fires `onend` with no finals yet, and the engine's no-finals restart called **`this.recognition.start()` on the same already-ended instance** → Chrome emits a `'aborted'` SpeechRecognition error → it fell through to the terminal `else` in `onerror` and **`reject(new Error('Speech recognition error: aborted'))`**, flipping state to `error`. The orphaned instance left alive by restarts could also fire `onend`/`onerror` into the live session's promise. **Fix (three parts in `startRecognition`):** (1) before constructing a new `SpeechRecognition`, detach the previous instance's handlers (`onresult/onerror/onend/onstart/onaudiostart = null`) and `abort()` it, so no orphan can fire into the current promise; (2) handle `event.error === 'aborted'` as **benign** — if `_intentionalStop` return, if finals exist `finalize()`, else stay listening (let `onend` relisten) — never reject; (3) the desktop no-finals `onend` restart now goes through `startRecognition()` (fresh instance) instead of re-`start()`-ing the dead instance. Drift type: browser SpeechRecognition lifecycle drift (restart-on-ended-instance). Same files as above.
+  - **Drift (fixed 2026-06-06, Edge — phantom "score 18" on empty transcript).** Verified via a Playwright Edge probe against `/repractice/53`: on **desktop Microsoft Edge** the Web Speech surface opens (`onstart`/`onaudiostart`/`onspeechstart` all fire) but **`onresult` never fires — zero transcript**. The web `finalize()` then scored an EMPTY string and resolved `overallScore ≈ 18` (the scorer baseline for empty input: `fluency·0.75 + apiConfidence·100·0.25 ≈ 0 + 0.7·100·0.25 = 17.5`), then `recordingComplete` advanced the user with a bogus result — the recurring "nothing recognized but score 18" symptom. The native path already rejected empty input ("No speech detected") but the **web path did not**. **Fix:** `finalize()` now takes an optional `reject` (threaded through every call site) and, when `wordCount === 0`, stops/cleans up and **rejects** with "No speech detected. Please tap the mic and speak clearly." — appending an Edge-specific hint (`engine === 'edge'`) to use Chrome or the app. No more phantom score; the user gets an actionable retry. Note: desktop Edge is NOT hard-blocked up front (some installs do transcribe); the hint is surfaced only after an actual empty result. Recommended path for reliable web voice remains Chrome or the installed app. Drift type: browser speech-backend drift (Edge no-onresult). File: `core/services/voice/voice-recognition.engine.ts`.
 
 ### Application and Infrastructure Wiring
 
@@ -3667,7 +3726,8 @@ Applied to `tblVoiceAnalysis` rows for the target user and session:
 - `IScriptRepository.GetScriptAnalyticsAsync(categoryFilter)` — EF LINQ aggregation
 - `IScriptService.GetScriptAnalyticsAsync(categoryFilter)`
 - `ScriptController.GetScriptAnalyticsAsync` — `GET /api/scripts/analytics`
-- Frontend: `AdminScriptAnalyticsComponent` at `/admin/script-analytics` — sortable table with category filter and summary stat cards
+- Frontend: `AdminScriptAnalyticsComponent` at `/admin/script-analytics` — summary KPI cards (Total Scripts / Avg Completion / Inactive / Avg Fluency) rendered **above** the table, then a sortable table with a category filter. Loads the full set once via `getScriptAnalytics()` (no category arg); **category filter + sort run client-side off signals** (`selectedCategory`, `sortField` are `signal()`s; `filteredByCategory` + `filtered` computeds). Summary KPIs reflect the active category filter.
+  - Notes on Drift (2026-06-08): Two UI bugs fixed. (1) **Sort dropdown was dead** — `selectedCategory`/`sortField` were plain fields while `filtered()` was a `computed()`, so changing them never re-ran the computed (the category dropdown only "worked" via an incidental `loadData()` server reload; `sortData()` was an empty no-op). Fix: made both filter states `signal()`s so the computeds react. (2) **Summary cards rendered after the table** (appeared in the footer) — moved above the table. Bindings switched from `[(ngModel)]` to `[ngModel]="sig()" (ngModelChange)="sig.set($event)"` for signal compatibility.
 
 ---
 
@@ -4243,11 +4303,11 @@ All 7 items implemented:
 - Framework: Capacitor 8.4.0 wrapping Angular 19 + Vite (AnalogJS) web app
 - App ID: `com.gowithflow.app`
 - App Name: `GoWithFlow`
-- **App Version: `1.3` (versionCode 6)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix) → 1.3 (vc 6, 2026-06-05: production distribution build from current `main`, no logic change). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
+- **App Version: `1.5` (versionCode 8)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix) → 1.3 (vc 6, 2026-06-05: production distribution build from current `main`, no logic change) → 1.4 (vc 7, 2026-06-06: production distribution build for sharing, includes Session Room UX redesign phases 0–5, no new logic change) → 1.5 (vc 8, 2026-06-08: production distribution build from current `main`, no new logic change). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
 - Web Dir: `dist/analog/public` (Vite production build output)
 - Android Scheme: `https` — required for JWT cookies and SignalR auth to function correctly on device
-- Config file: `Frontend/capacitor.config.ts`
-- Distribution APK: `Backend/Docs/Dev/GoWithFlow.apk` (latest = 1.3) + versioned copy `GoWithFlow-1.3.apk`. Prior: `GoWithFlow-1.2.apk` retained.
+- Config file: `Frontend/capacitor.config.ts` — currently in production mode (NO `server` block); app loads from bundled assets and connects to the production API.
+- Distribution APK: `Backend/Docs/Dev/GoWithFlow.apk` (latest = 1.5) + versioned copy `GoWithFlow-1.5.apk`. Prior: `GoWithFlow-1.4.apk`, `GoWithFlow-1.3.apk`, `GoWithFlow-1.2.apk` retained.
 
 ### Android Project Location
 
@@ -4495,6 +4555,8 @@ JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug; mv local.p
 - **Drift (2026-06-05): WSL Gradle build fails with `SDK location not found`** — `Frontend/android/local.properties` is regenerated by Android Studio on Windows with `sdk.dir=C:/Users/<user>/AppData/Local/Android/Sdk` (a Windows path). Gradle runs in WSL/Linux and cannot resolve it, and the Android Gradle Plugin gives `local.properties` `sdk.dir` **precedence over `ANDROID_HOME`** — so exporting the env var does not fix it. **Fix:** before the WSL build, swap `local.properties` to `sdk.dir=/root/Android/Sdk` (the Linux SDK, confirmed present alongside `/usr/lib/android-sdk`), then restore the original Windows path so the Windows/Android-Studio workflow keeps working. Baked into Step 4 and the full-sequence block. Drift type: environment/path contract drift.
 
 - **Drift (2026-06-05) #2: `printf "sdk.dir=/root/Android/Sdk\n"` through PowerShell `wsl --exec` corrupts `local.properties`** — hit during the 1.3 build. PowerShell→`wsl.exe` argument translation strips the backslash in `\n`, so `printf` receives `sdk.dir=/root/Android/Sdk\n` as `sdk.dir=/root/Android/Sdkn` and writes that literal trailing `n`. Result: `sdk.dir` points at the nonexistent `/root/Android/Sdkn` → Gradle `SDK location not found` even though `/root/Android/Sdk` is valid. **Worse:** the documented swap does `cp local.properties local.properties.winbak` *before* overwriting, and on a retry that copies the already-corrupt value into the backup, so the `mv` restore writes garbage back — and the original Windows path was lost. **Fix:** never write `local.properties` via `printf "...\n"` piped through PowerShell `wsl.exe`. Write the file directly (Write tool / editor) as a single line `sdk.dir=/root/Android/Sdk`, build, then write it back to `sdk.dir=C:/Users/mdfay/AppData/Local/Android/Sdk`. The Bash tool (real Linux shell) is also safe because there is no `wsl.exe` arg translation. The `.winbak` swap dance is discouraged — prefer two explicit direct writes. Drift type: build-script / shell-escaping drift. Diagnostic tell: `cat -A local.properties` shows a trailing `n` with no `$` (newline) before it.
+
+- **Drift (2026-06-06): the agent "Bash tool" on this machine is MSYS/git-bash (`MINGW64`), NOT WSL** — it has no `/mnt/c` mount, so `cd /mnt/c/...` and `./gradlew` fail with `No such file or directory` (exit 127). Earlier docs implied the Bash tool was "a real Linux shell"; that is false here. **Fix:** always run the Gradle build through WSL explicitly: `wsl --exec bash -lc '...'` (works from either the Bash tool or PowerShell). Combined with writing `local.properties` directly via the Write tool (single line `sdk.dir=/root/Android/Sdk`), this avoids both the path issue and the `printf \n` corruption. Verified clean with `cat -A local.properties` → `sdk.dir=/root/Android/Sdk$` (newline `$`, no trailing `n`). Drift type: build-environment/shell drift.
 
 Output APK (WSL2 path): `Frontend/android/app/build/outputs/apk/debug/app-debug.apk`
 Output APK (Windows path): `C:\Live\GoWithFlow\Frontend\android\app\build\outputs\apk\debug\app-debug.apk`
@@ -4826,6 +4888,12 @@ The top progress bar + branded loader continue to apply globally with no per-scr
 - Hardcoded hex colors in templates bypass CSS variable system.
 - `confirm()` browser dialogs should be replaced with in-app confirmation panels.
 
+### Standing Mobile Design Rules (ENFORCED — apply to every new/edited page)
+- **No horizontal scroll on list/data views at mobile widths.** A list/grid item must never require sideways scrolling to be read. Wide multi-column HTML `<table>`s (anything with `overflow-x-auto`) are **desktop-only**: gate the table with `hidden md:block` and provide a `md:hidden` **stacked card** alternative — one card per row, header (title + chips + action) over a `grid-cols-2` label/value metrics block. Preserve the table's per-cell color logic in the cards.
+- Reuse the existing `@for (...) {} @empty {}` empty-state in both the table and the card list so both layouts handle "no results".
+- Rationale: avoids the per-item horizontal scroll that breaks usability on 320–414px screens; satisfies the long-standing "admin tables need a card-list alternative below 768px" finding.
+- **Applied:** `AdminScriptAnalyticsComponent` (`/admin/script-analytics`) — 9-column table now `hidden md:block` + `md:hidden` stacked metric cards (2026-06-08). Pattern to follow for all remaining admin tables (`admin-reports`, `admin-users`, etc.).
+
 ### Design Token Additions Required (in `styles.scss` and `_variables.scss`)
 ```css
 --gwf-secondary:       #3D5A99
@@ -5039,11 +5107,21 @@ compact `w-9 h-9` action buttons) → `<app-admin-load-more>`. No `<table>`/`ove
 
 ---
 
-## Session Room UX Redesign (2026-06-06 — ALL PHASES 0–5 IMPLEMENTED, build verified)
+## Session Room UX Redesign (2026-06-06 — ALL PHASES 0–5 IMPLEMENTED, build verified; APK-VERIFIED 2026-06-08)
 
 Full audit + redesign plan: `Backend/Docs/SessionRoomRedesign.md`. Covers the live Session
 Room only (`Frontend/src/app/modules/live-session/*`). All six phases are built and
 build-verified.
+
+**On-device verification (2026-06-08, Motorola IV2201 / Android 13):** drove a real 2-participant
+live session into `/live-session/room/{id}` and screencapped every redesign surface — speaker hero
+utterance + small grammar tag (Phase 3); sticky `.action-dock` with "Done Speaking" primary + Try
+Again/Skip (Phase 2); first-run orientation hint (Phase 5); settings bottom-sheet exposing ONLY
+Auto-Start Mic + Auto Submit with NO "Hear Speaker's Voice" toggle (Phase 0/1/6 capability gating
+confirmed on native); in-app Leave sheet (Stay/Leave) replacing `confirm()` (Phase 5); responsive
+stage `max-w-[480px] md:max-w-[680px] lg:max-w-[760px]` (Phase 4). All render correctly. NOTE: entering
+the room requires 2 live participants (no single-speaker script exists → no solo start); a reusable
+test account "Verify Bot" (9911946608 / 123456, userId 12) was provisioned for this.
 
 ### Phase 2–5 (layout, hierarchy, responsive, polish) — 2026-06-06
 - **Sticky action dock** (`.action-dock`, `position: sticky; bottom: 0`, safe-area gradient)
@@ -5254,12 +5332,17 @@ holds the mic, so per-turn capture + native recognition cannot run simultaneousl
 architected. Net: **consolidated session recording cannot capture audio on the native app**; it only
 works on the web client. No native voice-recorder plugin is installed (only speech-recognition).
 
-**Secondary fragility (web):** the capture flag `AudioArchiveService.sessionRecordingEnabled` is an
-in-memory root-singleton set ONLY in `lobby.component` from lobby state. A mid-session page reload /
-deep-link into `/live-session` resets it to false → web capture silently stops (unless personal
-archive consent is on). Should be re-derived from server/turn state, not the lobby singleton alone.
+**Secondary fragility (web) — FIXED 2026-06-08:** the capture flag
+`AudioArchiveService.sessionRecordingEnabled` is an in-memory root-singleton previously set ONLY in
+`lobby.component` from lobby state, so a mid-session page reload / deep-link into `/live-session`
+(which bypasses the lobby) reset it to false → web turn-clip capture silently stopped (unless personal
+archive consent was on). Fixed by re-deriving it from the server on every room entry:
+`session-room.component.ts` `initSession()` now calls `SessionService.getLobbyState(sessionId)` and
+sets `audioArchiveSvc.setSessionRecordingEnabled(state.recordingEnabled)`. Best-effort — a failed
+lookup leaves the existing flag/consent untouched. No backend/DTO change (lobby endpoint already
+returns `recordingEnabled` post-start). Web build verified green.
 
-**Fix applied (2026-06-06) — native audio capture added (web build verified; on-device validation pending):**
+**Fix applied (2026-06-06) — native audio capture added; ON-DEVICE TESTED 2026-06-08 on IV2201/Android 13 → CONCURRENT CAPTURE NOT VIABLE (starves recognition; see validation result below):**
 - Added dependency `capacitor-voice-recorder@7.0.6` (peer `@capacitor/core >=7.0.0`, satisfied by 8.4.0).
   Web build green. Android `RECORD_AUDIO` + `MODIFY_AUDIO_SETTINGS` already in the manifest — no manifest change.
 - `voice-recognition.engine.ts` now captures turn audio on native via the plugin (web path unchanged):
@@ -5284,20 +5367,68 @@ archive consent is on). Should be re-derived from server/turn state, not the lob
   (`StorageKeyBuilder.AudioArchiveClip`). The ffmpeg merge re-encodes and detects container by
   content, so the cosmetic extension mismatch is harmless.
 
-**>>> PENDING ACTIONS — DO THESE WHEN BUILDING THE NEXT APP VERSION (not done yet):**
-1. [ ] `cd Frontend && npm install` (pulls `capacitor-voice-recorder@7.0.6`, already in package.json).
-2. [ ] `cd Frontend && npm run build` then `npx cap sync android` (registers the native plugin in the Android project).
-3. [ ] Rebuild + install the APK on a real device (Java 21; see "Android Mobile Module — Capacitor Setup").
-4. [ ] On-device test: host enables "Record Session", run a full session (speak several turns),
-       end it. Then verify the capture actually worked:
-       - `tblaudioarchive` has rows for that sessionid, AND R2 `gwf-audio/sessions/{id}/turns/...` has objects.
-       - `GET /api/admin/sessions/{id}/recordings` eventually returns `status=READY` (not FAILED).
-5. [ ] If recognition-turn capture is empty on the device (Android blocked concurrent mic with the
-       `SpeechRecognizer`) but facilitator turns captured → the best-effort path is being blocked.
-       Fallback then required: record-then-recognize re-architecture (single mic owner) — NOT done yet.
-6. [ ] (Optional, separate web bug) Re-derive `AudioArchiveService.sessionRecordingEnabled` from
-       server/turn state instead of the lobby-only singleton, so a mid-session reload doesn't stop
-       web capture. Independent of the native work above.
+**ON-DEVICE CAPTURE HARNESS (added 2026-06-08) — repeatable test without a live session:**
+The Speech Debug screen (`modules/user/speech-debug/speech-debug.component.ts`, route
+`/user/speech-debug`, reachable via Settings → Diagnostics → "Speech & Capture Test") now drives the
+EXACT native concurrent-capture path in isolation — no lobby / second participant / full session
+needed. It has a "Capture turn audio" toggle that calls `engine.enableAudioCapture()` before
+`startSession()`, then after the turn reads `engine.lastAudioBlob` and reports captured size + MIME,
+plays it back in-app (proves real audio, not silence), and optionally uploads it to the real
+`POST /api/users/audio-archive` endpoint (Session ID + Turn inputs; FK requires a real session the
+user owns) to validate the full save path that was returning zero segments. Use this to verify item
+#4 below instead of running a recording-enabled multi-person session each time.
+
+**>>> ON-DEVICE VALIDATION RESULT (2026-06-08) — CONCURRENT CAPTURE STARVES RECOGNITION (NOT VIABLE):**
+Validated via the capture harness on **Motorola IV2201, Android 13** (`navigator.language=en-GB`,
+en-GB SODA offline pack v3071 installed). Three runs, decisive A/B:
+- **Capture ON:** `capacitor-voice-recorder` DID produce an `audio/aac` clip, BUT the native SODA
+  `SpeechRecognizer` returned `NO_SPEECH_DETECTED` (logcat: `RecognitionClient #onRecognitionFinished
+  no speech - erroring`; the captured base64 was long runs of constant bytes ≈ silence). Recognition
+  failed to the 30 s hard ceiling → "No speech detected."
+- **Capture OFF (control):** recognition worked perfectly — interim streamed
+  "good"→"good morning how are you", **Overall 84 / Fluency 83 / Confidence 85**, all words matched,
+  finalized in 3.8 s.
+**Conclusion: the native recorder and the SODA recognizer CONTEND for the single mic.** When the
+recorder opens the mic, the recognizer is starved (gets silence). The engine's "best-effort capture
+never affects recognition" assumption is FALSE on this device — enabling session recording would break
+recognition/scoring for EVERY speaker turn. Android only grants live mic input to one consumer at a
+time. **The concurrent-capture approach is NOT viable; the record-then-recognize fallback (item #5)
+IS required.** (Earlier same-day note claiming capture worked concurrently was WRONG — recognition was
+empty in that run too, due to the same starvation, not the Stop button.)
+
+**>>> DESIGN DECISION REQUIRED (architecture — do not silently re-architect):** native session
+recording of SPEAKER turns cannot coexist with on-device recognition. Options:
+  (a) **Facilitator-only capture on native** — only the facilitator read-aloud turns (no recognizer)
+      are captured; speaker-turn audio is omitted from the consolidated recording on the app. Safe,
+      simple, recognition never affected. Consolidated recording is incomplete (no learner audio).
+  (b) **Record-then-recognize** — recorder owns the mic for the whole turn; recognition no longer uses
+      the live SODA mic but transcribes the recorded clip (requires a file-based/cloud STT — large
+      change; current pipeline is live-mic only).
+  (c) **Disable consolidated session recording on native entirely** — document as a platform limit;
+      only the web client (MediaRecorder, no native recognizer) supports it.
+  (d) **Research** whether `@capacitor-community/speech-recognition` (or a custom plugin) can emit the
+      recognizer's OWN audio buffer (single mic owner, no second AudioRecord). Unknown if supported.
+
+**>>> PENDING ACTIONS:**
+1. [x] DONE — `npm install` / `capacitor-voice-recorder@7.0.6` present.
+2. [x] DONE — `npm run build` + `npx cap sync android` (3 native plugins registered incl. voice-recorder).
+3. [x] DONE — debug APK rebuilt + installed on IV2201 (Java 21).
+4. [x] DONE (via harness) — on-device behaviour characterised: capture works in isolation BUT starves
+       recognition when concurrent (see validation result above). The original goal (capture speaker
+       audio while recognising) is BLOCKED by mic contention.
+5. [x] DONE 2026-06-08 — chose option (a) Facilitator-only + protect recognition. The native
+       concurrent-capture call was removed from `confirmLanguage()` in `voice-recognition.engine.ts`
+       (speaker/recognition turns no longer open a native recorder), so the recognizer always owns the
+       mic. Facilitator read-aloud capture via `startStandaloneCapture` (no recognizer) is unchanged;
+       web capture (MediaRecorder) unchanged. **Verified on IV2201 with capture toggle ON:** recognition
+       succeeded (Final "good morning how are you", Overall 84, finalized 3.85 s) AND
+       `lastAudioBlob` was null (no capture) — recognition protected. Net: on the app, the consolidated
+       session recording contains FACILITATOR audio only; speaker-turn audio is intentionally omitted.
+       To capture speaker audio in future, a single-mic-owner re-architecture (option b/d) is required.
+6. [x] DONE 2026-06-08 (separate web bug) — `AudioArchiveService.sessionRecordingEnabled` is now
+       re-derived from the server on every room entry via `SessionService.getLobbyState` in
+       `session-room.component.ts` `initSession()`, so a mid-session reload no longer stops web
+       capture. Frontend-only, build verified. Independent of the native work above.
 
 Note: session 97 (and 96) cannot be recovered — their source turn clips were never captured. This
 fix only affects sessions recorded AFTER the new APK is installed.
