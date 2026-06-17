@@ -1361,23 +1361,52 @@ one utterance at a time.
   are NOT available on-device — differentiation is gender + pitch only.
 - **Continue From Last Position:** `currentIndex` persisted to `localStorage` key `gwf_listen_pos_{scriptId}`
   on every line advance / transport action; `load()` restores it.
-- **Speed:** `PLAYBACK_SPEEDS = [0.5, 1, 1.25, 1.5, 2]`; `cycleSpeed()`; changing rate restarts the current line.
+- **Speed:** `PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2]`; selected from a popup menu (`MatMenu`) in the player; changing rate restarts the current line. (`cycleSpeed()` still exists as API but the UI uses the menu.)
+- **Role colors:** `roleColor(label)` returns a stable per-role display color (by first-appearance order, 6-color palette) used for speaker labels + the active line border in the player.
 - **Repeat:** `off` → linear (stops at end); `one` → repeat current line; `all` → loop whole script.
 
 ### Player UI — `ListenScriptComponent`
 
-Lyrics list (active line highlighted/enlarged, past lines dimmed, animated wave on the speaking line);
-`effect()` auto-scrolls the active line into view (`scrollIntoView`, guarded by `isPlatformBrowser`);
-tap any line → `seekTo`. Sticky bottom dock: line-progress bar, Speed, Prev, Play/Pause, Next, Repeat,
-and a Voices button opening `ListenVoicesSheetComponent` (per-role Male/Female). `ngOnDestroy → playback.reset()`
-so narration never leaks across navigations.
+Lyrics list (active line highlighted/enlarged, past lines dimmed, animated wave on the speaking line;
+each role's label + active-line border use the role's `roleColor`); `effect()` auto-scrolls the active
+line into view (`scrollIntoView`, guarded by `isPlatformBrowser`); tap any line → `seekTo`. **Auto-start:**
+on successful load the player calls `playback.play()` so opening it from the picker/library begins narration
+immediately (falls back to the Play button if the browser blocks audio without a gesture). Sticky bottom dock:
+line-progress bar, Speed (popup `MatMenu` of `PLAYBACK_SPEEDS` with the active one checked), Prev, Play/Pause,
+Next, Repeat, and a Voices button opening `ListenVoicesSheetComponent` (per-role Male/Female).
+`ngOnDestroy → playback.reset()` so narration never leaks across navigations.
+
+### Native Media Service (Android — lock screen / notification / background)
+
+On the APK, `ScriptPlaybackService` does **not** drive `TtsService` directly — it delegates to a native
+**foreground media service** so playback survives screen-lock / app-switch and exposes OS media controls.
+On web it keeps the in-WebView JS loop (no lock-screen on the web platform). Branch: `Capacitor.isNativePlatform()`.
+
+- **Native files:** `android/app/src/main/java/com/gowithflow/app/listenmedia/ListenMediaService.java`
+  (foreground `Service` owning `TextToSpeech` + `MediaSessionCompat` + MediaStyle notification + the line
+  queue), `…/ListenMediaPlugin.java` (`@CapacitorPlugin(name="ListenMedia")` bridge), registered in
+  `MainActivity.java` via `registerPlugin(ListenMediaPlugin.class)`.
+- **Manifest:** `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `POST_NOTIFICATIONS`; `<service
+  android:foregroundServiceType="mediaPlayback">` + `androidx.media.session.MediaButtonReceiver`.
+  Gradle: `implementation "androidx.media:media:1.7.0"`.
+- **JS bridge** (`core/services/voice/listen-media.plugin.ts`, `registerPlugin('ListenMedia')`):
+  `start({title, lines:[{text,speakerLabel,gender,pitch}], startIndex, rate, repeat})` · `play` · `pause` ·
+  `next` · `prev` · `seekTo({index})` · `setRate({rate})` · `setRepeat({mode})` · `stop` ·
+  `ensureNotificationPermission()` → `{granted}`. Event **`stateChanged`** `{index, isPlaying, rate, repeat, finished}`
+  is the native→JS mirror that updates the engine's signals (so the lyrics UI follows lock-screen/notification actions).
+- **Ownership model:** native service is the source of truth while active. `play()` first sends the queue via
+  `start()` (then `play()` resumes); `setRoleGender` while playing re-sends the queue (per-line gender lives in
+  the queue) continuing from the current index. A generation token in the service ignores stale TTS `onDone`
+  after stop/seek/rate-change. `onError` skips the failed line forward (never wedges).
+- **Controls:** notification + lock-screen Prev / Play-Pause / Next / Stop via `MediaSessionCompat` callbacks
+  and notification action `PendingIntent`s; tapping the notification opens the app.
 
 ### Voice Constitution Compliance
 
-OUTPUT-only TTS — never opens the mic, so **no recognizer mic contention** (rule #1 safe). Not part of
-a live session; no `SessionCapabilitiesService` gating needed (no recognizer/broadcast involved).
-`TtsService.speak()` gained an **optional `pitch`** param (defaults to `1.0`) — additive; Phase 17 AI
-Voice Participant behavior unchanged.
+OUTPUT-only TTS (web `TtsService` and native service) — never opens the mic, so **no recognizer mic
+contention** (rule #1 safe). Not part of a live session; no `SessionCapabilitiesService` gating needed
+(no recognizer/broadcast involved). `TtsService.speak()` gained an **optional `pitch`** param (defaults to
+`1.0`) — additive; Phase 17 AI Voice Participant behavior unchanged.
 
 ### Failure Cases
 
@@ -1396,6 +1425,11 @@ Voice Participant behavior unchanged.
 - **UNVERIFIED on-device as of 2026-06-17** — typecheck green only. Per §5a this is BOTH interactive UI
   AND voice output; requires rendered + APK verification (lyrics highlight/auto-scroll, actual narration,
   per-role voice audible difference, speed/repeat, continue-from-last) on IV2201 before sign-off.
+- **Native media service UNVERIFIED (uncompiled) as of 2026-06-17.** The Android Java (`ListenMediaService`/
+  `ListenMediaPlugin`) was written but NOT built here (no Android SDK in the dev environment). Needs:
+  `npm run build` → `npx cap sync android` → Gradle build → install on IV2201; then verify lock-screen
+  controls, notification-panel controls when in another app, background continuation when locked, and that
+  the in-app UI mirrors notification/lock-screen actions. Treat as **needs build + device check** until then.
 - **Future enhancements (out of v1 scope, per spec):** background playback, offline downloads, bookmarks,
   favorites/playlists, cloud neural per-role voices, word-level karaoke + scrubber (would require
   server-side TTS with word timestamps), multi-language voice packs.
@@ -5172,7 +5206,10 @@ and the extra vertical padding pushed a `100dvh` page past the viewport → unwa
   background; no light frame, no added height. Mirrors how admin routes render full-screen.
 - Keep `.no-bottom-pad` (zeroes only bottom padding) for non-full-bleed pages with no nav.
 
-**Login redesign (`auth/login`):** dark gradient theme retained (already audited as correct).
+**Login redesign (`auth/login`):** **LIGHT theme as of 2026-06-17** (user-confirmed; rephrased to match
+the rest of the app per `UIStandards.md`). Previously a dark gradient — now `--gwf-bg` page, white card
+(`--gwf-card-border`), `--gwf-text`/`--gwf-text-muted` text, `--gwf-primary` brand/CTA; 16px inputs to
+avoid iOS focus-zoom. Safe-area + short-viewport rules below retained.
 - Page shell: `min-height: 100%` (fills flush content area) with safe-area-aware padding
   (`max(clamp(...), env(safe-area-inset-top/bottom))`). Short-viewport (`max-height: 720px`)
   rule anchors to top + tightens gaps so the form never forces a scroll.
@@ -5203,12 +5240,25 @@ pattern. That inline footer and all its SCSS were removed; both shells now rende
 - Exports `interface BottomNavItem { label; path; icon (Lucide); exact? }`.
 - `@Input() items?: BottomNavItem[]` — optional explicit tab set.
   - Omitted (User, mounted globally in `app.component`): uses default user tabs
-    (Home / Review / Progress / History) + internal role gating
+    (Home / **Listen** / Review / Progress / History) + internal role gating
     (`role === 'USER'` and url not in `/auth /live-session /repractice /admin`).
   - Supplied (Admin, mounted in `admin-layout`): host owns visibility, so `showNav()` always
     returns true. Admin tabs: Dashboard / Users / Scripts / Reports / Cohorts.
 - `gridTemplate` getter = `repeat(<items.length>, 1fr)` bound inline → bar auto-adapts to
-  4 (user) or 5 (admin) columns; no hardcoded column count.
+  the tab count; no hardcoded column count.
+- **Icons-only (2026-06-17):** the bar shows icons with NO visible text labels. Labels stay in the
+  DOM as screen-reader-only (`.nav-label` sr-only) + `aria-label` on each `<a>`; the active tab's name
+  is surfaced elsewhere on tap. Applies to both shells. See `UIStandards.md` §7.
+
+### Tab Component Reuse (no-refetch on tab re-tap)
+
+`TabReuseStrategy` (`core/strategies/tab-reuse.strategy.ts`, provided as `RouteReuseStrategy` in
+`app.config.ts`) caches the detached component tree of the primary bottom-nav tabs, so re-tapping a tab
+**reattaches the already-loaded component instead of re-running its API calls**. `TAB_ROUTES` now covers
+**both shells** (2026-06-17): user (`user/dashboard`, `user/my-mistakes`, `user/progress`,
+`session/history`) AND admin (`admin/dashboard`, `admin/users`, `admin/scripts`, `admin/reports`,
+`admin/cohorts`). Detail pages/forms recreate normally. `clearCache()` is called on logout so no stale
+authenticated component is reattached for the next user.
 - Icons are Lucide for both shells (admin Material icons were mapped:
   dashboard→LayoutDashboard, people→Users, menu_book→BookOpen, bar_chart→BarChart3,
   groups→UsersRound).
@@ -5477,6 +5527,17 @@ inside `PurgeExpiredAsync`, never via the constructor.
 ### Frontend (Angular — implemented, `vite build` green)
 - **Lobby state** now surfaces `recordingEnabled` (`SessionService.GetLobbyStateAsync` reads
   `ISessionRecordingRepository.GetRecordingEnabledAsync` — no stored-proc change). `LobbyStateResponseDto.RecordingEnabled`.
+- **`LobbyStateResponseDto.AiEnabled` (2026-06-17):** lobby state also surfaces whether the AI Voice
+  Participant is enabled. Sourced via EF in `SessionRepository.GetLobbyStateBySessionIdAsync`
+  (`_dbContext.Sessions … Select(s => s.AiEnabled)` — **no SP change**, SQL Server / PostgreSQL parity).
+  Frontend maps it to `LobbyState.aiEnabled`; the lobby **hides the entire "Record Session Audio" block
+  (host toggle + guest "being recorded" notice) when `aiEnabled` is true**.
+- **DECISION (2026-06-17): AI sessions are NOT recorded — by design, permanent.** AI turns are
+  TTS-narrated and not captured into audio segments, and server-side AI-turn synthesis was **explicitly
+  declined** ("not required for AI sessions"). The hidden recording toggle is the final behavior, not a
+  stopgap: because the toggle is the only enable path, `recordingenabled` stays false for AI sessions, so
+  no merge is enqueued and no FAILED "no segments" recording row is ever created. Do not re-add a
+  recording path for AI sessions unless this decision is revisited.
 - **Host toggle** (`lobby.component.ts`) persists via `PATCH /api/sessions/{id}/recording`
   (optimistic + revert on failure) and sets `AudioArchiveService.sessionRecordingEnabled`.
 - **All-participant capture:** `AudioArchiveService.shouldCapture()` = host session recording OR

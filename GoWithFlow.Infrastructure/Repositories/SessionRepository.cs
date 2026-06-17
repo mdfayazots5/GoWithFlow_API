@@ -181,6 +181,14 @@ public sealed class SessionRepository : ISessionRepository
 			})
 			.ToListAsync(cancellationToken);
 
+		// Phase 17: surface whether the AI Voice Participant is enabled so the lobby can hide the
+		// "Record Session" toggle (AI turns are TTS-narrated and not captured into segments today).
+		// Sourced via EF (not the SP) to keep SQL Server / PostgreSQL parity without an SP change.
+		response.AiEnabled = await _dbContext.Sessions.AsNoTracking()
+			.Where(session => session.SessionId == sessionId)
+			.Select(session => session.AiEnabled)
+			.FirstOrDefaultAsync(cancellationToken) == true;
+
 		response.Status = await ResolveLobbyStatusAsync(resolvedStatus, sessionId, cancellationToken);
 
 		return response;

@@ -192,9 +192,13 @@ of the precedence chain (explicit user intent first).
   SQL; session/data handling safe on web and APK.
 - **QA Gate** — meets stated intent; edge cases and failure paths handled; no regression; `ProjectOverview.md`
   / `ModuleIndex.md` updated per the update rules; `[VERIFY]` markers placed where truth was not confirmable.
-- **Standards Gate** — `New API Format.txt`, `New SQL Format.txt`, and the mobile design standards
-  (max 14px body / 22px scores, conservative `clamp()` for utterance text; **no horizontal-scroll lists**
-  — wide tables are desktop-only `hidden md:block` + `md:hidden` stacked cards) are obeyed.
+- **Standards Gate** — `New API Format.txt`, `New SQL Format.txt`, and **`Backend/Docs/UIStandards.md`**
+  (the authoritative, rule-based UI standard — device-type matrix, typography caps max 14px body / 22px
+  scores + `clamp()` for utterance text, ≥44px touch targets, `gw-*`/`gwf-*` tokens only, safe-area,
+  **no horizontal-scroll lists** — wide tables are desktop/tablet-only `hidden md:block` + `md:hidden`
+  stacked cards) are obeyed. **Any UI change MUST comply with `UIStandards.md`; a violation blocks the
+  gate.** When the user names a page to change, follow `UIStandards.md` §9 Page-Rephrase Protocol
+  (audit → propose options + recommendation → confirm → apply → verify rendered/on-device → document).
 
 A gate that cannot pass is reported to the user as a blocking issue with the specific reason — work is
 never silently shipped past a failed gate.
@@ -253,8 +257,9 @@ This framework is permanent and applies to all future tasks by default, without 
 
 ## ARCHITECTURE STANDARDS — STACK & CONTRACTS (NON-NEGOTIABLE)
 
-> Full coding constitution: `Backend/Docs/New API Format.txt` (C#/architecture) and
-> `Backend/Docs/New SQL Format.txt` (database). These are absolute. The rules below are the
+> Full coding constitution: `Backend/Docs/New API Format.txt` (C#/architecture),
+> `Backend/Docs/New SQL Format.txt` (database), and `Backend/Docs/UIStandards.md` (UI / device-type /
+> responsive — authoritative for every screen). These are absolute. The rules below are the
 > project-shape summary; on any conflict the constitution files win.
 
 ### Platform Stack (verified)

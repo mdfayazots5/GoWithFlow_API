@@ -270,6 +270,13 @@ Logic source: `ProjectOverview.md` only.
 | tts | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
 | text to speech | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
 | narration | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| lock screen | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| media notification | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| background playback | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| foreground service | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| media session | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| ListenMediaService | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| ListenMedia | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
 
 ## Module List
 
@@ -341,4 +348,4 @@ Logic source: `ProjectOverview.md` only.
 
 16. Frontend Listen Script Module
     - Section: `Frontend Listen Script Module — Script Audio Player`
-    - Purpose: standalone non-session "Listen Script" audio player — lyrics-style on-device line-level TTS playback of any script (no mic, no backend). `ScriptPlaybackService` engine + `ListenScriptComponent` (player) + `ListenPickerComponent` (bottom-nav tab) + `ListenVoicesSheetComponent`. Entry points: bottom-nav Listen tab (`/scripts/listen`) and per-script library action (`/scripts/listen/:scriptId`). Reuses `GET /api/scripts/{id}`.
+    - Purpose: standalone non-session "Listen Script" audio player — lyrics-style on-device line-level TTS playback of any script (no mic, no backend). `ScriptPlaybackService` engine + `ListenScriptComponent` (player) + `ListenPickerComponent` (bottom-nav tab) + `ListenVoicesSheetComponent`. Entry points: bottom-nav Listen tab (`/scripts/listen`) and per-script library action (`/scripts/listen/:scriptId`). Reuses `GET /api/scripts/{id}`. **Native (Android):** delegates to a foreground media service (`listenmedia/ListenMediaService.java` + `ListenMediaPlugin.java`, JS `listen-media.plugin.ts`) for lock-screen / notification / background playback via `MediaSessionCompat`.

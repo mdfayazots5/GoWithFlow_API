@@ -24,4 +24,8 @@ public sealed class LobbyStateResponseDto
 
 	/// <summary>Phase 16: host enabled "Record Session" — drives all-participant audio capture.</summary>
 	public bool RecordingEnabled { get; set; }
+
+	/// <summary>Phase 17: session has the AI Voice Participant enabled. The lobby hides the
+	/// "Record Session" toggle when true (AI turns are TTS-narrated and not captured today).</summary>
+	public bool AiEnabled { get; set; }
 }
