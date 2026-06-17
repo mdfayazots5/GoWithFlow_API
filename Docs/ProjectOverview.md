@@ -4534,11 +4534,11 @@ All 7 items implemented:
 - Framework: Capacitor 8.4.0 wrapping Angular 19 + Vite (AnalogJS) web app
 - App ID: `com.gowithflow.app`
 - App Name: `GoWithFlow`
-- **App Version: `1.5` (versionCode 8)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix) → 1.3 (vc 6, 2026-06-05: production distribution build from current `main`, no logic change) → 1.4 (vc 7, 2026-06-06: production distribution build for sharing, includes Session Room UX redesign phases 0–5, no new logic change) → 1.5 (vc 8, 2026-06-08: production distribution build from current `main`, no new logic change). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
+- **App Version: `1.6` (versionCode 9)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix) → 1.3 (vc 6, 2026-06-05: production distribution build from current `main`, no logic change) → 1.4 (vc 7, 2026-06-06: production distribution build for sharing, includes Session Room UX redesign phases 0–5, no new logic change) → 1.5 (vc 8, 2026-06-08: production distribution build from current `main`, no new logic change) → 1.6 (vc 9, 2026-06-17: production distribution build for sharing from current `main`, no new logic change). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
 - Web Dir: `dist/analog/public` (Vite production build output)
 - Android Scheme: `https` — required for JWT cookies and SignalR auth to function correctly on device
 - Config file: `Frontend/capacitor.config.ts` — currently in production mode (NO `server` block); app loads from bundled assets and connects to the production API.
-- Distribution APK: `Backend/Docs/Dev/GoWithFlow.apk` (latest = 1.5) + versioned copy `GoWithFlow-1.5.apk`. Prior: `GoWithFlow-1.4.apk`, `GoWithFlow-1.3.apk`, `GoWithFlow-1.2.apk` retained.
+- Distribution APK: as of 1.6 the share location is `Backend/Docs/App/GoWithFlow.apk` (latest = 1.6) + versioned copy `GoWithFlow-1.6.apk`. Prior 1.x builds remain in `Backend/Docs/Dev/` (`GoWithFlow-1.5.apk` … `GoWithFlow-1.2.apk`).
 
 ### Android Project Location
 
