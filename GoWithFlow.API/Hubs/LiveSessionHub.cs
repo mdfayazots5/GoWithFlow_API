@@ -16,17 +16,20 @@ public sealed class LiveSessionHub : Hub
 	private readonly ILiveSessionService _liveSessionService;
 	private readonly ILiveSessionRepository _liveSessionRepository;
 	private readonly IHubConnectionTracker _connectionTracker;
+	private readonly ILiveSessionReconnectTracker _reconnectTracker;
 	private readonly ILogger<LiveSessionHub> _logger;
 
 	public LiveSessionHub(
 		ILiveSessionService liveSessionService,
 		ILiveSessionRepository liveSessionRepository,
 		IHubConnectionTracker connectionTracker,
+		ILiveSessionReconnectTracker reconnectTracker,
 		ILogger<LiveSessionHub> logger)
 	{
 		_liveSessionService = liveSessionService;
 		_liveSessionRepository = liveSessionRepository;
 		_connectionTracker = connectionTracker;
+		_reconnectTracker = reconnectTracker;
 		_logger = logger;
 	}
 
@@ -36,6 +39,10 @@ public sealed class LiveSessionHub : Hub
 
 		if (connectionInfo is not null)
 		{
+			// Cancel any pending grace-window leave for this user+session (transient drop / reconnect path).
+			// This is what prevents a momentary WebSocket drop from ever surfacing as MEMBER_LEFT.
+			_reconnectTracker.CancelPendingLeave(connectionInfo.SessionId, connectionInfo.UserId);
+
 			await Groups.AddToGroupAsync(Context.ConnectionId, connectionInfo.GroupName, Context.ConnectionAborted);
 			_connectionTracker.TrackConnection(Context.ConnectionId, connectionInfo);
 
@@ -54,17 +61,20 @@ public sealed class LiveSessionHub : Hub
 		if (_connectionTracker.TryRemoveConnection(Context.ConnectionId, out var connectionInfo) && connectionInfo is not null)
 		{
 			await Groups.RemoveFromGroupAsync(Context.ConnectionId, connectionInfo.GroupName);
-			await Clients.Group(connectionInfo.GroupName).SendAsync(
-				"MEMBER_LEFT",
-				new
-				{
-					userId = connectionInfo.UserId,
-					name = connectionInfo.FullName ?? "A participant",
-					slotIndex = connectionInfo.SlotIndex
-				});
 
-			// Best-effort DB update — ensures IsActive=0, IsReady=0 even on browser close or network loss
-			await _liveSessionService.MarkMemberLeftAsync(connectionInfo.SessionId, connectionInfo.UserId);
+			// Defer the MEMBER_LEFT broadcast + IsActive=0 update behind a 20s grace window instead of
+			// firing immediately. A transient drop (mobile network handoff, app backgrounded, WebView/page
+			// reconnect) otherwise made the OTHER participants see this member as "left" while they were
+			// only reconnecting — and the sticky "speaker has left" banner never cleared on rejoin.
+			// OnConnectedAsync cancels this if the member reconnects within the window, so a real leave
+			// (browser close / genuine exit) still emits MEMBER_LEFT after the grace period, while a blip
+			// emits nothing. Mirrors the lobby hub's LobbyReconnectTracker.
+			_reconnectTracker.ScheduleLeave(
+				connectionInfo.SessionId,
+				connectionInfo.UserId,
+				connectionInfo.SlotIndex,
+				connectionInfo.FullName,
+				connectionInfo.GroupName);
 		}
 
 		_logger.LogInformation("Live session hub disconnected. ConnectionId {ConnectionId}.", Context.ConnectionId);

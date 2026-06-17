@@ -254,6 +254,7 @@ builder.Services.AddHostedService<DatabaseStartupValidationHostedService>();
 builder.Services.AddSingleton<IUserIdProvider, JwtUserIdProvider>();
 builder.Services.AddSingleton<IHubConnectionTracker, HubConnectionTracker>();
 builder.Services.AddSingleton<ILobbyReconnectTracker, LobbyReconnectTracker>();
+builder.Services.AddSingleton<ILiveSessionReconnectTracker, LiveSessionReconnectTracker>();
 builder.Services.AddScoped<SessionNotifier>();
 builder.Services.AddScoped<ISessionNotifier, SessionNotifier>();
 builder.Services.AddScoped<IAuthorizationHandler, ActiveUserRequirementHandler>();

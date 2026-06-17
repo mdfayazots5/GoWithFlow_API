@@ -2590,7 +2590,21 @@ GetActiveSessionMemberByUserIdAsync → null (IsActive = 0)
 ↓ (after fix)  → GetSessionMemberByUserIdAsync → found → ReactivateMemberAsync → IsActive = 1 → connected
 ```
 
-**OnDisconnect behavior:** Hub broadcasts `MEMBER_LEFT`: `{ userId, slotIndex }` to group unconditionally; also calls `MarkMemberLeftAsync` (sets IsActive = 0, IsReady = 0) — best-effort safety net for browser close / genuine leave
+**OnDisconnect behavior (UPDATED 2026-06-17 — grace window):** Hub no longer broadcasts `MEMBER_LEFT` / calls `MarkMemberLeftAsync` immediately. Instead `OnDisconnectedAsync` calls `ILiveSessionReconnectTracker.ScheduleLeave(sessionId, userId, slotIndex, name, groupName)` which defers the `MEMBER_LEFT` broadcast `{ userId, name, slotIndex }` + `MarkMemberLeftAsync` (IsActive = 0, IsReady = 0) by a **20s grace window**. `OnConnectedAsync` calls `CancelPendingLeave(sessionId, userId)` — a reconnect within the window cancels the pending leave so **no** `MEMBER_LEFT` is sent. A genuine leave (browser close / real exit) still emits `MEMBER_LEFT` after the grace period. Mirrors the lobby hub's `LobbyReconnectTracker`. See drift note "Live presence false-leave" below.
+
+#### Live Presence False-Leave — Transient Disconnect Shows "<member> left" / Sticky Speaker-Left Banner (2026-06-17)
+
+**Drift type:** Missing-grace-window / state-reconciliation drift on the LIVE hub (the lobby hub had the fix; the live hub did not). **Symptom (reported on APK):** a participant ("Ayan") never left the room, but the other phone showed Ayan as left — and when Ayan was the active speaker the "The current speaker has left" banner stayed stuck.
+
+**Root cause (two compounding defects):**
+1. **Backend — no grace window.** `LiveSessionHub.OnDisconnectedAsync` broadcast `MEMBER_LEFT` and called `MarkMemberLeftAsync` on *every* socket drop, immediately. On mobile, transient WebSocket drops are routine (Wi-Fi↔cellular handoff, app backgrounded, WebView/page reconnect, doze). Each drop fired a false `MEMBER_LEFT` to the group even though the member reconnected (via the `ResolveConnectionMetadataAsync` reactivation fallback) seconds later. The lobby hub already deferred this behind `LobbyReconnectTracker` (20s); the live hub never got the equivalent.
+2. **Frontend — sticky banner never cleared on rejoin.** `session-room.component.ts` `MEMBER_LEFT` handler sets a persistent `speakerLeftAlert` signal when the *active speaker* leaves. It was only ever cleared on `TURN_SHIFT` (line ~417) or manual dismiss — the `MEMBER_JOINED` handler did **not** clear it. So after a false (or genuine) speaker drop→rejoin with no intervening turn shift, the "current speaker has left" banner stayed on screen indefinitely.
+
+**Fix:**
+- **Backend:** new `ILiveSessionReconnectTracker` / `LiveSessionReconnectTracker` (singleton, registered in `Program.cs`) modeled on `LobbyReconnectTracker`. `OnDisconnectedAsync` → `ScheduleLeave(...)` (20s deferred `MEMBER_LEFT` + `MarkMemberLeftAsync`); `OnConnectedAsync` → `CancelPendingLeave(...)`. A reconnect within 20s cancels the pending leave → no false event; a real exit still emits after the window.
+- **Frontend:** `MEMBER_JOINED` handler now clears `speakerLeftAlert` when the rejoiner is the current `turnState().activeMemberId` — reconciliation safety-net for a rejoin that beats the grace window or any leave→rejoin without a `TURN_SHIFT`.
+
+**Notes on Drift Prevented:** any hub that treats a raw socket disconnect as a domain "leave" MUST debounce it behind a reconnect grace window — mobile transports drop constantly. Do NOT revert the live hub to an immediate `MEMBER_LEFT`. On the client, any *sticky* presence indicator (banner/badge) must have a clear path that the corresponding rejoin event resets — a transient toast is fine to leave self-expiring, but persistent state needs explicit reconciliation.
 
 ---
 
@@ -3079,7 +3093,8 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 2. **Same-language keep-alive (7 s), NOT a short watchdog.** A bad language is silent *and* errorless — but so is a working recognizer while the user is still reading. The earlier 4 s watchdog conflated the two and tore down the working en-GB recognizer (confirmed on device: it thrashed the whole chain every 4 s and the user never got a window to speak). Replaced by: if no signal in 7 s, **relisten on the SAME language** (Android `SpeechRecognizer` is single-utterance; a slow starter just produces no signal). Only after `MAX_SILENT_RESTARTS` (2) silent relistens does it advance to the next candidate.
 3. **`langConfirmed` latch.** Set on the first `started`/`partial`; once set the language is never switched again. On confirmation the working language is cached in `localStorage['gwf_voice_lang']` so later turns succeed on attempt 0.
 4. **Token-guarded attempts (`attemptToken`).** Each (re)start bumps a token; stale callbacks from a superseded attempt are ignored.
-5. **Finalize triggers:** silence timer (**1.2 s** after last new partial — tuned for snappy, Duolingo-like stop) → finalize; `listeningState:stopped` with transcript → finalize; hard ceiling 30 s; external stop (`_intentionalStop`) → finalize with whatever was captured.
+5. **Finalize triggers:** silence timer (**adaptive `SILENCE_MS`** after last new partial — see below) → finalize; `listeningState:stopped` with transcript → finalize; hard ceiling 30 s; external stop (`_intentionalStop`) → finalize with whatever was captured.
+   - **Adaptive end-of-speech window (`SILENCE_MS`, 2026-06-17):** keyed to the expected utterance's word count — `≤6 words → 1200 ms`, `7–12 → 2000 ms`, `>12 → 2500 ms`. A flat 1.2 s truncated long Session Room sentences (a natural breath at a comma/period boundary tripped the timer). Short repractice drills keep the snappy Duolingo stop. See drift note below.
 6. **Terminal failure** (chain exhausted with no working language) → actionable error: "…download an English voice model in Settings → Voice input…".
 
 **Mic-contention fix (PROVEN root cause of "No speech detected" even with a valid language):** `VoiceBroadcastService.startBroadcast()` opened `getUserMedia` (`AUDIO_SOURCE_VOICE_COMMUNICATION`) the instant recording began, which **preempted** the native recognizer's `AUDIO_SOURCE_VOICE_RECOGNITION` capture (device log: `getInputForAttr() source 7` opening after `source 6`). Two processes cannot share one Android mic, and the native `SpeechRecognizer` cannot be fed an external stream. **Fix:** `startBroadcast()` early-returns on `Capacitor.isNativePlatform()` — the recognizer keeps exclusive mic access. **Product decision (confirmed):** on the APK, live WebRTC broadcast is OFF; scoring (on-device, free, offline) takes priority. Live broadcast remains available on web/desktop.
@@ -3093,6 +3108,20 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 **Diagnostics:** all native logs prefixed `[VRE]` → `adb logcat | grep VRE`. Key lines: `Native session start` (chain + cachedLang), `Native start()` (per attempt + lang), `Native language confirmed`, `Native relisten`, `Keep-alive`.
 
 **Notes on Drift Prevented:** the native path is now resilient to whatever English pack the device has installed, independent of locale, and self-heals via caching. Future agents must: (a) NOT reintroduce a hard-coded `en-IN`/`en-US`-only assumption; (b) remember native `onError` is invisible to JS in `partialResults` mode — use timeouts/keep-alive, never rely on an error/`stopped` signal to detect a bad language; (c) NOT re-enable `startBroadcast()` mic capture on native (it starves the recognizer); (d) keep number normalization applied to BOTH sides of the comparison.
+
+#### Native Long-Utterance Truncation — Adaptive Silence Window (2026-06-17)
+
+**Drift type:** Premature-finalize / fixed-threshold drift on the native path. Symptom (confirmed on IV2201, Session Room speaker turn, logcat captured): expected "Good evening, sir! Welcome to the Grand Stay Hotel. Let me look that up for you." — the recognizer transcribed only "…welcome to the Grand", finalized there, and the remaining 9 words showed as **Missing** → Fluency 19, overall **36/100**. Voice capture worked; the score was wrong because the utterance was cut off mid-sentence.
+
+**Root cause (from `[VRE]` native logs):** partials grew continuously to "…the Grand" at t=43.335 s, then the user took a natural breath at the comma/period boundary ("Grand **Stay Hotel.**"). The flat **`SILENCE_MS = 1200`** timer (reset on each new partial in the `partialResults` handler) fired ~1.2 s later at t=44.541 → finalize. No `listeningState:stopped` event preceded it — the SODA recognizer kept the single utterance open; the JS silence timer alone triggered the cut-off. The 1.2 s value was tuned for snappy short drills and was too aggressive for multi-clause sentences.
+
+**Fix (`voice-recognition.engine.ts` `startNativeSession`):** `SILENCE_MS` is now **adaptive to `expectedText` word count** — `≤6 → 1200 ms`, `7–12 → 2000 ms`, `>12 → 2500 ms` — computed once before the recognition promise. Long sentences ride through inter-phrase pauses; short repractice/vocabulary drills keep the 1.2 s snap.
+
+**Secondary path NOT changed (watch item):** if the SODA engine *does* fire `listeningState:'stopped'` (onEndOfSpeech) during a mid-utterance pause, `finalizeWithTranscript()` still finalizes immediately regardless of `SILENCE_MS`. The reproduced failure did not hit this path. If long-utterance truncation recurs *with* a `stopped` event in the log, the fix is to relisten-and-append on `stopped` when the transcript covers materially less than expected (deferred — adds ghost/double-capture risk; only implement against a confirmed repro).
+
+**Separate, un-fixed artifact:** a leading "good morning" ghost was prepended before the real "good evening" — a pure SODA misrecognition (the engine's own running hypothesis), not a timer/alignment bug. Mitigation belongs in `PronunciationScorer` extra-word alignment, not here.
+
+**Notes on Drift Prevented:** do NOT revert `SILENCE_MS` to a flat constant — short and long utterances have opposite end-of-speech needs. Any future "snappier stop" request must preserve the long-utterance tier or it will re-truncate Session Room sentences.
 
 #### VoiceFeedbackComponent — UI Defaults
 
