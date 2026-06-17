@@ -1312,6 +1312,96 @@ Key queries:
 
 ---
 
+## Frontend Listen Script Module — Script Audio Player
+
+### Module Scope
+
+Standalone, **non-session** audio experience: listen to any script read aloud (Spotify-lyrics style)
+without joining a live session and **without opening the microphone**. Frontend-only — **no new
+backend, API, DB, or SignalR**. Reuses `GET /api/scripts/{scriptId}` for content. **v1 design
+decisions (confirmed by user 2026-06-17):** on-device line-level TTS · both entry points (bottom-nav
+tab + per-script action) · web + APK.
+
+### Entry Points
+
+- **Bottom-nav "Listen" tab** → `/scripts/listen` (picker) — `ListenPickerComponent`. The default
+  user footer now has 5 tabs: Home · **Listen** · Review · Progress · History (`BottomNavComponent.defaultItems`).
+- **Per-script "Listen" action** in the Script Library row → `/scripts/listen/:scriptId`
+  (`ScriptLibraryComponent`, Headphones icon, alongside Preview/Prepare/Start).
+- **Player route** `/scripts/listen/:scriptId` — `ListenScriptComponent`.
+
+### UI Trigger
+
+Picker row tap or library Listen button navigates to the player; player `Play` button (or tapping a
+line) starts on-device narration.
+
+### Request Contract
+
+- Endpoint: `GET /api/scripts/{scriptId}` (existing — `ScriptService.getScriptDetail`). Returns
+  `{ scriptId, scriptTitle, category, utterances: [{ utteranceId, sequenceId, speakerLabel, englishText, hintText, … }] }`.
+- Picker list: existing `GET /api/scripts` (`getScripts`, `isActive=true`, page 0 / limit 50, search debounced 400 ms).
+- **No new endpoints.**
+
+### Core Engine — `ScriptPlaybackService` (`core/services/voice/script-playback.service.ts`)
+
+On-device, **line-level** playback. Signals: `lines`, `currentIndex`, `isPlaying`, `rate`, `repeat`
+(`off`|`one`|`all`), `roles`, `roleVoices`. Drives `TtsService.speak(text, { rate, gender, pitch })`
+one utterance at a time.
+
+- **Engine constraint (root of the design):** `@capacitor-community/text-to-speech` resolves only when
+  a whole line finishes and exposes **no word/sentence timing** and **no mid-line seek**. Therefore:
+  highlight = active LINE; "rewind/fast-forward/seek" = prev/next/jump LINE; "pause" stops the line and
+  resume re-speaks it from the start. Word-level karaoke and a continuous scrubber are NOT possible on-device.
+- **Sequential loop with cancellation token (`playToken`):** every `pause()/seekTo()/setRate()/setRoleGender()`
+  bumps `playToken` and calls `TtsService.stop()`; after each `await speak()` the loop re-checks the token
+  and exits if superseded. Prevents overlapping narration.
+- **Role → voice presets:** distinct `speakerLabel`s (in first-appearance order) are assigned a
+  `{ gender, pitch }` preset from a 4-entry palette (Female 1.0 / Male 0.92 / Female 1.18 / Male 1.12).
+  User can override gender per role via the Voices sheet (`setRoleGender`). True distinct neural voices
+  are NOT available on-device — differentiation is gender + pitch only.
+- **Continue From Last Position:** `currentIndex` persisted to `localStorage` key `gwf_listen_pos_{scriptId}`
+  on every line advance / transport action; `load()` restores it.
+- **Speed:** `PLAYBACK_SPEEDS = [0.5, 1, 1.25, 1.5, 2]`; `cycleSpeed()`; changing rate restarts the current line.
+- **Repeat:** `off` → linear (stops at end); `one` → repeat current line; `all` → loop whole script.
+
+### Player UI — `ListenScriptComponent`
+
+Lyrics list (active line highlighted/enlarged, past lines dimmed, animated wave on the speaking line);
+`effect()` auto-scrolls the active line into view (`scrollIntoView`, guarded by `isPlatformBrowser`);
+tap any line → `seekTo`. Sticky bottom dock: line-progress bar, Speed, Prev, Play/Pause, Next, Repeat,
+and a Voices button opening `ListenVoicesSheetComponent` (per-role Male/Female). `ngOnDestroy → playback.reset()`
+so narration never leaks across navigations.
+
+### Voice Constitution Compliance
+
+OUTPUT-only TTS — never opens the mic, so **no recognizer mic contention** (rule #1 safe). Not part of
+a live session; no `SessionCapabilitiesService` gating needed (no recognizer/broadcast involved).
+`TtsService.speak()` gained an **optional `pitch`** param (defaults to `1.0`) — additive; Phase 17 AI
+Voice Participant behavior unchanged.
+
+### Failure Cases
+
+- Script load fails / not found → loading clears, "Nothing to play" empty state with link back to picker.
+- `TtsService.speak()` failure is swallowed inside the service (warns, never throws) — narration never wedges; loop continues/ends gracefully.
+- No installed device voice match → plugin falls back to its default voice (best-effort gender match).
+
+### Notes on Drift / Verification
+
+- **Drift fixed 2026-06-17 — Male voice spoke Female (gender substring collision).** `TtsService.resolveVoiceIndex`
+  selected a voice via `name.includes(gender.toLowerCase())`. Because `"female"` *contains* `"male"`,
+  selecting **Male** matched the first female-named voice (`…#female_1…`) → male selection spoke in a female
+  voice. Affected **both** Phase 17 AI Voice Participant (create-session Male/Female pick) and Listen Script
+  role voices. Fixed: match `Female` by `includes('female')`, and `Male` by `includes('male') && !includes('female')`.
+  Drift type: logic defect (substring match). Shared `TtsService` → one fix covers both consumers.
+- **UNVERIFIED on-device as of 2026-06-17** — typecheck green only. Per §5a this is BOTH interactive UI
+  AND voice output; requires rendered + APK verification (lyrics highlight/auto-scroll, actual narration,
+  per-role voice audible difference, speed/repeat, continue-from-last) on IV2201 before sign-off.
+- **Future enhancements (out of v1 scope, per spec):** background playback, offline downloads, bookmarks,
+  favorites/playlists, cloud neural per-role voices, word-level karaoke + scrubber (would require
+  server-side TTS with word timestamps), multi-language voice packs.
+
+---
+
 ## Backend Session Module
 
 ### Module Scope
@@ -1907,6 +1997,12 @@ PagedResult:
 - `wsBaseUrl` stores HTTPS origin only (e.g., `https://localhost:44378`)
 - Websocket service appends `/hubs/{hubPath}` — `wsBaseUrl` must not include `/hubs` suffix or `wss://` scheme
 - Hub method calls guarded by connection-state check; methods invoked only when connection state is `Connected`
+- **Token attachment:** the JWT is supplied via `accessTokenFactory` (NOT a static `?access_token=` query param). SignalR invokes the factory on **every negotiate and every auto-reconnect**, so the freshest `gwf_token` is always used. `sessionId` remains the only manual query param (`?sessionId={id}`). SignalR sends the token as a `Bearer` header on the negotiate HTTP request and as `access_token` query param on the WebSocket upgrade — both accepted by the backend (JWT bearer reads `access_token` query for `/hubs/*`).
+- **Proactive refresh:** `accessTokenFactory` decodes the JWT `exp` (30s skew); if the token is missing/expired and a `gwf_refreshToken` exists, it awaits `AuthService.refreshToken()` and uses the new token before negotiating. Concurrent negotiate/reconnect attempts share one in-flight refresh.
+
+**Notes on Drift — negotiate 401 (fixed 2026-06-17):**
+- **Drift type:** stale-token / missing-fallback. `WebsocketService.connect()` read `gwf_token` once and baked it into a static `?access_token=` query string. `withAutomaticReconnect()` reuses the same URL, so after the short-lived access token rotated/expired (HTTP `authInterceptor` refreshes it, but the socket kept the old snapshot) every (re)negotiate sent an expired token → `Failed to complete negotiation … Status code '401'` at `/session/lobby/{id}`. An empty token (connect before login) hit the same 401.
+- **Fix:** switched to `accessTokenFactory` + proactive `exp`-based refresh (see above). Backend hub contract unchanged.
 
 ### Migration State
 

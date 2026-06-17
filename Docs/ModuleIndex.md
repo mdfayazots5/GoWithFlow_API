@@ -260,6 +260,16 @@ Logic source: `ProjectOverview.md` only.
 | security review | Secret Management & Security | Secret Management & Security Architecture |
 | security audit | Secret Management & Security | Secret Management & Security Architecture |
 | secret exposure | Secret Management & Security | Secret Management & Security Architecture |
+| listen script | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| listen | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| script audio | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| audio player | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| lyrics | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| playback | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| ScriptPlaybackService | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| tts | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| text to speech | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
+| narration | Frontend Listen Script Module | Frontend Listen Script Module — Script Audio Player |
 
 ## Module List
 
@@ -328,3 +338,7 @@ Logic source: `ProjectOverview.md` only.
 15. Secret Management & Security
     - Section: `Secret Management & Security Architecture`
     - Purpose: secrets hardening — security review findings (live JWT/R2/DB credentials committed in plaintext, `.gitignore` force-tracking, Docker image leakage), sensitive-data inventory, target architecture (Render env groups → Doppler/Infisical), phased migration plan, risk register. STATUS: review complete, remediation PENDING (Phase 0 credential rotation is human-only)
+
+16. Frontend Listen Script Module
+    - Section: `Frontend Listen Script Module — Script Audio Player`
+    - Purpose: standalone non-session "Listen Script" audio player — lyrics-style on-device line-level TTS playback of any script (no mic, no backend). `ScriptPlaybackService` engine + `ListenScriptComponent` (player) + `ListenPickerComponent` (bottom-nav tab) + `ListenVoicesSheetComponent`. Entry points: bottom-nav Listen tab (`/scripts/listen`) and per-script library action (`/scripts/listen/:scriptId`). Reuses `GET /api/scripts/{id}`.
