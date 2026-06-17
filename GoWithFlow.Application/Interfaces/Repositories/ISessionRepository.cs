@@ -6,7 +6,13 @@ namespace GoWithFlow.Application.Interfaces.Repositories;
 
 public interface ISessionRepository
 {
-	Task<(long SessionId, string JoinCode)> CreateSessionAsync(Session session, SessionMember hostMember, CancellationToken cancellationToken = default);
+	/// <summary>
+	/// Creates the session and host member transactionally. When <paramref name="aiMembers"/> is
+	/// non-empty (AI Voice Participant enabled), the AI config is persisted and each AI member is
+	/// inserted in the SAME transaction, so the session is never left half-configured. Pass an empty
+	/// list for a normal human session.
+	/// </summary>
+	Task<(long SessionId, string JoinCode)> CreateSessionAsync(Session session, SessionMember hostMember, IReadOnlyList<SessionMember> aiMembers, CancellationToken cancellationToken = default);
 
 	Task JoinSessionAsync(SessionMember sessionMember, CancellationToken cancellationToken = default);
 

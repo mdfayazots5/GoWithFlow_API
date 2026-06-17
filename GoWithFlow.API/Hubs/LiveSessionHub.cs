@@ -183,16 +183,69 @@ public sealed class LiveSessionHub : Hub
 			"Turn shifted. SessionId={SessionId} NewTurnIndex={NewTurnIndex} NextSpeakerId={NextSpeakerId}",
 			parsedSessionId, response.Data.TurnIndex, response.Data.ActiveMemberId);
 
-		await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+		await BroadcastTurnShiftAsync(parsedSessionId, response.Data);
+	}
+
+	// Phase 17: advances a turn currently held by the AI Voice Participant. Any active HUMAN member
+	// may call this (the AI holds no hub connection). No score is submitted; the service writes no
+	// voice analysis. Completion / failure handling mirrors CompleteTurn exactly so the end-of-script
+	// auto-complete and the specific-error surfacing behave identically.
+	public async Task AdvanceAiTurn(string sessionId, int turnIndex)
+	{
+		var parsedSessionId = ParseSessionId(sessionId);
+		var callerUserId = ParseCallerUserId();
+
+		_logger.LogInformation(
+			"AdvanceAiTurn received. SessionId={SessionId} TurnIndex={TurnIndex} CallerUserId={CallerUserId}",
+			parsedSessionId, turnIndex, callerUserId);
+
+		var response = await _liveSessionService.AdvanceAiTurnAsync(parsedSessionId, turnIndex, callerUserId, Context.ConnectionAborted);
+
+		if (response.Success == false || response.Data is null)
+		{
+			// End-of-script auto-complete uses the same shared signal as CompleteTurn.
+			if (response.Message?.Contains(TurnShiftSignals.SessionComplete, StringComparison.OrdinalIgnoreCase) == true)
+			{
+				var completeResponse = await _liveSessionService.CompleteSessionAsync(parsedSessionId, Context.ConnectionAborted);
+
+				if (completeResponse.Success && completeResponse.Data is not null)
+				{
+					await Clients.Group(BuildGroupName(parsedSessionId)).SendAsync(
+						"SESSION_ENDED",
+						new { sessionId = parsedSessionId, summary = completeResponse.Data },
+						Context.ConnectionAborted);
+					return;
+				}
+
+				_logger.LogError(
+					"AI advance auto-complete failed. SessionId={SessionId} Message={Message}",
+					parsedSessionId, completeResponse.Message);
+				throw new HubException($"Session could not be completed: {completeResponse.Message}");
+			}
+
+			var failureReason = DescribeFailure(response);
+			_logger.LogWarning(
+				"AdvanceAiTurn rejected. SessionId={SessionId} TurnIndex={TurnIndex} Reason={Reason}",
+				parsedSessionId, turnIndex, failureReason);
+			throw new HubException(failureReason);
+		}
+
+		await BroadcastTurnShiftAsync(parsedSessionId, response.Data);
+	}
+
+	private Task BroadcastTurnShiftAsync(long sessionId, GoWithFlow.Application.DTOs.Responses.LiveSession.TurnStateResponseDto turn)
+	{
+		return Clients.Group(BuildGroupName(sessionId)).SendAsync(
 			"TURN_SHIFT",
 			new
 			{
-				newActiveMemberId = response.Data.ActiveMemberId,
-				newActiveMemberName = response.Data.ActiveMemberName,
-				activeMemberAvatarUrl = response.Data.ActiveMemberAvatarUrl,
-				slotIndex = response.Data.ActiveSlotIndex,
-				turnIndex = response.Data.TurnIndex,
-				nextUtterance = response.Data.Utterance
+				newActiveMemberId = turn.ActiveMemberId,
+				newActiveMemberName = turn.ActiveMemberName,
+				activeMemberAvatarUrl = turn.ActiveMemberAvatarUrl,
+				slotIndex = turn.ActiveSlotIndex,
+				turnIndex = turn.TurnIndex,
+				nextUtterance = turn.Utterance,
+				isAi = turn.IsAi
 			},
 			Context.ConnectionAborted);
 	}

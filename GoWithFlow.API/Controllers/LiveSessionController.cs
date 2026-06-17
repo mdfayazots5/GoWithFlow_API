@@ -39,6 +39,13 @@ public sealed class LiveSessionController : ControllerBase
 		return BuildActionResult(response, StatusCodes.Status200OK);
 	}
 
+	[HttpPost(ApiRoutes.LiveSession.AdvanceAi)]
+	public async Task<IActionResult> AdvanceAiTurnAsync(long sessionId, [FromBody] AdvanceAiTurnRequestDto dto, CancellationToken cancellationToken)
+	{
+		var response = await _liveSessionService.AdvanceAiTurnAsync(sessionId, dto.TurnIndex, GetUserId(), cancellationToken);
+		return BuildActionResult(response, StatusCodes.Status200OK);
+	}
+
 	[HttpPost(ApiRoutes.LiveSession.VoiceAnalysis)]
 	public async Task<IActionResult> SaveVoiceAnalysisAsync(long sessionId, [FromBody] SaveVoiceAnalysisRequestDto dto, CancellationToken cancellationToken)
 	{

@@ -21,4 +21,10 @@ public sealed class MemberScoreDto
 	/// Facilitator members are excluded from the performance scoreboard.
 	/// </summary>
 	public bool IsFacilitator { get; set; }
+
+	/// <summary>
+	/// Phase 17 — true when this member is the AI Voice Participant. Excluded from the scored
+	/// leaderboard (the AI narrates, it does not perform) and shown separately as an AI partner.
+	/// </summary>
+	public bool IsAi { get; set; }
 }

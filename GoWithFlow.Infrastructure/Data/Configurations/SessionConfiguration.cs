@@ -74,6 +74,13 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
 		builder.Property(session => session.ScheduledAt)
 			.HasColumnType("datetime2");
 
+		// AI Voice Participant config (Phase 17).
+		builder.Property(session => session.AiVoiceGender)
+			.HasMaxLength(8);
+
+		builder.Property(session => session.AiSpeechRate)
+			.HasPrecision(3, 2);
+
 		builder.HasMany(session => session.Members)
 			.WithOne(member => member.Session)
 			.HasForeignKey(member => member.SessionId)

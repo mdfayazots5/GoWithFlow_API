@@ -22,6 +22,9 @@ public sealed class SessionMember : BaseAuditEntity
 
 	public bool IsActive { get; set; } = true;
 
+	// Phase 17 — true when this slot is held by the AI Voice Participant (reserved system user).
+	public bool IsAi { get; set; }
+
 	public Session? Session { get; set; }
 
 	public User? User { get; set; }

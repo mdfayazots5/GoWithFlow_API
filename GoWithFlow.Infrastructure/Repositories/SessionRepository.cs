@@ -18,7 +18,7 @@ public sealed class SessionRepository : ISessionRepository
 		_dbContext = dbContext;
 	}
 
-	public async Task<(long SessionId, string JoinCode)> CreateSessionAsync(Session session, SessionMember hostMember, CancellationToken cancellationToken = default)
+	public async Task<(long SessionId, string JoinCode)> CreateSessionAsync(Session session, SessionMember hostMember, IReadOnlyList<SessionMember> aiMembers, CancellationToken cancellationToken = default)
 	{
 		var connection = _dbContext.Database.GetDbConnection();
 		await EnsureConnectionOpenAsync(connection, cancellationToken);
@@ -31,6 +31,20 @@ public sealed class SessionRepository : ISessionRepository
 			hostMember.SessionId = sessionId;
 
 			await InsertSessionMemberInternalAsync(hostMember, transaction, cancellationToken);
+
+			// AI Voice Participant (Phase 17): persist config + insert one AI member per non-host slot,
+			// all inside this transaction so an AI session is never left partially set up.
+			if (session.AiEnabled == true)
+			{
+				await SetSessionAiConfigInternalAsync(sessionId, session, transaction, cancellationToken);
+
+				foreach (var aiMember in aiMembers)
+				{
+					aiMember.SessionId = sessionId;
+					await InsertAiSessionMemberInternalAsync(aiMember, transaction, cancellationToken);
+				}
+			}
+
 			await transaction.CommitAsync(cancellationToken);
 
 			return (sessionId, joinCode);
@@ -424,6 +438,37 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@IsHost", sessionMember.IsHost));
 		command.Parameters.Add(CreateParameter("@CreatedBy", sessionMember.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", sessionMember.IPAddress));
+
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
+	}
+
+	// Phase 17: inserts an AI-held member (IsAi=1, IsReady=1, IsHost=0). Unlike the human insert SP,
+	// this path has NO duplicate-user guard, so the single reserved AI system user can hold multiple
+	// slots in one session (multi-role scripts). The slot-occupied guard still applies.
+	private async Task InsertAiSessionMemberInternalAsync(SessionMember sessionMember, DbTransaction transaction, CancellationToken cancellationToken)
+	{
+		await using var command = CreateCommand(transaction.Connection!, "dbo.uspInsertAiSessionMember", transaction);
+		command.Parameters.Add(CreateParameter("@SessionId", sessionMember.SessionId));
+		command.Parameters.Add(CreateParameter("@UserId", sessionMember.UserId));
+		command.Parameters.Add(CreateParameter("@SlotIndex", sessionMember.SlotIndex));
+		command.Parameters.Add(CreateParameter("@SlotName", sessionMember.SlotName));
+		command.Parameters.Add(CreateParameter("@CreatedBy", sessionMember.CreatedBy));
+		command.Parameters.Add(CreateParameter("@IPAddress", sessionMember.IPAddress));
+
+		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
+	}
+
+	// Phase 17: persists the per-session AI config on tblSession.
+	private async Task SetSessionAiConfigInternalAsync(long sessionId, Session session, DbTransaction transaction, CancellationToken cancellationToken)
+	{
+		await using var command = CreateCommand(transaction.Connection!, "dbo.uspSetSessionAiConfig", transaction);
+		command.Parameters.Add(CreateParameter("@SessionId", sessionId));
+		command.Parameters.Add(CreateParameter("@AiEnabled", session.AiEnabled));
+		command.Parameters.Add(CreateParameter("@AiVoiceGender", session.AiVoiceGender));
+		command.Parameters.Add(CreateParameter("@AiSpeechRate", session.AiSpeechRate));
+		command.Parameters.Add(CreateParameter("@AiQuestionDelaySec", session.AiQuestionDelaySec));
+		command.Parameters.Add(CreateParameter("@UpdatedBy", session.CreatedBy));
+		command.Parameters.Add(CreateParameter("@IPAddress", session.IPAddress));
 
 		await DbCommandHelper.ExecuteNonQueryAsync(command, cancellationToken);
 	}

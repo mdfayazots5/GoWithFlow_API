@@ -13,6 +13,10 @@ namespace GoWithFlow.Application.Services;
 
 public sealed class SessionService : ISessionService
 {
+	// Sentinel mobile number of the reserved AI Voice Participant system user (Phase 17). UserId is
+	// IDENTITY/BIGSERIAL and differs per environment, so the AI user is always resolved by this value.
+	private const string AiParticipantMobileNumber = "AI_PARTICIPANT";
+
 	private static readonly HashSet<string> AllowedStatusFilters = new(StringComparer.OrdinalIgnoreCase)
 	{
 		"LOBBY",
@@ -109,7 +113,44 @@ public sealed class SessionService : ISessionService
 			IPAddress = "127.0.0.1"
 		};
 
-		var result = await _sessionRepository.CreateSessionAsync(session, hostMember, cancellationToken);
+		// AI Voice Participant (Phase 17): when enabled, the AI fills EVERY non-host slot so the
+		// candidate can run the session solo. AI members share the one reserved system user and are
+		// inserted (auto-ready) in the same transaction as the session + host member.
+		var aiMembers = new List<SessionMember>();
+
+		if (dto.AiEnabled)
+		{
+			var aiUser = await _userRepository.GetByMobileNumberAsync(AiParticipantMobileNumber, cancellationToken);
+
+			if (aiUser is null)
+			{
+				return ApiResponse<CreateSessionResponseDto>.FailureResult(
+					new[] { "The AI Voice Participant is not available. The reserved system user is missing — run the Phase 17 migration." },
+					"Session creation failed.");
+			}
+
+			session.AiEnabled = true;
+			session.AiVoiceGender = dto.AiVoiceGender;
+			session.AiSpeechRate = dto.AiSpeechRate;
+			session.AiQuestionDelaySec = dto.AiQuestionDelaySec;
+
+			for (var slot = 1; slot < slotNames.Count; slot++)
+			{
+				aiMembers.Add(new SessionMember
+				{
+					UserId = aiUser.UserId,
+					SlotIndex = (byte)(slot + 1),
+					SlotName = slotNames[slot],
+					IsReady = true,
+					IsHost = false,
+					IsAi = true,
+					CreatedBy = "System",
+					IPAddress = "127.0.0.1"
+				});
+			}
+		}
+
+		var result = await _sessionRepository.CreateSessionAsync(session, hostMember, aiMembers, cancellationToken);
 
 		return ApiResponse<CreateSessionResponseDto>.SuccessResult(
 			new CreateSessionResponseDto

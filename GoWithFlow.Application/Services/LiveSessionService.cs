@@ -101,14 +101,67 @@ public sealed class LiveSessionService : ILiveSessionService
 			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "The provided turn does not match the active turn." }, "Turn shift failed.");
 		}
 
-		// CRITICAL: resolve and VALIDATE the next turn BEFORE mutating the current turn.
-		// If the next turn cannot be created (e.g. the next utterance's speaker label matches no
-		// active slot), the current turn must stay ACTIVE. Marking it COMPLETED first — as the old
-		// code did — left the session with no ACTIVE turn and bricked it permanently (every later
-		// CompleteTurn returned "Session, current turn, or user was not found"). See the Turn Shift
-		// flow drift note (2026-06-05) in ProjectOverview.
+		// Resolve-validate-advance is shared with AdvanceAiTurnAsync — see AdvanceFromCurrentTurnAsync
+		// for the brick-prevention contract.
+		return await AdvanceFromCurrentTurnAsync(session, currentTurnEntity, user.FullName, cancellationToken);
+	}
+
+	public async Task<ApiResponse<TurnStateResponseDto>> AdvanceAiTurnAsync(long sessionId, int turnIndex, long callerUserId, CancellationToken cancellationToken = default)
+	{
+		if (sessionId <= 0 || turnIndex <= 0 || callerUserId <= 0)
+		{
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "SessionId, TurnIndex, and UserId must be greater than zero." }, "Validation failed.");
+		}
+
+		var session = await _sessionRepository.GetSessionBySessionIdAsync(sessionId, cancellationToken);
+		var currentTurnEntity = await _liveSessionRepository.GetCurrentTurnEntityAsync(sessionId, cancellationToken);
+		var currentTurnDto = await _liveSessionRepository.GetCurrentTurnAsync(sessionId, cancellationToken);
+		var callerMember = await _liveSessionRepository.GetActiveSessionMemberByUserIdAsync(sessionId, callerUserId, cancellationToken);
+
+		if (session is null || currentTurnEntity is null || currentTurnDto is null || callerMember is null)
+		{
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "Session, current turn, or caller membership was not found." }, "AI turn advance failed.");
+		}
+
+		if (string.Equals(session.Status, SessionStatusType.ACTIVE.ToString(), StringComparison.OrdinalIgnoreCase) == false)
+		{
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "Session must be active to advance the AI turn." }, "AI turn advance failed.");
+		}
+
+		if (currentTurnEntity.TurnIndex != turnIndex)
+		{
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "The provided turn does not match the active turn." }, "AI turn advance failed.");
+		}
+
+		// Only an AI-held turn may be advanced through this path; human turns must go through CompleteTurn
+		// (which scores). And only a human member may drive it — the AI never holds a hub connection.
+		if (currentTurnDto.IsAi == false)
+		{
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "The current turn is not an AI turn." }, "AI turn advance failed.");
+		}
+
+		if (callerMember.IsAi)
+		{
+			return ApiResponse<TurnStateResponseDto>.FailureResult(new[] { "AI members cannot advance turns." }, "AI turn advance failed.");
+		}
+
+		// No voice analysis is written for AI turns. Reuse the same atomic advance as a human shift.
+		return await AdvanceFromCurrentTurnAsync(session, currentTurnEntity, currentTurnDto.ActiveMemberName, cancellationToken);
+	}
+
+	/// <summary>
+	/// Shared resolve-validate-advance core used by both ShiftTurnAsync (human) and AdvanceAiTurnAsync.
+	/// CRITICAL: resolve and VALIDATE the next turn BEFORE mutating the current turn. If the next turn
+	/// cannot be created (e.g. the next utterance's speaker label matches no active slot), the current
+	/// turn must stay ACTIVE. Marking it COMPLETED first — as the old code did — left the session with
+	/// no ACTIVE turn and bricked it permanently. See the Turn Shift flow drift note (2026-06-05) in
+	/// ProjectOverview. Keeping this in ONE place prevents the two callers from diverging.
+	/// </summary>
+	private async Task<ApiResponse<TurnStateResponseDto>> AdvanceFromCurrentTurnAsync(
+		Session session, TurnState currentTurnEntity, string actorName, CancellationToken cancellationToken)
+	{
 		var (nextTurn, isEndOfScript, nextTurnError) = await ResolveNextTurnAsync(
-			session, currentTurnEntity.TurnIndex + 1, user.FullName, cancellationToken);
+			session, currentTurnEntity.TurnIndex + 1, actorName, cancellationToken);
 
 		if (nextTurnError is not null)
 		{
@@ -125,7 +178,7 @@ public sealed class LiveSessionService : ILiveSessionService
 			await _liveSessionRepository.UpdateTurnStatusAsync(
 				currentTurnEntity.TurnStateId,
 				TurnStatusType.COMPLETED.ToString(),
-				user.FullName,
+				actorName,
 				"127.0.0.1",
 				cancellationToken);
 
@@ -140,7 +193,7 @@ public sealed class LiveSessionService : ILiveSessionService
 		await _liveSessionRepository.CompleteAndAdvanceTurnAsync(
 			currentTurnEntity.TurnStateId,
 			TurnStatusType.COMPLETED.ToString(),
-			user.FullName,
+			actorName,
 			"127.0.0.1",
 			nextTurn,
 			cancellationToken);

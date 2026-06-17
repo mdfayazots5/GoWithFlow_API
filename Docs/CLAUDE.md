@@ -152,6 +152,38 @@ arbitrates cross-domain design and the **CEO** breaks any remaining tie.
 - The **Chief Architect** resolves design/contract disagreements; the **CEO** resolves anything else.
 - Reviews run **before** output is finalized, never after delivery.
 
+### 4a. Clarify-&-Confirm Protocol (MANDATORY — ask before building UI / flow / anything ambiguous)
+
+Before implementing any change that touches **UI**, **a flow / business logic**, an **API / SignalR /
+DB contract**, or **any decision with more than one reasonable option** — and whenever a requirement
+is ambiguous — STOP and ask the user FIRST. Never proceed on assumption, and never silently pick one
+option and build it.
+
+When asking, always:
+1. State plainly what is unclear, or exactly what is about to change.
+2. List the available options.
+3. Mark the **recommended** option and say *why* it is the correct one; flag any option that is a
+   quick/temporary fix versus the proper solution.
+4. Wait for the user's verdict before building.
+
+The user confirms per option, in their own words — e.g.:
+- *"this is good"* → that option is the final solution; proceed.
+- *"this is temp"* → acceptable as a temporary fix; note it as temporary and flag it to revisit later.
+- *"no, next we can do"* → defer; do not build it now.
+- or any other instruction they give.
+
+Scope & limits:
+- Applies to UI changes, flow/business-rule changes, contract/schema/SignalR changes, and any
+  ambiguous or multi-option request.
+- A **T0** trivial mechanical fix with a single obvious correct answer (a typo, an exact value the user
+  already specified) does not need a question. But if more than one reasonable interpretation exists,
+  ask — do not guess.
+- Use the question/options flow to present choices with the **recommended one first**, so the user can
+  reply "this is good / temp / next / no" quickly.
+
+This is a hard gate: nothing in UI or a flow ships before the user's confirmation. It sits at the top
+of the precedence chain (explicit user intent first).
+
 ### 5. Quality Gates (must pass before Final Response on T1+)
 
 - **Architecture Gate** — Clean Architecture respected (Presentation→Application→Domain→Infrastructure);
@@ -188,6 +220,7 @@ plugin swallowing `onError`). Standing rules:
 ### 6. Multi-Role Validation Before Final Output (mandatory on T1+)
 
 ```
+[ ] UI / flow / ambiguous changes were confirmed by the user FIRST, with options + recommendation (§4a — Clarify-&-Confirm)
 [ ] Intent matches what the user asked (CEO)
 [ ] Architecture, API & SignalR contracts intact, no drift (Chief Architect)
 [ ] Business/session rules correct (Product Manager — when flow logic involved)
@@ -208,10 +241,114 @@ Only when every applicable box is satisfied does the CEO sign off and the respon
 - **Scale rigor to scope tier.** Do not gold-plate. T0 work skips the pipeline entirely.
 - **Precedence on conflict:** explicit user intent → documented system state (`ProjectOverview.md`) →
   role best-practice. Surface a better approach as a recommendation; never silently re-architect.
+- **Clarify-&-Confirm first (§4a):** for any UI / flow / contract / ambiguous change, present options
+  with a marked recommendation and wait for the user's confirmation before building. This gate
+  outranks the default "act when you have enough information" posture.
 - Security and QA vetoes are the only internal blocks; an explicit user instruction can override a veto,
   but the risk must be stated first.
 
 This framework is permanent and applies to all future tasks by default, without explicit role declarations.
+
+---
+
+## ARCHITECTURE STANDARDS — STACK & CONTRACTS (NON-NEGOTIABLE)
+
+> Full coding constitution: `Backend/Docs/New API Format.txt` (C#/architecture) and
+> `Backend/Docs/New SQL Format.txt` (database). These are absolute. The rules below are the
+> project-shape summary; on any conflict the constitution files win.
+
+### Platform Stack (verified)
+
+| Surface | Technology |
+|---|---|
+| Client app | **Angular 19** (standalone components) built with **Vite / AnalogJS**, **Angular Material**, **Tailwind v4**, lucide-angular / material-icons, RxJS. Single codebase. |
+| Mobile (Android APK) | The same Angular app wrapped with **Capacitor 8** (`@capacitor/android`). No separate native UI codebase. |
+| Voice / audio | `@capacitor-community/speech-recognition` (on-device ASR) + `capacitor-voice-recorder` (capture). See the Voice gate (§5a). |
+| Realtime | **SignalR** (`@microsoft/signalr`) for live session events. |
+| Backend API | **ASP.NET Core C#** — Clean Architecture across `GoWithFlow.API` / `.Application` / `.Domain` / `.Infrastructure`, CQRS, SignalR hubs. |
+| Database | **SQL Server** (current) with an in-progress **PostgreSQL** migration (`Backend/Docs/PostgreSQLMigration`, `New SQL Format.txt`). Preserve provider parity. |
+| E2E tests | **Playwright** (`test:e2e`). |
+
+### Architecture Rules
+
+- **Clean / N-Tier only.** Presentation (API/UI) → Application → Domain → Infrastructure. The UI never
+  touches the DB directly; DB access only through the repository/data layer. Each layer is its own project.
+- **Dependency injection everywhere.** No `new Repository()` inside a service.
+- **One API, all surfaces.** Web and the Capacitor APK consume the *same* backend API — never duplicate
+  business logic in the client. Business logic lives in the Application layer, never in components.
+- **Standard, consistent contracts.** Every endpoint returns the project's standard response shape and
+  every list endpoint its standard pagination shape. `[VERIFY]` the exact envelope/pagination/key-type
+  conventions against `ProjectOverview.md` (or the API source) before relying on them — the constitution
+  file does not fix the shape, so confirm it; never invent one, and never let an endpoint drift from it.
+- **Parameterized data access only.** No inline SQL in the UI; no string-built SQL. Follow
+  `New SQL Format.txt` (tbl/usp prefixes, mandatory audit columns, no `SELECT *`, `EXISTS` over `IN`).
+- **Errors are never swallowed.** `catch { }` is forbidden — always log with context and rethrow
+  (`New API Format.txt` §7).
+
+### Client ↔ Backend & SignalR Contract — CRITICAL
+
+> **Never rename or remove an existing API endpoint or SignalR hub/event method that the client depends
+> on.** If the client needs something the backend lacks, add it on the **backend** (or a thin wrapper) —
+> do not break the existing contract. Any new/changed endpoint, DTO, or SignalR event MUST be documented
+> in `ProjectOverview.md` (Detailed Flow Capture format) in the same task; an undocumented contract
+> change is treated as drift and blocks the QA gate.
+
+---
+
+## VOICE & SPEECH STANDARD — NON-NEGOTIABLE (Owner: Voice & Speech Engineer — Noor Haddad)
+
+> This is GoWithFlow's highest-risk area: recognition/capture that compiles clean has repeatedly
+> behaved differently on the real APK. Every rule below exists because a specific failure already
+> happened. Treat this section as a constitution — changing any rule is a T2+ change and needs
+> on-device verification (§5a) plus the user's confirmation (§4a).
+
+### Files of record (read these before touching voice)
+
+| File | Responsibility |
+|---|---|
+| `Frontend/src/app/core/services/voice/voice-recognition.engine.ts` | Recognizer engine — language candidates/fallback, last-working-language cache, startup watchdog |
+| `Frontend/src/app/core/services/session-capabilities.service.ts` | Capability flags (`canBroadcastVoice`, native vs web) — the single source for what voice features are available |
+| `Frontend/src/app/core/services/voice-broadcast.service.ts` | WebRTC peer audio ("Hear Speaker's Voice") — gated, OFF on native |
+| `Frontend/src/app/core/services/voice-analysis.service.ts` | Post-capture analysis |
+| `Frontend/src/app/modules/live-session/session-room/session-room.component.ts` | Main consumer of the above |
+
+### The Rules
+
+1. **The recognizer owns the mic.** On the APK the on-device recognizer is the *sole* mic owner.
+   Concurrent native capture **starves** it (verified on device IV2201). Therefore speaker-turn native
+   capture is **disabled**; session capture is **facilitator-only**. Never add a second concurrent mic
+   consumer during recognition "to also record" — it will silently break recognition.
+
+2. **Voice broadcast is OFF on native by design — not a bug.** `SessionCapabilitiesService.canBroadcastVoice`
+   is `!isNative`: WebRTC peer audio works on web, is disabled on the APK because the recognizer owns the
+   mic. All "Hear Speaker's Voice" UI is gated on this flag. Do **not** "fix" missing broadcast on the APK
+   by force-enabling it — that re-introduces mic contention.
+
+3. **Gate every voice feature on `SessionCapabilitiesService`.** Never assume a capability exists on
+   native. New voice/audio UI must check the capability flag and degrade gracefully when false.
+
+4. **Offline ASR only serves installed language models.** The native (SODA) recognizer only recognizes
+   languages whose offline model is installed on the device — `en-IN`/`en-US` may *not* be present. So:
+   - Use the **language-candidate fallback chain** (`buildLanguageCandidates()` + `_useFallbackLang`),
+     not a single hard-coded language.
+   - **Cache the last language that actually produced a transcript** on this device
+     (`localStorage` key `gwf_voice_lang`) and try it first next time.
+   - On a "language-not-supported" error, advance to the next candidate — never just fail.
+
+5. **Never trust silence as success — the plugin can swallow `onError`.** Recognition startup must be
+   guarded by a **watchdog** (e.g. the web mic watchdog / `WEB_MIC_TIMEOUT_MS`): if `listening` is not
+   reached within the window, treat it as a failure and surface/recover it. Absence of an error event is
+   not proof the mic is live.
+
+6. **Verification is on-device, not in the build.** A green `tsc`/build is **never** acceptance for a
+   voice change. Per §5a, voice/recognizer/capture work ships only after verification on the actual APK
+   (IV2201) using the `Backend/Docs/Testing/` harness; otherwise report it **UNVERIFIED — needs device check**.
+
+### When fixing a voice regression
+
+Classify the cause against rules 1–5 (mic contention / capability not gated / wrong-or-uncached language /
+swallowed error / no watchdog), fix the root cause, and record it in `ProjectOverview.md` with a
+`Notes on Drift` entry so the same failure is not re-introduced.
 
 ---
 

@@ -35,6 +35,10 @@ public sealed class SessionMemberConfiguration : IEntityTypeConfiguration<Sessio
 		builder.Property(sessionMember => sessionMember.IsActive)
 			.HasDefaultValue(true);
 
+		// Phase 17 — AI-held slot flag.
+		builder.Property(sessionMember => sessionMember.IsAi)
+			.HasDefaultValue(false);
+
 		ConfigureAuditColumns(builder);
 
 		builder.HasIndex(sessionMember => new { sessionMember.SessionId, sessionMember.SlotIndex })

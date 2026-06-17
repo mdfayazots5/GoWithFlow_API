@@ -48,6 +48,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 			join activeMember in _dbContext.Users.AsNoTracking() on turnState.ActiveMemberId equals activeMember.UserId
 			join utterance in _dbContext.Utterances.AsNoTracking() on turnState.UtteranceId equals utterance.UtteranceId
 			join script in _dbContext.Scripts.AsNoTracking() on utterance.ScriptId equals script.ScriptId
+			join sessionRow in _dbContext.Sessions.AsNoTracking() on turnState.SessionId equals sessionRow.SessionId
 			where turnState.SessionId == sessionId
 				&& turnState.TurnStatus == "ACTIVE"
 				&& turnState.IsDeleted == false
@@ -80,7 +81,17 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				ReReadAllowed = turnState.ReReadAllowed,
 				ReReadCount = turnState.ReReadCount,
 				MaxReReads = turnState.MaxReReads,
-				IsFacilitatorTurn = FacilitatorRoles.IsFacilitator(script.Category, utterance.SpeakerLabel)
+				IsFacilitatorTurn = FacilitatorRoles.IsFacilitator(script.Category, utterance.SpeakerLabel),
+				// Phase 17 — match by slot (not UserId): the one reserved AI user can hold several slots.
+				IsAi = _dbContext.SessionMembers.Any(member =>
+					member.SessionId == turnState.SessionId &&
+					member.SlotIndex == turnState.ActiveSlotIndex &&
+					member.IsAi &&
+					member.IsActive &&
+					member.IsDeleted == false),
+				AiVoiceGender = sessionRow.AiVoiceGender,
+				AiSpeechRate = sessionRow.AiSpeechRate,
+				AiQuestionDelaySec = sessionRow.AiQuestionDelaySec
 			})
 			.FirstOrDefaultAsync(cancellationToken);
 	}
@@ -329,19 +340,27 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				.Select(u => new { u.UserId, u.AvatarUrl })
 				.ToDictionaryAsync(u => u.UserId, u => u.AvatarUrl, cancellationToken);
 
-			// Slot lookup for facilitator tagging
+			// Slot + AI lookup for facilitator/AI tagging. Group by user: the reserved AI participant
+			// can hold MORE THAN ONE slot in a multi-role session, so a plain ToDictionary(UserId)
+			// would throw on the duplicate key.
 			var members = await _dbContext.SessionMembers
 				.AsNoTracking()
 				.Where(m => m.SessionId == sessionId && m.IsDeleted == false)
-				.Select(m => new { m.UserId, m.SlotName })
+				.Select(m => new { m.UserId, m.SlotName, m.IsAi })
 				.ToListAsync(cancellationToken);
 
-			var slotByUser = members.ToDictionary(m => m.UserId, m => m.SlotName ?? string.Empty);
+			var slotByUser = members
+				.GroupBy(m => m.UserId)
+				.ToDictionary(g => g.Key, g => g.First().SlotName ?? string.Empty);
+			var aiByUser = members
+				.GroupBy(m => m.UserId)
+				.ToDictionary(g => g.Key, g => g.Any(m => m.IsAi));
 
 			foreach (var score in response.MemberScores)
 			{
 				score.MistakeCount = mistakesByUser.TryGetValue(score.UserId, out var cnt) ? cnt : 0;
 				score.AvatarUrl = avatarByUser.TryGetValue(score.UserId, out var url) ? url : null;
+				score.IsAi = aiByUser.TryGetValue(score.UserId, out var isAi) && isAi;
 
 				if (slotByUser.TryGetValue(score.UserId, out var slotName))
 				{

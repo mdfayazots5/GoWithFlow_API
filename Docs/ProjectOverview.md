@@ -317,6 +317,7 @@ Key queries:
   - `RegistrationDate DATETIME2 NOT NULL DEFAULT(GETDATE())`
 - Audit columns: `Tag`, `Comments`, `SortOrder`, `IPAddress`, `CreatedBy`, `DateCreated`, `UpdatedBy`, `LastUpdated`, `DeletedBy`, `DateDeleted`, `IsDeleted`
 - Constraints: `PK_tblUser_UserId`, `UK_tblUser_MobileNumber`
+- **Reserved system user (Phase 17 — AI Voice Participant):** one seeded row with `MobileNumber = 'AI_PARTICIPANT'`, `Role = 'SYSTEM'`, `FullName = 'AI Voice Participant'`. Backs the FK of every AI-held `tblSessionMember` (`IsAi = 1`) so the existing `UserId` FK never needs to be nullable. **Resolve it by the sentinel `MobileNumber`, never by a hard-coded id** — `UserId` is `IDENTITY`/`BIGSERIAL` and differs per environment. Seeded idempotently by both Phase 17 migrations.
 
 #### tblRefreshToken
 
@@ -1337,6 +1338,10 @@ Real-time lobby updates via SignalR at `/hubs/session`.
   - `StartedDate DATETIME2 NULL`
   - `EndedDate DATETIME2 NULL`
   - `ActualDurationSec INT NULL`
+  - `AiEnabled BIT NULL` *(Phase 17 — AI Voice Participant enabled for this session)*
+  - `AiVoiceGender NVARCHAR(8) NULL` *(Phase 17 — `Male` | `Female`)*
+  - `AiSpeechRate DECIMAL(3,2) NULL` *(Phase 17 — TTS rate multiplier, e.g. 0.75 / 1.00 / 1.25)*
+  - `AiQuestionDelaySec INT NULL` *(Phase 17 — pause (sec) after candidate finishes before AI reads next line)*
 - Constraints: `PK_tblSession_SessionId`, `FK_tblSession_HostUserId_tblUser_UserId`, `FK_tblSession_ScriptId_tblScript_ScriptId`, `UK_tblSession_JoinCode` (filtered `IsDeleted = 0`), `IDX_tblSession_Status`, `IDX_tblSession_HostUserId`, `IDX_tblSession_JoinCode`
 - Valid status values: `LOBBY`, `ACTIVE`, `PAUSED`, `COMPLETED`, `ABANDONED`
 
@@ -1353,6 +1358,7 @@ Real-time lobby updates via SignalR at `/hubs/session`.
   - `JoinedAt DATETIME2 NULL`
   - `LeftAt DATETIME2 NULL`
   - `IsActive BIT NOT NULL DEFAULT(1)`
+  - `IsAi BIT NOT NULL DEFAULT(0)` *(Phase 17 — slot held by the AI Voice Participant; see reserved system user under tblUser)*
 - Constraints: `PK_tblSessionMember_SessionMemberId`, `FK_tblSessionMember_SessionId_tblSession_SessionId`, `FK_tblSessionMember_UserId_tblUser_UserId`, `UK_tblSessionMember_SessionId_SlotIndex` (filtered active rows), `IDX_tblSessionMember_SessionId`, `IDX_tblSessionMember_UserId`
 
 ### Stored Procedure Contracts
@@ -1361,6 +1367,8 @@ Real-time lobby updates via SignalR at `/hubs/session`.
 |---|---|---|
 | `uspInsertSession` | `@SessionName`, `@SessionMode`, `@MaxMembers`, `@SessionDuration`, `@HostUserId`, `@ScriptId`, `@RoomExpiryMinutes`, `@CreatedBy`, `@IPAddress` | OUTPUT `@SessionId BIGINT`, `@JoinCode NVARCHAR(8)` |
 | `uspInsertSessionMember` | `@SessionId`, `@UserId`, `@SlotIndex`, `@SlotName`, `@IsHost`, `@CreatedBy`, `@IPAddress` | `SessionMemberId` (non-query) |
+| `uspInsertAiSessionMember` *(Phase 17)* | `@SessionId`, `@UserId`, `@SlotIndex`, `@SlotName`, `@CreatedBy`, `@IPAddress` | non-query; inserts `IsAi=1`, `IsReady=1`, `IsHost=0`; slot-occupied guard only (no duplicate-user guard) |
+| `uspSetSessionAiConfig` *(Phase 17)* | `@SessionId`, `@AiEnabled`, `@AiVoiceGender`, `@AiSpeechRate`, `@AiQuestionDelaySec`, `@UpdatedBy`, `@IPAddress` | non-query; UPDATE AI config on `tblSession` |
 | `uspGetSessionByJoinCode` | `@JoinCode` | RS1: `SessionId`, `SessionName`, `SessionMode`, `ScriptTitle`, `ScriptGrammarTag`, `Duration`, `MaxMembers`, `CurrentMemberCount`, `Status`; RS2: `SlotIndex`, `SlotName`, `IsOccupied`, `UserFullName`, `IsReady` |
 | `uspGetSessionBySessionId` | `@SessionId` | RS1: `SessionId`, `SessionName`, `JoinCode`, `SessionMode`, `ScriptTitle`, `MaxMembers`, `SessionDuration`, `Status` (may be absent — see drift note); RS2: `UserId`, `FullName`, `AvatarUrl`, `SlotIndex`, `SlotName`, `IsReady`, `IsHost` (active members only) |
 | `uspValidateJoinCode` | `@JoinCode` | OUTPUT: `@IsValid BIT`, `@SessionId BIGINT`, `@SessionName NVARCHAR(128)`, `@Status NVARCHAR(16)`, `@CurrentMemberCount INT` |
@@ -1438,11 +1446,15 @@ POST /api/sessions
 Authorization: Bearer {accessToken}
 Body (CreateSessionRequestDto):
   - SessionName (string, required, min 3 max 60)
-  - SessionMode (int enum, required): 1=GrammarDrill 2=Roleplay 3=MockInterview 4=VocabularySprint 5=FluencyDrill 6=RepracticeRound
-  - MaxMembers (byte, required, 2–5)
+  - SessionMode (int enum, IGNORED — see drift note): derived on the backend from the script Category, not the DTO
+  - MaxMembers (byte, IGNORED — see drift note): derived on the backend = count of distinct script SpeakerLabels
   - SessionDuration (int, required): must be one of [15, 30, 45, 60, 90]
   - ScriptId (long, required, > 0)
   - RoomExpiryMinutes (int, required): must be one of [60, 120, 360, 1440]
+  - AiEnabled (bool, optional, default false) — Phase 17 AI Voice Participant
+  - AiVoiceGender (string, required when AiEnabled): `Male` | `Female`
+  - AiSpeechRate (decimal, required when AiEnabled): one of [0.75, 1.00, 1.25]
+  - AiQuestionDelaySec (int, required when AiEnabled): one of [0, 1, 2, 3, 5]
 ```
 
 **Response Contract:**
@@ -1457,26 +1469,28 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 
 **Validation Rules:**
 - `SessionName`: required, 3–60 chars
-- `SessionMode`: valid enum value only
-- `MaxMembers`: 2–5 inclusive
+- `SessionMode` / `MaxMembers`: NOT validated from the DTO — derived from the script (see Business Rules + drift note)
 - `SessionDuration`: exact values only — `[15, 30, 45, 60, 90]`
 - `ScriptId`: > 0
 - `RoomExpiryMinutes`: exact values only — `[60, 120, 360, 1440]`
-- Script must exist and have at least `MaxMembers` distinct `SpeakerLabel` values
+- Script must exist and have at least 2 distinct `SpeakerLabel` values
 - Host user must exist and be active
+- **AI (Phase 17, only when `AiEnabled`):** `AiVoiceGender` ∈ {Male, Female}; `AiSpeechRate` ∈ {0.75, 1.00, 1.25}; `AiQuestionDelaySec` ∈ {0, 1, 2, 3, 5} (`CreateSessionRequestValidator.When(AiEnabled)`)
 
 **Database Tables:** `tblSession` (insert), `tblSessionMember` (insert)
 
 **Stored Procedures:**
 - `uspInsertSession` → returns OUTPUT `@SessionId`, `@JoinCode`
 - `uspInsertSessionMember` (host member)
-- Both calls wrapped in a single DB transaction; rollback on failure
+- **Phase 17 (only when `AiEnabled`):** `uspSetSessionAiConfig` (persists `AiEnabled`/`AiVoiceGender`/`AiSpeechRate`/`AiQuestionDelaySec` on `tblSession`) + `uspInsertAiSessionMember` per non-host slot. `uspInsertAiSessionMember` is additive (core SPs untouched) and has the slot-occupied guard but NO duplicate-user guard, so the one reserved AI user can hold multiple AI slots.
+- All calls wrapped in a single DB transaction; rollback on failure
 
 **Business Rules:**
+- `MaxMembers` and `SessionMode` are DERIVED from the script, not taken from the DTO. `MaxMembers` = count of distinct `SpeakerLabel`s; `SessionMode` = mapped from script `Category` (`MapCategoryToSessionMode`, incl. legacy aliases). The script must have ≥ 2 distinct labels, else: `"The selected script must have at least 2 distinct speaker labels."`
 - Host is automatically inserted as slot 1 member; `IsReady = true`, `IsHost = true`
-- Slot names derived from script `SpeakerLabel` values ordered by first `SequenceId` appearance then alphabetically; limited to `MaxMembers` count
-- If script has fewer distinct speaker labels than `MaxMembers`, creation fails with: `"Selected script does not contain enough distinct speaker slots for the requested MaxMembers."`
+- Slot names derived from script `SpeakerLabel` values ordered by first `SequenceId` appearance then alphabetically
 - `SessionMode` is stored as human-readable string (e.g., `"Grammar Drill"`), not the enum integer
+- **AI Voice Participant (Phase 17):** when `AiEnabled`, the reserved AI system user (resolved by `MobileNumber = 'AI_PARTICIPANT'`) is inserted into EVERY non-host slot (`SlotIndex` 2..N) with `IsAi = 1`, `IsReady = 1`, `IsHost = 0`. This lets the host (candidate) run the session solo — an AI member counts as active, satisfying the ≥2-member start/abandon rules. If the reserved user is missing → creation fails: `"The AI Voice Participant is not available..."`. AI members are never scored (no `tblVoiceAnalysis`).
 
 **State Transitions:** `tblSession.Status` starts as `LOBBY`
 
@@ -1490,9 +1504,14 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 
 **Recovery / Fallback Logic:** DB transaction rollback on any exception during session or member insert
 
+**Frontend (Phase 17 — AI Voice Participant):**
+- `create-session.component.ts` has an "AI Voice Participant" toggle card. When ON it reveals three selects: Voice (`Female`/`Male` → `aiVoiceGender`), Speed (Slow/Normal/Fast → `aiSpeechRate` 0.75/1.00/1.25), Delay (0/1/2/3/5s → `aiQuestionDelaySec`). The payload includes these fields only when the toggle is on.
+- **AI session skips the invite screen:** because the AI fills every non-host slot, there are no guest slots to invite — on success the client navigates straight to `/session/lobby/{sessionId}` instead of `/session/invite`. Human (non-AI) sessions still go to the invite screen.
+
 **Notes on Known Drift Prevented:**
-- Frontend must send numeric `SessionMode` (1–6), not a string; backend maps to stored string
+- **MaxMembers/SessionMode source drift (corrected 2026-06-17):** docs previously said both came from the DTO (`MaxMembers` 2–5, `SessionMode` numeric enum required). The code actually DERIVES both from the selected script (`SessionService.CreateSessionAsync`), and `CreateSessionRequestValidator` no longer validates them (frontend stopped sending them to avoid false 400s). Contract above now reflects the real behavior. **Drift type:** stale docs.
 - `SessionDuration` and `RoomExpiryMinutes` are exact-value whitelists, not ranges
+- **AI member insert (Phase 17):** AI slots reuse ONE reserved system user, which violates the human `uspInsertSessionMember` duplicate-user guard. Solved with an additive `uspInsertAiSessionMember` (no duplicate-user guard) rather than weakening the core SP — protects human create/join from regression.
 
 ---
 
@@ -2222,6 +2241,9 @@ ApiResponse<TurnStateResponseDto>
   - ReReadAllowed (bool)
   - ReReadCount (int)
   - MaxReReads (int): always 2 for new turns
+  - IsFacilitatorTurn (bool): true when the active slot is a facilitator role (Interviewer/Tutor/Coach) — read-aloud, no scoring
+  - IsAi (bool): *(Phase 17)* true when the active slot is held by the AI Voice Participant. Client narrates via on-device TTS (no recognizer, no scoring) and then calls `AdvanceAiTurn`. Computed by a slot-match EXISTS against `tblSessionMember.IsAi` (matched on `ActiveSlotIndex`, NOT UserId — the one reserved AI user can hold multiple slots).
+  - AiVoiceGender (string?), AiSpeechRate (decimal?), AiQuestionDelaySec (int?): *(Phase 17)* session AI config, joined from `tblSession` onto the turn payload so the narrating client has rate/voice/delay without a second call. Null on non-AI sessions.
 ```
 
 **Business Rules:**
@@ -2288,7 +2310,7 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 
 **SignalR / Realtime Events:**
 - Hub `CompleteTurn(sessionId, memberId, turnIndex, score)` calls `ShiftTurnAsync`
-- Broadcasts `TURN_SHIFT` to `live_{sessionId}`: `{ newActiveMemberId, newActiveMemberName, activeMemberAvatarUrl, slotIndex, turnIndex, nextUtterance }`
+- Broadcasts `TURN_SHIFT` to `live_{sessionId}`: `{ newActiveMemberId, newActiveMemberName, activeMemberAvatarUrl, slotIndex, turnIndex, nextUtterance, isAi }` (`isAi` added Phase 17 — tells clients whether the NEXT turn is AI-narrated; emitted by both `CompleteTurn` and `AdvanceAiTurn` via the shared `BroadcastTurnShiftAsync`)
 
 **Frontend Transition Contract:**
 - `TURN_SHIFT` is a partial event, not a full `TurnStateResponseDto`
@@ -2321,6 +2343,54 @@ If no member matches → error: `"No active member holds the slot '{speakerLabel
 - **Bricked-session on turn shift (2026-06-05, CRITICAL):** `ShiftTurnAsync` marked the current turn `COMPLETED` **before** attempting to create the next turn, with no transaction. When next-turn creation failed — most commonly because the **current turn was the last turn** (`nextTurnIndex > utteranceCount`), but also on a speaker-label/slot mismatch — the current turn was already `COMPLETED` and no `ACTIVE` turn remained. The session was permanently stuck: every subsequent `CompleteTurn` returned `"Session, current turn, or user was not found."` (because `GetCurrentTurnEntityAsync` filters `TurnStatus == 'ACTIVE'`), while voice-analysis saves still "succeeded" against the completed turn (`GetTurnBySessionAndTurnIndexAsync` has no ACTIVE filter), producing the confusing "save OK + shift fail" pair. Reproduced on sessions 93 and 94 at turn 16. **Compounding latent bug:** the end-of-script path never actually fired — `CreateNextTurnAsync` returned an *error* string for `nextTurnIndex > count`, but `ShiftTurnAsync` only treated a `(null, null)` as completion, so the documented "auto-complete on last turn" path (see Session Completion) threw `"Turn shift failed."` and bricked the final turn instead of completing. **Drift type:** missing transaction / mutation-before-validation + stale docs (documented auto-complete behavior not implemented). **Fix:** split resolution from persistence (`ResolveNextTurnAsync`), validate the next turn before any mutation, route true end-of-script to the `SessionComplete` signal, and make complete+insert atomic via `CompleteAndAdvanceTurnAsync`. **Recovery for already-bricked sessions:** they have a `COMPLETED` last turn and no `ACTIVE` turn — finalize them with the **End Session** button (`EndSession` hub → `CompleteSessionAsync`, which does not require an active turn) to get the summary; or start a fresh session.
 - **Generic error masking (2026-06-05):** `LiveSessionHub.CompleteTurn` threw `new HubException(response.Message)`, and `ShiftTurnAsync` stamps `Message = "Turn shift failed."` on every non-completion failure while putting the real cause in `Errors`. Result: the client (and the warning log) only ever saw `HubException: Turn shift failed.` with no way to tell whether it was a turn mismatch, wrong user, or a script speaker-label / session-slot mismatch on the next turn. **Drift type:** stale docs / contract drift — the Failure Cases above claimed specific messages surfaced, but the code surfaced the generic bucket. **Fix:** added `DescribeFailure<T>(ApiResponse<T>)` helper in the hub (joins `Errors`, falls back to `Message`); `CompleteTurn`, `SubmitListenerFeedback`, `RequestReRead`, and `EndSession` now throw the specific reason and log it. The most common underlying cause of a real (non-stale) `CompleteTurn` failure is the next-turn speaker-label/slot mismatch from `CreateNextTurnAsync` — that exact text now reaches the client.
 - **Listener-screen avatar missing (2026-06-04):** `TurnState` had no `activeMemberAvatarUrl` field; `<app-user-avatar>` in listener-screen always fell back to initials. **Fix (full-stack):** `TurnStateResponseDto.ActiveMemberAvatarUrl` added; `LiveSessionRepository.GetCurrentTurnAsync` selects `activeMember.AvatarUrl` (already joined from `tblUser`); `LiveSessionService.ResolveAvatarUrlAsync` resolves R2 key to presigned URL and is called after both the existing-turn and created-turn return paths in `EnsureCurrentTurnAsync` / `CreateNextTurnAsync`; `LiveSessionHub.CompleteTurn` adds `activeMemberAvatarUrl` to the `TURN_SHIFT` broadcast; `TurnState` frontend model adds `activeMemberAvatarUrl?: string | null`; `TurnShiftEvent` type updated; optimistic patch in `handleTurnShift` sets `activeMemberAvatarUrl`; listener-screen template binds `[avatarUrl]="turnState.activeMemberAvatarUrl"` on `app-user-avatar`.
+
+---
+
+### Flow: Advance AI Turn (Phase 17)
+
+**Purpose:** Advance a turn that is currently held by the AI Voice Participant. The AI reads its scripted line via on-device TTS on the candidate's device; when done, the candidate's client advances the turn. No voice analysis is written for AI turns.
+
+**Entry Points:**
+- REST: `POST /api/turns/{sessionId}/advance-ai`
+- SignalR hub: `AdvanceAiTurn(sessionId, turnIndex)`
+
+**Request Contract:**
+```
+POST /api/turns/{sessionId}/advance-ai
+Authorization: Bearer {accessToken}
+Body (AdvanceAiTurnRequestDto):
+  - TurnIndex (int) — must match the current active (AI) turn; SessionId comes from the route
+```
+
+**Response Contract:** `ApiResponse<TurnStateResponseDto>` for the next turn (same shape as Get Current Turn; includes `isAi` so the client knows if the NEXT turn is also AI).
+
+**Business Rules (validate-before-mutate, mirrors Shift Turn):**
+1. Caller must be an **active human member** of the session (`GetActiveSessionMemberByUserIdAsync`; `callerMember.IsAi` must be false). The AI holds no hub connection, so it never calls this.
+2. Session must be `ACTIVE`; `turnIndex` must equal the current active turn.
+3. The current turn must be **AI-held** (`currentTurnDto.IsAi == true`); otherwise rejected — human turns must go through `CompleteTurn` (which scores). 
+4. Advance reuses the **shared** `AdvanceFromCurrentTurnAsync` (same as `CompleteTurn`): resolve+validate next turn → atomic complete-and-advance, or route true end-of-script to the `TurnShiftSignals.SessionComplete` signal. **No `tblVoiceAnalysis` write.**
+
+**Stored Procedures / DB:** none new — reuses `uspUpdateTurnStatusByTurnStateId` + `uspInsertTurnState` via `CompleteAndAdvanceTurnAsync`.
+
+**Realtime Events:**
+- Hub `AdvanceAiTurn` broadcasts `TURN_SHIFT` (same payload incl. `isAi`) via the shared `BroadcastTurnShiftAsync`.
+- End of script → hub auto-completes the session and broadcasts `SESSION_ENDED` (identical to `CompleteTurn`).
+
+**Failure Cases:**
+- Not an AI turn → `"The current turn is not an AI turn."`
+- Caller is the AI member → `"AI members cannot advance turns."`
+- Turn mismatch → `"The provided turn does not match the active turn."`
+- Session not active / not found / caller not a member → respective messages, bucket `"AI turn advance failed."`
+- Specific cause is surfaced to the client via the hub's `DescribeFailure` (joins `Errors`), same as `CompleteTurn`.
+
+**Frontend narration (Phase 17 — session-room):**
+- On the canonical current-turn (`updateState`), if `turnState.isAi` the client narrates `utterance.englishText` via `TtsService` (`@capacitor-community/text-to-speech` v8 — native Android TTS on the APK, Web Speech on web) at `aiSpeechRate`, gender best-effort from `aiVoiceGender`, lang `en-US`. On completion it waits `aiQuestionDelaySec` then calls hub `AdvanceAiTurn(sessionId, turnIndex)`. Fires once per turn (`_narratedTurnKey` guard). Recognizer is NOT started on AI turns — the human is a listener then, so `SpeakerScreenComponent` (which owns the recognizer) is not rendered. TTS is output-only → no mic contention. Timers/TTS are stopped on `SESSION_ENDED` and `ngOnDestroy`.
+- Files: `core/services/voice/tts.service.ts` (new), `session-room.component.ts` (narration trigger), `voice.model.ts` (`TurnState.isAi` + AI config).
+- **Known limitation:** narration currently runs on every connected human client. In a solo + AI session (the target use case) there is exactly one human, so this is correct. In a multi-human + AI session, multiple devices may speak the AI line simultaneously (overlapping audio); turn integrity is still safe because the backend rejects the duplicate `AdvanceAiTurn`. A host-only narrator designation is a future refinement.
+
+**Notes on Known Drift Prevented:**
+- The brick-prevention resolve-before-mutate logic is **single-sourced** in `AdvanceFromCurrentTurnAsync`; `CompleteTurn` and `AdvanceAiTurn` both call it so the two paths cannot diverge and re-introduce the 2026-06-05 bricked-session bug.
+- AI turns reuse one reserved system user across slots, so `IsAi` on the turn state is resolved by **slot match** (`ActiveSlotIndex`), never by UserId.
 
 ---
 
@@ -2510,6 +2580,7 @@ ApiResponse<SessionSummaryResponseDto>
       - MistakeCount (int): per-user count from tblMistake (canonical, populated before summary build)
       - ListenerRating (decimal)
       - IsFacilitator (bool)
+      - IsAi (bool): *(Phase 17)* true for the AI Voice Participant. Tagged in `GetSessionCompletionSummaryAsync` from `tblSessionMember.IsAi`. Excluded from the scored leaderboard + top-score; shown as an "AI partner" on the report. **Note:** the AI user can hold multiple slots, so the member/slot lookup is built with `GroupBy(UserId)` (a plain `ToDictionary(UserId)` would throw on the duplicate key — fixed 2026-06-17).
   - TotalTurns (int)
   - ScriptTitle (string)
   - GrammarFocusTag (string)
@@ -3276,7 +3347,8 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 - Frontend `TurnState.isFacilitatorTurn` (bool) — mapped from API response.
 - `SpeakerScreenComponent`: when `isFacilitatorTurn = true`, renders a "Read Aloud" mode UI (text display + "Done Reading — Next Turn" button). No voice recorder, no voice analysis call, no score. Calls `onSkip()` which submits `CompleteTurn` with score 0.
 - `SpeakerScreenComponent.showReReadButton`: also checks `!isFacilitatorTurn` — ensures re-read button never appears on facilitator turns.
-- `SessionReportComponent.scoreboard`: filters `MemberScores` to `!isFacilitator` for performance leaderboard. Facilitator names shown in a separate "Facilitator" section below the leaderboard.
+- `SessionReportComponent.scoreboard`: filters `MemberScores` to `!isFacilitator && !isAi` for the performance leaderboard. Facilitator names shown in a separate "Facilitator" section; AI Voice Participant(s) shown in a separate "AI Partner" chip (Phase 17) — never ranked. `topScore` likewise excludes facilitators + AI.
+- **Mobile leaderboard layout (2026-06-17):** the report leaderboard renders as **stacked per-member cards on mobile** (`md:hidden`) and the full **table only on desktop** (`hidden md:block`) — honors the no-horizontal-scroll standard (the 5-column table was clipping Rating/Mistakes on phones). Header/stat sizes tightened to the mobile caps (≤22px scores).
 - `handleTurnShift()` in `SessionRoomComponent`: optimistic update sets `isFacilitatorTurn: false` (safe default — the canonical `loadCurrentTurn()` call immediately follows and sets the correct value).
 
 ---

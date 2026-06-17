@@ -32,6 +32,15 @@ public sealed class Session : BaseAuditEntity
 
 	public DateTime? ScheduledAt { get; set; }
 
+	// AI Voice Participant config (Phase 17). Null on sessions where AI was not enabled.
+	public bool? AiEnabled { get; set; }
+
+	public string? AiVoiceGender { get; set; }
+
+	public decimal? AiSpeechRate { get; set; }
+
+	public int? AiQuestionDelaySec { get; set; }
+
 	public User? Host { get; set; }
 
 	public Script? Script { get; set; }

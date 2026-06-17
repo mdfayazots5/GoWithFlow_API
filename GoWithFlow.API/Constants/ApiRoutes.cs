@@ -107,6 +107,7 @@ public static class ApiRoutes
 		public const string Base = VersionPrefix + "/turns";
 		public const string Current = "{sessionId:long}/current";
 		public const string Shift = "{sessionId:long}/shift";
+		public const string AdvanceAi = "{sessionId:long}/advance-ai";
 		public const string VoiceAnalysis = "{sessionId:long}/voice-analysis";
 		public const string ListenerFeedback = "{sessionId:long}/listener-feedback";
 		public const string ReRead = "{sessionId:long}/re-read";

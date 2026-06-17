@@ -18,6 +18,12 @@ Logic source: `ProjectOverview.md` only.
 | turn | Backend Live Session Module | Backend Live Session Module |
 | turnstate | Backend Live Session Module | Backend Live Session Module |
 | voice | Backend Live Session Module | Backend Live Session Module |
+| ai voice participant | Backend Live Session Module | Backend Live Session Module |
+| ai participant | Backend Live Session Module | Backend Live Session Module |
+| advance ai | Backend Live Session Module | Backend Live Session Module |
+| advance-ai | Backend Live Session Module | Backend Live Session Module |
+| ai turn | Backend Live Session Module | Backend Live Session Module |
+| isai | Backend Live Session Module | Backend Live Session Module |
 | voice engine | Backend Live Session Module | Frontend Voice Recognition Engine |
 | voice recognition | Backend Live Session Module | Frontend Voice Recognition Engine |
 | voice recorder | Backend Live Session Module | Frontend Voice Recognition Engine |
