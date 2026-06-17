@@ -43,6 +43,11 @@ Rules:
 - **No horizontal scroll on list/data views at any phone width** (§5). This is non-negotiable.
 - Anything hidden below a breakpoint (`hidden sm:block`) must have a visible mobile equivalent — never
   hide essential info on phones.
+- **Immersive full-screen surfaces** (e.g. the Listen player, `fixed inset-0`): still wrap content in a
+  **centered max-width column** (`max-w-md → md:max-w-lg → lg:max-w-xl`, `mx-auto`) so it never runs
+  edge-to-edge on tablet/desktop; let the background fill behind it. Scale **icons** per tier from a
+  `tier` signal (a `window.resize` listener mapping to the §2 widths) + an `iconSize(key)` lookup, and
+  size **dynamic text** with `clamp()` — keep every touch target ≥44px at the smallest tier.
 
 ---
 

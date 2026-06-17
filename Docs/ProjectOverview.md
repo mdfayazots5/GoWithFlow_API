@@ -1357,10 +1357,11 @@ one utterance at a time.
 - **Sequential loop with cancellation token (`playToken`):** every `pause()/seekTo()/setRate()/setRoleGender()`
   bumps `playToken` and calls `TtsService.stop()`; after each `await speak()` the loop re-checks the token
   and exits if superseded. Prevents overlapping narration.
-- **Role → voice presets:** distinct `speakerLabel`s (in first-appearance order) are assigned a
-  `{ gender, pitch }` preset from a 4-entry palette (Female 1.0 / Male 0.92 / Female 1.18 / Male 1.12).
-  User can override gender per role via the Voices sheet (`setRoleGender`). True distinct neural voices
-  are NOT available on-device — differentiation is gender + pitch only.
+- **Role → voice personas (2026-06-18):** distinct `speakerLabel`s (in first-appearance order) are assigned
+  a named **Indian voice persona** from the shared `AI_VOICES` registry (`voice-personas.ts`), cycling through
+  the 6. The user overrides a role's voice via the Settings sheet (`setRoleVoice(label, id)`). Narration uses
+  `lang: 'en-IN'` + the persona's `pitch`/`voiceVariant`. (Replaced the old 4-entry gender/pitch `VOICE_PALETTE`
+  + `setRoleGender`; the separate `ListenVoicesSheetComponent` was removed — voices now live in the Settings sheet.)
 - **Continue From Last Position:** `currentIndex` persisted to `localStorage` key `gwf_listen_pos_{scriptId}`
   on every line advance / transport action; `load()` restores it.
 - **Speed:** `PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2]`; selected from a popup menu (`MatMenu`) in the player; changing rate restarts the current line. (`cycleSpeed()` still exists as API but the UI uses the menu.)
@@ -1382,6 +1383,16 @@ speaking line; role-colored labels + active-line border via `roleColor`), and a 
 `effect()` auto-scrolls the active line into view (skipped while the user is scrubbing). **Auto-start:**
 load → `playback.play()`. `ngOnDestroy → playback.reset()`.
 
+- **Responsive per device tier (UIStandards.md §2, 2026-06-18):** content sits in a **centered column**
+  (`max-w-md` → `md:max-w-lg` → `lg:max-w-xl`, `mx-auto`) so the dark gradient fills the screen behind it on
+  tablet/desktop instead of stretching edge-to-edge. **Fonts use `clamp()`** (title `clamp(1rem,4.6vw,1.5rem)`,
+  active lyric `clamp(0.95rem,4vw,1.25rem)`, inactive `clamp(0.85rem,3.4vw,1rem)`) — no fixed `text-lg/base`,
+  never overflows XXS. **Icon sizes are driven by a `tier` signal** (`xxs|phone|tablet|desktop` from a
+  `window.resize` listener) via `iconSize(key)` + the `ICONS` map; touch targets stay ≥44px at every tier
+  (play `w-14→sm:w-16→md:w-[68px]`).
+- **Spotify-style auto-scroll:** `centerActiveLine(idx)` smoothly eases the active line to the **vertical
+  center** of the lyrics container (`container.scrollTo({ behavior:'smooth' })` computed from
+  getBoundingClientRect), replacing the old `scrollIntoView`. Skipped while the user is scrubbing.
 - **Interactive seek bar (snap-to-line):** tap **or drag** the bar → `seekFromEvent` maps the X
   fraction to the nearest LINE index → `playback.seekTo`. Because the on-device TTS engine has **no
   mid-line seek**, the bar deliberately snaps to lines (not a continuous time scrub). Uses pointer
@@ -1491,7 +1502,8 @@ Real-time lobby updates via SignalR at `/hubs/session`.
   - `EndedDate DATETIME2 NULL`
   - `ActualDurationSec INT NULL`
   - `AiEnabled BIT NULL` *(Phase 17 — AI Voice Participant enabled for this session)*
-  - `AiVoiceGender NVARCHAR(8) NULL` *(Phase 17 — `Male` | `Female`)*
+  - `AiVoiceGender NVARCHAR(8) NULL` *(Phase 17 — `Male` | `Female`; legacy, derived from the persona)*
+  - `AiVoiceName NVARCHAR(32) NULL` *(2026-06-18 — named Indian voice persona id: `aarav`|`ananya`|`vikram`|`meera`|`rohan`|`priya`)*
   - `AiSpeechRate DECIMAL(3,2) NULL` *(Phase 17 — TTS rate multiplier, e.g. 0.75 / 1.00 / 1.25)*
   - `AiQuestionDelaySec INT NULL` *(Phase 17 — pause (sec) after candidate finishes before AI reads next line)*
 - Constraints: `PK_tblSession_SessionId`, `FK_tblSession_HostUserId_tblUser_UserId`, `FK_tblSession_ScriptId_tblScript_ScriptId`, `UK_tblSession_JoinCode` (filtered `IsDeleted = 0`), `IDX_tblSession_Status`, `IDX_tblSession_HostUserId`, `IDX_tblSession_JoinCode`
@@ -1520,7 +1532,7 @@ Real-time lobby updates via SignalR at `/hubs/session`.
 | `uspInsertSession` | `@SessionName`, `@SessionMode`, `@MaxMembers`, `@SessionDuration`, `@HostUserId`, `@ScriptId`, `@RoomExpiryMinutes`, `@CreatedBy`, `@IPAddress` | OUTPUT `@SessionId BIGINT`, `@JoinCode NVARCHAR(8)` |
 | `uspInsertSessionMember` | `@SessionId`, `@UserId`, `@SlotIndex`, `@SlotName`, `@IsHost`, `@CreatedBy`, `@IPAddress` | `SessionMemberId` (non-query) |
 | `uspInsertAiSessionMember` *(Phase 17)* | `@SessionId`, `@UserId`, `@SlotIndex`, `@SlotName`, `@CreatedBy`, `@IPAddress` | non-query; inserts `IsAi=1`, `IsReady=1`, `IsHost=0`; slot-occupied guard only (no duplicate-user guard) |
-| `uspSetSessionAiConfig` *(Phase 17)* | `@SessionId`, `@AiEnabled`, `@AiVoiceGender`, `@AiSpeechRate`, `@AiQuestionDelaySec`, `@UpdatedBy`, `@IPAddress` | non-query; UPDATE AI config on `tblSession` |
+| `uspSetSessionAiConfig` *(Phase 17; +`@AiVoiceName` 2026-06-18)* | `@SessionId`, `@AiEnabled`, `@AiVoiceGender`, `@AiVoiceName`, `@AiSpeechRate`, `@AiQuestionDelaySec`, `@UpdatedBy`, `@IPAddress` | non-query; UPDATE AI config on `tblSession`. **Positional** — `@AiVoiceName` is the 4th param (PG fn `uspsetsessionaiconfig` recreated via Migration 38: `Docs/PostgreSQLMigration/38_add_ai_voice_name.sql`, applied to Supabase). |
 | `uspGetSessionByJoinCode` | `@JoinCode` | RS1: `SessionId`, `SessionName`, `SessionMode`, `ScriptTitle`, `ScriptGrammarTag`, `Duration`, `MaxMembers`, `CurrentMemberCount`, `Status`; RS2: `SlotIndex`, `SlotName`, `IsOccupied`, `UserFullName`, `IsReady` |
 | `uspGetSessionBySessionId` | `@SessionId` | RS1: `SessionId`, `SessionName`, `JoinCode`, `SessionMode`, `ScriptTitle`, `MaxMembers`, `SessionDuration`, `Status` (may be absent — see drift note); RS2: `UserId`, `FullName`, `AvatarUrl`, `SlotIndex`, `SlotName`, `IsReady`, `IsHost` (active members only) |
 | `uspValidateJoinCode` | `@JoinCode` | OUTPUT: `@IsValid BIT`, `@SessionId BIGINT`, `@SessionName NVARCHAR(128)`, `@Status NVARCHAR(16)`, `@CurrentMemberCount INT` |
@@ -1604,7 +1616,8 @@ Body (CreateSessionRequestDto):
   - ScriptId (long, required, > 0)
   - RoomExpiryMinutes (int, required): must be one of [60, 120, 360, 1440]
   - AiEnabled (bool, optional, default false) — Phase 17 AI Voice Participant
-  - AiVoiceGender (string, required when AiEnabled): `Male` | `Female`
+  - AiVoiceName (string, required when AiEnabled): named Indian voice persona id `aarav`|`ananya`|`vikram`|`meera`|`rohan`|`priya` (validated by `CreateSessionRequestValidator`)
+  - AiVoiceGender (string, optional/legacy): `Male` | `Female` — derived from the persona on the client; only validated if supplied
   - AiSpeechRate (decimal, required when AiEnabled): one of [0.75, 1.00, 1.25]
   - AiQuestionDelaySec (int, required when AiEnabled): one of [0, 1, 2, 3, 5]
 ```
@@ -1658,7 +1671,33 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 **Recovery / Fallback Logic:** DB transaction rollback on any exception during session or member insert
 
 **Frontend (Phase 17 — AI Voice Participant):**
-- `create-session.component.ts` has an "AI Voice Participant" toggle card. When ON it reveals three selects: Voice (`Female`/`Male` → `aiVoiceGender`), Speed (Slow/Normal/Fast → `aiSpeechRate` 0.75/1.00/1.25), Delay (0/1/2/3/5s → `aiQuestionDelaySec`). The payload includes these fields only when the toggle is on.
+- `create-session.component.ts` has an "AI Voice Participant" toggle card. When ON it reveals three selects: **Voice** (6 named Indian voices from `AI_VOICES` → `aiVoiceName`; payload also sends the derived `aiVoiceGender` for back-compat), Speed (Slow/Normal/Fast → `aiSpeechRate` 0.75/1.00/1.25), Delay (0/1/2/3/5s → `aiQuestionDelaySec`). The payload includes these fields only when the toggle is on.
+
+#### AI Voice Personas — Indian English (2026-06-18, shared by AI room + Listen)
+
+> **Single source of truth:** `Frontend/src/app/core/services/voice/voice-personas.ts` — `AI_VOICES` (6 personas)
+> + `getVoicePersona(id)`. Used by the AI room (create-session picker, session-room narration) **and** the
+> Listen player (per-role voice). ids are permanent; renaming a `name` is safe.
+
+| id | Name | Gender | variant | pitch | Style |
+|---|---|---|---|---|---|
+| `aarav` | Aarav | Male | 0 | 1.00 | Calm & steady (default) |
+| `ananya` | Ananya | Female | 0 | 1.05 | Warm & friendly |
+| `vikram` | Vikram | Male | 1 | 0.90 | Deep, slow & clear |
+| `meera` | Meera | Female | 1 | 1.18 | Bright & articulate |
+| `rohan` | Rohan | Male | 2 | 1.08 | Youthful & lively |
+| `priya` | Priya | Female | 2 | 0.96 | Gentle & very clear |
+
+- **`TtsService` (web + plugin path):** defaults to **`en-IN`** with a **fallback chain `en-IN → en-GB → en-US`**
+  (resolved once from installed voices, cached). `voiceVariant` picks the variant-th same-gender voice in the
+  resolved language so personas use genuinely different device voices where present; `pitch` differentiates the rest.
+  Previously narration forced `en-US` (American) — that was the root cause of the "sounds American" report.
+- **Free / on-device reality:** these map to the device's Google-TTS `en-IN` voices. Distinctness of variants 1–2
+  depends on how many `en-IN` voices the device has installed; where it has fewer, `pitch` keeps all 6 audibly
+  different. Truly distinct studio/neural voices would require a **paid** cloud TTS (out of scope).
+- **Native Listen path** (`ListenMediaService.java` `applyVoice`): mirrors the same logic — sets `Locale("en","IN")`
+  (fallback UK→US via `isLanguageAvailable`) and picks the `variant`-th same-gender voice in that locale; per-line
+  `variant` arrives in the `ListenMedia.start` queue. **UNVERIFIED on device until APK build.**
 - **AI session skips the invite screen:** because the AI fills every non-host slot, there are no guest slots to invite — on success the client navigates straight to `/session/lobby/{sessionId}` instead of `/session/invite`. Human (non-AI) sessions still go to the invite screen.
 
 **Notes on Known Drift Prevented:**
@@ -2403,6 +2442,7 @@ ApiResponse<TurnStateResponseDto>
   - IsFacilitatorTurn (bool): true when the active slot is a facilitator role (Interviewer/Tutor/Coach) — read-aloud, no scoring
   - IsAi (bool): *(Phase 17)* true when the active slot is held by the AI Voice Participant. Client narrates via on-device TTS (no recognizer, no scoring) and then calls `AdvanceAiTurn`. Computed by a slot-match EXISTS against `tblSessionMember.IsAi` (matched on `ActiveSlotIndex`, NOT UserId — the one reserved AI user can hold multiple slots).
   - HideScriptText (bool): *(Phase 2 — Question & Answer)* true when the session's script `Category == "Question & Answer"` (case-insensitive, trimmed). Computed in the SAME projection as `IsFacilitatorTurn` (`LiveSessionRepository.GetCurrentTurnAsync`, client-eval). When true the client hides the utterance text, grammar tag, and hint on BOTH the AI Interviewer turn (listener-screen) and the candidate's answer turn (speaker-screen) — the candidate only hears the question and sees their own live transcript. The recognizer still receives `expectedText` for scoring; it is never displayed. `AdvanceAiTurn` returns the same DTO shape, so it carries this flag too.
+  - AiVoiceName (string?): *(2026-06-18)* named Indian voice persona id chosen for this session's AI. The narrating client (`session-room.maybeNarrateAiTurn`) resolves it via `getVoicePersona()` and speaks with `lang: 'en-IN'`, the persona's `pitch` + `voiceVariant`. Falls back to `AiVoiceGender` then the default persona (`aarav`).
   - AiVoiceGender (string?), AiSpeechRate (decimal?), AiQuestionDelaySec (int?): *(Phase 17)* session AI config, joined from `tblSession` onto the turn payload so the narrating client has rate/voice/delay without a second call. Null on non-AI sessions.
 ```
 
