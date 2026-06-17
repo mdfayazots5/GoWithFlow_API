@@ -20,7 +20,9 @@ public sealed class CreateSessionRequestDto
 	// candidate can practice solo. The three settings below are required only when AiEnabled.
 	public bool AiEnabled { get; set; }
 
-	public string? AiVoiceGender { get; set; }   // "Male" | "Female"
+	public string? AiVoiceGender { get; set; }   // "Male" | "Female" (legacy; kept for back-compat)
+
+	public string? AiVoiceName { get; set; }     // named Indian voice id: aarav|ananya|vikram|meera|rohan|priya
 
 	public decimal? AiSpeechRate { get; set; }    // 0.75 | 1.00 | 1.25
 

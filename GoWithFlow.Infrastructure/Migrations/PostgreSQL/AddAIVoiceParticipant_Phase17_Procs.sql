@@ -45,10 +45,14 @@ $$ LANGUAGE plpgsql;
 -- Persists the per-session AI config on tblsession. Called only when AI is enabled, so the
 -- three settings are always non-null (enforced by CreateSessionRequestValidator).
 -- --------------------------------------------
+-- Drop the prior 7-arg overload before recreating with the added p_aivoicename (2026-06-18).
+DROP FUNCTION IF EXISTS uspsetsessionaiconfig(BIGINT, BOOLEAN, VARCHAR, DECIMAL, INT, VARCHAR, VARCHAR);
+
 CREATE OR REPLACE FUNCTION uspsetsessionaiconfig(
     p_sessionid          BIGINT,
     p_aienabled          BOOLEAN,
     p_aivoicegender      VARCHAR(8),
+    p_aivoicename        VARCHAR(32),
     p_aispeechrate       DECIMAL(3,2),
     p_aiquestiondelaysec INT,
     p_updatedby          VARCHAR(128),
@@ -58,6 +62,7 @@ BEGIN
     UPDATE tblsession
     SET aienabled          = p_aienabled,
         aivoicegender      = p_aivoicegender,
+        aivoicename        = p_aivoicename,
         aispeechrate       = p_aispeechrate,
         aiquestiondelaysec = p_aiquestiondelaysec,
         updatedby          = p_updatedby,

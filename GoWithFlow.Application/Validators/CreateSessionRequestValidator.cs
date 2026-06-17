@@ -8,6 +8,7 @@ public sealed class CreateSessionRequestValidator : AbstractValidator<CreateSess
 	private static readonly int[] ValidDurations = { 15, 30, 45, 60, 90 };
 	private static readonly int[] ValidExpiryMinutes = { 60, 120, 360, 1440 };
 	private static readonly string[] ValidVoiceGenders = { "Male", "Female" };
+	private static readonly string[] ValidVoiceNames = { "aarav", "ananya", "vikram", "meera", "rohan", "priya" };
 	private static readonly decimal[] ValidSpeechRates = { 0.75m, 1.00m, 1.25m };
 	private static readonly int[] ValidQuestionDelays = { 0, 1, 2, 3, 5 };
 
@@ -35,8 +36,14 @@ public sealed class CreateSessionRequestValidator : AbstractValidator<CreateSess
 		// AI Voice Participant (Phase 17) — the three settings are required only when enabled.
 		When(request => request.AiEnabled, () =>
 		{
+			// Named Indian voice persona is now the primary selector (en-IN voices).
+			RuleFor(request => request.AiVoiceName)
+				.Must(name => name is not null && ValidVoiceNames.Contains(name.ToLowerInvariant()))
+				.WithMessage("AiVoiceName must be one of: aarav, ananya, vikram, meera, rohan, priya.");
+
+			// AiVoiceGender is legacy/optional now — only validate it when supplied.
 			RuleFor(request => request.AiVoiceGender)
-				.Must(gender => gender is not null && ValidVoiceGenders.Contains(gender))
+				.Must(gender => gender is null || ValidVoiceGenders.Contains(gender))
 				.WithMessage("AiVoiceGender must be one of: Male, Female.");
 
 			RuleFor(request => request.AiSpeechRate)

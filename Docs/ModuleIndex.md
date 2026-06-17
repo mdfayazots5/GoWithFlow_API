@@ -81,6 +81,9 @@ Logic source: `ProjectOverview.md` only.
 | vocabularysprint | Backend Script Module | Backend Script Module |
 | fluencydrill | Backend Script Module | Backend Script Module |
 | repracticeround | Backend Script Module | Backend Script Module |
+| question answer | Backend Script Module | Backend Script Module |
+| question & answer | Backend Script Module | Backend Script Module |
+| q&a | Backend Script Module | Backend Script Module |
 | speaker label | Backend Script Module | Backend Script Module |
 | category template | Backend Script Module | Backend Script Module |
 | excel template standard | Backend Script Module | Backend Script Module |

@@ -17,7 +17,8 @@
    - 6.3 MockInterview
    - 6.4 VocabularySprint
    - 6.5 FluencyDrill
-   - 6.6 RepracticeRound
+   - 6.6 RepracticeRound *(legacy — retired from new uploads)*
+   - 6.7 Question & Answer
 7. [Metadata Upload Standards](#7-metadata-upload-standards)
 8. [Validation Rules Guide](#8-validation-rules-guide)
 9. [Content Writing Standards](#9-content-writing-standards)
@@ -50,9 +51,12 @@ This document defines the permanent, category-wise Excel template standard for G
 | Mock Interview      | `Mock Interview`     | `MockInterview`     |
 | Vocabulary Sprint   | `Vocabulary Sprint`  | `VocabularySprint`  |
 | Fluency Drill       | `Fluency Drill`      | `FluencyDrill`      |
-| Repractice Round    | `Repractice Round`   | `RepracticeRound`   |
+| Question & Answer   | `Question & Answer`  | `QuestionAnswer`    |
+| Repractice Round *(legacy)* | `Repractice Round` | `RepracticeRound` |
 
 > **Rule**: The `category` field sent to the upload API must exactly match the DB Category Value column above.
+>
+> **Note (2026-06-18):** `Repractice Round` is **retired from new uploads** — it is no longer offered in the upload UI and is rejected by `ScriptService.ValidateUploadRequest`. Existing `Repractice Round` scripts still load and run (the SessionMode/facilitator mappings are kept). It was replaced in the selectable set by **`Question & Answer`** (§6.7).
 
 ---
 
@@ -628,11 +632,89 @@ Targeted mistake correction and reinforcement. Scripts are generated based on gr
 
 ---
 
+### 6.7 Question & Answer
+
+#### Purpose
+AI-driven mock interview. An **AI voice reads each Interviewer question aloud**; the **candidate listens and answers out loud in their own words** — they never see the question or the model answer on screen during the session. Builds real interview confidence, spoken fluency, and the ability to explain answers under pressure (designed for learners in Hyderabad / Telangana / Andhra Pradesh and similar regions). See `Backend/Docs/QuestionAnswerCategoryPlan.md` for the full flow.
+
+> **Blind-by-design:** the `Candidate` rows are **model answers used only as a hidden reference** (post-session report comparison + AI evaluation). They are **never shown live**. Write the Interviewer questions to be clear and self-contained **when heard by ear** (no on-screen text to fall back on).
+
+#### Session behaviour (how this differs from Mock Interview)
+- The session **auto-enables the AI Voice Participant as the `Interviewer`**; the human host is always the `Candidate`. There is no AI toggle for this category.
+- On the `Interviewer` turn the AI narrates the question via TTS — **the question text is hidden** on the candidate's screen.
+- On the `Candidate` turn the recognizer captures the candidate's **own spoken answer** (the model answer is hidden); the live transcript is shown so they know the mic is working.
+- The session report later **reveals** the question (Interviewer turn text) alongside the candidate's transcript.
+
+#### Upload Metadata Defaults
+
+| Field              | Typical Value(s)                                                |
+|--------------------|-----------------------------------------------------------------|
+| `category`         | `Question & Answer`                                            |
+| `grammarFocusTag`  | `STAR Method` / `Formal Register` / `Question Forms` / `Past Simple` / `Present Perfect` |
+| `contextTag`       | Interview type, consistent throughout: `HR Interview`, `Tech Interview`, `Behavioural Interview`, `Sales Interview`, `Management Interview` |
+| `complexityLevel`  | 3–5 (Intermediate to Advanced)                                  |
+| `targetAgeGroup`   | `Adult`                                                         |
+| `hintLanguage`     | `Telugu` / `Hindi` / `Tamil` / `Kannada` / `None`              |
+
+#### Speaker Labels (Required Set — Question & Answer)
+
+| SpeakerLabel   | Role Description                                                                 |
+|----------------|----------------------------------------------------------------------------------|
+| `Interviewer`  | Asks one clear question per turn — read aloud by the AI (FACILITATOR turn — not scored) |
+| `Candidate`    | Model answer (hidden reference only). The candidate's OWN spoken answer is what gets scored — not this text (PERFORMANCE turn) |
+
+> Always use exactly `Interviewer` and `Candidate`. Same labels as Mock Interview; the difference is behavioural (blind + AI-narrated), not in the labels.
+
+#### Column Usage Rules
+
+| Column | Required | Question & Answer-Specific Rule                                                  |
+|--------|----------|----------------------------------------------------------------------------------|
+| A      | YES      | Sequential integers; alternate Interviewer then Candidate                        |
+| B      | YES      | Strictly `Interviewer` or `Candidate`                                            |
+| C      | YES      | Interviewer: one clear spoken question, NO contractions, easy to follow by ear. Candidate: strong 2–4 sentence model answer (hidden reference) |
+| D      | NO       | Native-language translation (helps the report review; not shown live)            |
+| E      | YES      | Grammar/method tag, e.g. `STAR Method`, `Formal Register`, `Question Forms`       |
+| F      | YES      | Interview type; consistent on every row                                          |
+| G      | NO       | Professional/industry term relevant to the question or answer                    |
+| H      | NO       | IPA for the FocusWord                                                            |
+
+#### Content Rules
+
+1. Script length: **minimum 16 rows, maximum 40 rows** (≈ 8–20 question/answer pairs)
+2. Every `Interviewer` turn is **one complete, self-contained question** — answerable without seeing it written
+3. Keep each question to a **single idea** (no compound "and also…" questions) — they are heard, not read
+4. Each `Candidate` model answer is **2–4 sentences**; behavioural questions should model the **STAR** structure
+5. **No contractions** in Interviewer turns (formal register, clear for TTS)
+6. At most 2 opening small-talk turns; then straight into substance
+7. Include at least one **challenging follow-up probe** by the Interviewer
+8. ContextTag (column F) identical on every row (same interview type)
+9. Close with a natural interview ending (candidate-style closing answer or mutual farewell)
+10. Strictly alternate `Interviewer` → `Candidate`; no speaker has 2 consecutive turns
+
+#### Sample Data — Question & Answer (HR Interview / excerpt — first 8 of ≥16 rows)
+
+| SequenceId | SpeakerLabel | EnglishText                                                                                   | HintText                                                        | GrammarTag      | ContextTag   | FocusWord     | PronunciationNote |
+|------------|--------------|-----------------------------------------------------------------------------------------------|-----------------------------------------------------------------|-----------------|--------------|---------------|-------------------|
+| 1          | Interviewer  | Please tell me a little about yourself and your background.                                    | దయచేసి మీ గురించి మరియు మీ నేపథ్యం గురించి కొంచెం చెప్పండి.       | Formal Register | HR Interview | background    | /ˈbækɡraʊnd/      |
+| 2          | Candidate    | I am a computer science graduate with two years of experience in web development. I enjoy building reliable applications and learning new tools. In my last role I delivered three major projects on time. | నేను రెండు సంవత్సరాల అనుభవం ఉన్న కంప్యూటర్ సైన్స్ గ్రాడ్యుయేట్‌ని. | STAR Method     | HR Interview | experience    | /ɪkˈspɪəriəns/    |
+| 3          | Interviewer  | What is your greatest professional strength?                                                   | మీ అతిపెద్ద వృత్తిపరమైన బలం ఏమిటి?                               | Question Forms  | HR Interview | strength      | /streŋθ/          |
+| 4          | Candidate    | My greatest strength is problem solving. When our team faced a critical bug before a release, I traced the root cause and fixed it within a day. This kept the launch on schedule. | నా అతిపెద్ద బలం సమస్య పరిష్కారం.                                 | STAR Method     | HR Interview | problem       | /ˈprɒbləm/        |
+| 5          | Interviewer  | Tell me about a time you handled a difficult situation at work.                                | పనిలో మీరు ఒక కష్టమైన పరిస్థితిని ఎదుర్కొన్న సమయం గురించి చెప్పండి. | STAR Method     | HR Interview | situation     | /ˌsɪtʃuˈeɪʃən/    |
+| 6          | Candidate    | In my previous job a client changed the requirements close to the deadline. I organised a short planning session, re-prioritised the tasks, and we delivered the core features on time. The client was satisfied with the result. | నా మునుపటి ఉద్యోగంలో ఒక క్లయింట్ గడువుకు దగ్గరగా అవసరాలను మార్చారు. | STAR Method     | HR Interview | requirements  | /rɪˈkwaɪəmənts/   |
+| 7          | Interviewer  | Why do you want to work with our company?                                                      | మీరు మా కంపెనీతో ఎందుకు పని చేయాలనుకుంటున్నారు?                  | Question Forms  | HR Interview | company       | /ˈkʌmpəni/        |
+| 8          | Candidate    | I admire your focus on quality and continuous learning. The role matches my skills in backend development, and I believe I can contribute quickly. I am also excited to grow alongside an experienced team. | మీ నాణ్యత మరియు నిరంతర అభ్యాసంపై దృష్టిని నేను మెచ్చుకుంటాను.    | Formal Register | HR Interview | contribute    | /kənˈtrɪbjuːt/    |
+
+> Rows 9–16+ continue the same alternating Interviewer → Candidate pattern with at least one challenging follow-up probe and a natural closing.
+
+---
+
 ## 7. Metadata Upload Standards
 
 When uploading any Excel file via `POST /api/v1/scripts/upload`, the following metadata form fields must be completed. These are sent as form data alongside the file.
 
 ### 7.1 Metadata Fields by Category
+
+> **Question & Answer** (added 2026-06-18) follows the **MockInterview** column for field requirements, with the §6.7 defaults (`category = "Question & Answer"`, `grammarFocusTag` = STAR Method / Formal Register / Question Forms, `contextTag` = interview type, `complexityLevel` 3–5, `targetAgeGroup` Adult). The **RepracticeRound** column below remains for reference only — that category is retired from new uploads.
 
 | Field              | GrammarDrill         | Roleplay              | MockInterview          | VocabularySprint       | FluencyDrill           | RepracticeRound        |
 |--------------------|----------------------|-----------------------|------------------------|------------------------|------------------------|------------------------|

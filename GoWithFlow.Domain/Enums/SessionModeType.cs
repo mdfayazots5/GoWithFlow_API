@@ -7,5 +7,6 @@ public enum SessionModeType
 	MockInterview = 3,
 	VocabularySprint = 4,
 	FluencyDrill = 5,
-	RepracticeRound = 6
+	RepracticeRound = 6,
+	QuestionAnswer = 7
 }

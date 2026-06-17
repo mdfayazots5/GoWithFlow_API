@@ -37,6 +37,9 @@ public sealed class Session : BaseAuditEntity
 
 	public string? AiVoiceGender { get; set; }
 
+	// Named Indian voice persona id (e.g. "aarav"). Added 2026-06-18; null on legacy/AI-off sessions.
+	public string? AiVoiceName { get; set; }
+
 	public decimal? AiSpeechRate { get; set; }
 
 	public int? AiQuestionDelaySec { get; set; }

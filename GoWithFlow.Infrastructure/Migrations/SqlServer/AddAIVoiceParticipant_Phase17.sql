@@ -37,6 +37,14 @@ GO
 
 IF NOT EXISTS (
     SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'dbo.tblSession') AND name = N'AiVoiceName')
+BEGIN
+    ALTER TABLE dbo.tblSession ADD AiVoiceName NVARCHAR(32) NULL;    -- named Indian voice id (aarav|ananya|vikram|meera|rohan|priya); added 2026-06-18
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
     WHERE object_id = OBJECT_ID(N'dbo.tblSession') AND name = N'AiSpeechRate')
 BEGIN
     ALTER TABLE dbo.tblSession ADD AiSpeechRate DECIMAL(3,2) NULL;   -- TTS rate multiplier, e.g. 0.75 / 1.00 / 1.25

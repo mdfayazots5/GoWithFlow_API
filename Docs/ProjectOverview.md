@@ -1152,10 +1152,12 @@ Success (200):
 ### Excel Template Standard (Category-Wise)
 
 - Permanent reference document: `Docs/ExcelTemplateStandard.md` (Version 1.0, 2026-05-22)
-- Six registered categories (canonical names): `Grammar Drill`, `Roleplay`, `Mock Interview`, `Vocabulary Sprint`, `Fluency Drill`, `Repractice Round`
-- Legacy category aliases accepted in upload validation (backward compatible with existing DB data): `Interview` = `Mock Interview`, `Vocabulary` = `Vocabulary Sprint`, `Repetition` = `Repractice Round`
+- Six **selectable** upload categories (canonical names): `Grammar Drill`, `Roleplay`, `Mock Interview`, `Vocabulary Sprint`, `Fluency Drill`, `Question & Answer` *(added 2026-06-18 — Phase 1)*
+- **`Repractice Round` retired from new uploads (2026-06-18, Phase 1)** — removed from `ScriptService.ValidateUploadRequest` valid set and from the admin upload UI. **Legacy data still loads & maps**: `MapCategoryToSessionMode` (`Repractice Round`/`Repetition` → `RepracticeRound`), `FacilitatorRoles` (`Coach`), and the `SessionModeType.RepracticeRound = 6` enum value are all KEPT. This is the script *category* only — the **Backend Mistake Repractice MODULE is untouched**.
+- Legacy category aliases accepted in upload validation (backward compatible with existing DB data): `Interview` = `Mock Interview`, `Vocabulary` = `Vocabulary Sprint`. (`Repetition`/`Repractice Round` no longer pass upload validation but still load/derive for existing rows.)
 - Each category defines: fixed speaker labels, mandatory columns (D/G/H), row count limits, content rules, metadata defaults, and sample data
-- Speaker labels by category: GrammarDrill → `Speaker A/B`; Roleplay → role-based; MockInterview → `Interviewer/Candidate`; VocabularySprint → `Tutor/Learner`; FluencyDrill → `Speaker A/B`; RepracticeRound → `Coach/Learner`
+- Speaker labels by category: GrammarDrill → `Speaker A/B`; Roleplay → role-based; MockInterview → `Interviewer/Candidate`; VocabularySprint → `Tutor/Learner`; FluencyDrill → `Speaker A/B`; QuestionAnswer → `Interviewer/Candidate` (Interviewer rows = questions, Candidate rows = model answer HIDDEN on-screen); RepracticeRound *(legacy)* → `Coach/Learner`
+- **Question & Answer** prompt-data rules (`ScriptRepository.GetPromptDataForCategoryAsync`): labels `Interviewer / Candidate`, rows 16–40, `E (GrammarTag)` required. `SessionModeType.QuestionAnswer = 7`; facilitator = `Interviewer`. Blind-answer UX + AI-as-Interviewer are Phase 2 (see `QuestionAnswerCategoryPlan.md`).
 - Column D (HintText) mandatory for: `Vocabulary Sprint`, `Repractice Round`
 - Column G (FocusWord) mandatory for: `Mock Interview`, `Vocabulary Sprint`
 - Column H (PronunciationNote) mandatory on Tutor rows for: `Vocabulary Sprint`
@@ -1365,16 +1367,37 @@ one utterance at a time.
 - **Role colors:** `roleColor(label)` returns a stable per-role display color (by first-appearance order, 6-color palette) used for speaker labels + the active line border in the player.
 - **Repeat:** `off` → linear (stops at end); `one` → repeat current line; `all` → loop whole script.
 
-### Player UI — `ListenScriptComponent`
+### Player UI — `ListenScriptComponent` *(immersive redesign 2026-06-18)*
 
-Lyrics list (active line highlighted/enlarged, past lines dimmed, animated wave on the speaking line;
-each role's label + active-line border use the role's `roleColor`); `effect()` auto-scrolls the active
-line into view (`scrollIntoView`, guarded by `isPlatformBrowser`); tap any line → `seekTo`. **Auto-start:**
-on successful load the player calls `playback.play()` so opening it from the picker/library begins narration
-immediately (falls back to the Play button if the browser blocks audio without a gesture). Sticky bottom dock:
-line-progress bar, Speed (popup `MatMenu` of `PLAYBACK_SPEEDS` with the active one checked), Prev, Play/Pause,
-Next, Repeat, and a Voices button opening `ListenVoicesSheetComponent` (per-role Male/Female).
-`ngOnDestroy → playback.reset()` so narration never leaks across navigations.
+**Immersive full-screen music player** — no app header, no bottom tab bar. The player route
+`/scripts/listen/:scriptId` is matched by `App.fullBleedPatterns = [/\/scripts\/listen\/[^/?#]+/]`
+(regex by segment depth so the **picker tab** `/scripts/listen` KEEPS its nav). This also fixed a tap
+bug: the global `<app-bottom-nav>` previously painted over the player's fixed dock and stole taps at
+the bottom — removing the nav on this route restores dock interaction.
+
+Layout (dark radial-gradient `#232347→#0F0F1C`, white text): top bar (back + **Settings gear**),
+artwork card (role-colored gradient + Headphones icon) + title + voice/line count, scrollable lyrics
+list (active line highlighted/enlarged, past lines dimmed via `[style.opacity]`, animated wave on the
+speaking line; role-colored labels + active-line border via `roleColor`), and a bottom dock.
+`effect()` auto-scrolls the active line into view (skipped while the user is scrubbing). **Auto-start:**
+load → `playback.play()`. `ngOnDestroy → playback.reset()`.
+
+- **Interactive seek bar (snap-to-line):** tap **or drag** the bar → `seekFromEvent` maps the X
+  fraction to the nearest LINE index → `playback.seekTo`. Because the on-device TTS engine has **no
+  mid-line seek**, the bar deliberately snaps to lines (not a continuous time scrub). Uses pointer
+  events + `setPointerCapture` for drag; `scrubbing` flag pauses auto-scroll during a drag. Tapping a
+  lyric line also seeks (unchanged).
+- **Transport:** Prev / Play-Pause / Next only. Speed, Repeat and Voices moved OFF the dock into the
+  Settings sheet (below) for a cleaner music-player look.
+
+### Settings sheet — `ListenSettingsSheetComponent` *(new 2026-06-18)*
+
+Opened by the player's Settings (gear) button. One place for all playback options, all bound live to
+`ScriptPlaybackService`: **Speed** (`PLAYBACK_SPEEDS` chips → `setRate`), **Repeat** (Off / Line / All
+chips → new `setRepeat(mode)` — direct setter added alongside the existing `cycleRepeat()`), and
+**Voices** (per-role Male/Female → `setRoleGender`, with the role's `roleColor` dot). Replaces the old
+scattered Speed `MatMenu` + Repeat cycle button + separate `ListenVoicesSheetComponent` trigger
+(`ListenVoicesSheetComponent` file retained but no longer wired into the player).
 
 ### Native Media Service (Android — lock screen / notification / background)
 
@@ -1400,6 +1423,11 @@ On web it keeps the in-WebView JS loop (no lock-screen on the web platform). Bra
   after stop/seek/rate-change. `onError` skips the failed line forward (never wedges).
 - **Controls:** notification + lock-screen Prev / Play-Pause / Next / Stop via `MediaSessionCompat` callbacks
   and notification action `PendingIntent`s; tapping the notification opens the app.
+- **Artwork (lock screen + notification) — added 2026-06-18:** `updateSessionState()` now sets
+  `METADATA_KEY_ALBUM_ART` + `METADATA_KEY_DISPLAY_ICON`, and `buildNotification()` sets `setLargeIcon(...)`,
+  both from `getArtwork()` — the **app launcher icon** rendered to a `Bitmap` and cached. `getArtwork()`
+  draws the `Drawable` to a canvas so it works for adaptive/vector launcher icons (not just `BitmapDrawable`).
+  Previously only `setSmallIcon` was set, so the lock screen / notification showed no image.
 
 ### Voice Constitution Compliance
 
@@ -1611,10 +1639,11 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 
 **Business Rules:**
 - `MaxMembers` and `SessionMode` are DERIVED from the script, not taken from the DTO. `MaxMembers` = count of distinct `SpeakerLabel`s; `SessionMode` = mapped from script `Category` (`MapCategoryToSessionMode`, incl. legacy aliases). The script must have ≥ 2 distinct labels, else: `"The selected script must have at least 2 distinct speaker labels."`
-- Host is automatically inserted as slot 1 member; `IsReady = true`, `IsHost = true`
+- Host is automatically inserted as slot 1 member; `IsReady = true`, `IsHost = true` — **except Question & Answer (Phase 2):** the host is seated in the first NON-facilitator slot (the `Candidate` performer slot, via `FacilitatorRoles.IsFacilitator`), so the AI fills the `Interviewer` slot. `SlotIndex` always tracks the label's position (1-based) — only WHICH member holds the slot changes, never the slot numbering (preserves turn-engine `ActiveSlotIndex` mapping).
 - Slot names derived from script `SpeakerLabel` values ordered by first `SequenceId` appearance then alphabetically
 - `SessionMode` is stored as human-readable string (e.g., `"Grammar Drill"`), not the enum integer
-- **AI Voice Participant (Phase 17):** when `AiEnabled`, the reserved AI system user (resolved by `MobileNumber = 'AI_PARTICIPANT'`) is inserted into EVERY non-host slot (`SlotIndex` 2..N) with `IsAi = 1`, `IsReady = 1`, `IsHost = 0`. This lets the host (candidate) run the session solo — an AI member counts as active, satisfying the ≥2-member start/abandon rules. If the reserved user is missing → creation fails: `"The AI Voice Participant is not available..."`. AI members are never scored (no `tblVoiceAnalysis`).
+- **AI Voice Participant (Phase 17):** when `AiEnabled`, the reserved AI system user (resolved by `MobileNumber = 'AI_PARTICIPANT'`) is inserted into EVERY slot the host does NOT occupy with `IsAi = 1`, `IsReady = 1`, `IsHost = 0`. This lets the host (candidate) run the session solo — an AI member counts as active, satisfying the ≥2-member start/abandon rules. If the reserved user is missing → creation fails: `"The AI Voice Participant is not available..."`. AI members are never scored (no `tblVoiceAnalysis`).
+- **Question & Answer auto-AI (Phase 2):** when the script `Category == "Question & Answer"`, the AI is **force-enabled** regardless of `dto.AiEnabled` (the whole feature depends on the AI asking). When the host did not supply AI config, safe defaults apply: `AiVoiceGender = "Female"`, `AiSpeechRate = 1.00`, `AiQuestionDelaySec = 2`. Combined with the host-slot rule above, the human is always the `Candidate` and the AI is always the `Interviewer`. Blind-answer UI is driven by `TurnStateResponseDto.HideScriptText` (see Get Current Turn). On-device verification pending (IV2201).
 
 **State Transitions:** `tblSession.Status` starts as `LOBBY`
 
@@ -2373,6 +2402,7 @@ ApiResponse<TurnStateResponseDto>
   - MaxReReads (int): always 2 for new turns
   - IsFacilitatorTurn (bool): true when the active slot is a facilitator role (Interviewer/Tutor/Coach) — read-aloud, no scoring
   - IsAi (bool): *(Phase 17)* true when the active slot is held by the AI Voice Participant. Client narrates via on-device TTS (no recognizer, no scoring) and then calls `AdvanceAiTurn`. Computed by a slot-match EXISTS against `tblSessionMember.IsAi` (matched on `ActiveSlotIndex`, NOT UserId — the one reserved AI user can hold multiple slots).
+  - HideScriptText (bool): *(Phase 2 — Question & Answer)* true when the session's script `Category == "Question & Answer"` (case-insensitive, trimmed). Computed in the SAME projection as `IsFacilitatorTurn` (`LiveSessionRepository.GetCurrentTurnAsync`, client-eval). When true the client hides the utterance text, grammar tag, and hint on BOTH the AI Interviewer turn (listener-screen) and the candidate's answer turn (speaker-screen) — the candidate only hears the question and sees their own live transcript. The recognizer still receives `expectedText` for scoring; it is never displayed. `AdvanceAiTurn` returns the same DTO shape, so it carries this flag too.
   - AiVoiceGender (string?), AiSpeechRate (decimal?), AiQuestionDelaySec (int?): *(Phase 17)* session AI config, joined from `tblSession` onto the turn payload so the narrating client has rate/voice/delay without a second call. Null on non-AI sessions.
 ```
 
@@ -3466,8 +3496,9 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 | Category (canonical) | Facilitator Speaker Label | Performer Speaker Label |
 |---|---|---|
 | Mock Interview / Interview | Interviewer | Candidate |
+| Question & Answer | Interviewer (AI-narrated) | Candidate |
 | Vocabulary Sprint / Vocabulary | Tutor | Learner |
-| Repractice Round / Repetition | Coach | Learner |
+| Repractice Round / Repetition *(legacy data only)* | Coach | Learner |
 | Grammar Drill, Roleplay, Fluency Drill | — (both speakers perform) | Both |
 
 **Implementation:**
@@ -3527,6 +3558,7 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 - Auth: UserOrAdmin + ActiveUser
 - Returns: `SessionReviewResponseDto` with `SessionId`, `ScriptTitle`, `Category`, `GrammarFocusTag`, `TotalTurns`, `AverageOverallScore`, `Turns: List<SessionReviewTurnDto>`
 - Each `SessionReviewTurnDto`: `TurnIndex`, `SpeakerLabel`, `IsFacilitatorTurn`, `EnglishText`, `TranscribedText`, `FluencyScore`, `ConfidenceScore`, `SpeakingSpeedWpm`, `OverallScore`, `HesitationWords`, `GrammarErrors`, `PronunciationIssues`, `WasAnalyzed`
+- **Question & Answer (Phase 2/3):** the review serves Q&A with NO extra code — the turn list includes ALL utterances incl. facilitator turns. The **Interviewer (facilitator) turn** carries `EnglishText` = the question (revealed here in the report, though hidden live during the session); the **Candidate turn** carries `EnglishText` = model answer (for comparison) + `TranscribedText` = the candidate's actual spoken answer. The scored leaderboard (separate `SessionReportComponent`) already excludes AI + facilitator, so a solo Q&A leaderboard shows only the candidate.
 
 **Data source:** `tblUtterance` (all turns), `tblVoiceAnalysis` (per-user voice analysis joined by UtteranceId), `tblScript` (session metadata via `tblSession.ScriptId`).
 
@@ -4504,7 +4536,7 @@ All 7 items implemented:
 
 #### Gap-01/02 FIXED
 - `SessionService.CreateSessionAsync`: derives `SessionMode` from `script.Category` via `MapCategoryToSessionMode()`
-  (includes all 6 canonical categories + 3 legacy aliases).
+  (maps `Grammar Drill`/`Roleplay`/`Mock Interview`/`Vocabulary Sprint`/`Fluency Drill`/`Question & Answer` + legacy aliases `Interview`/`Vocabulary`/`Repractice Round`/`Repetition`; `SessionModeType` enum 1–7, `QuestionAnswer = 7`).
   Derives `MaxMembers` from `ExtractSlotNames(script, byte.MaxValue).Count` — all distinct speaker labels.
 - `CreateSessionRequestDto`: `SessionMode` and `MaxMembers` fields retained for backward compatibility but no longer used.
 - Frontend `CreateSessionComponent`:

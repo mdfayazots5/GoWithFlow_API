@@ -88,6 +88,21 @@ public sealed class SessionService : ISessionService
 		var derivedSessionMode = MapCategoryToSessionMode(script.Category);
 		var slotNames = allSlots;
 
+		// Question & Answer: the AI is the Interviewer (facilitator) and the human host is the
+		// Candidate (performer). Force the AI on and seat the host in the first non-facilitator slot,
+		// so the AI fills the Interviewer slot below. For all other categories behaviour is unchanged
+		// (host = first slot; AI fills the rest only when explicitly enabled).
+		var isQuestionAnswer = string.Equals(script.Category?.Trim(), "Question & Answer", StringComparison.OrdinalIgnoreCase);
+		var aiEnabled = dto.AiEnabled || isQuestionAnswer;
+
+		var hostSlotPos = 0;
+		if (isQuestionAnswer)
+		{
+			var performerPos = slotNames.FindIndex(label => !FacilitatorRoles.IsFacilitator(script.Category ?? string.Empty, label));
+			if (performerPos >= 0)
+				hostSlotPos = performerPos;
+		}
+
 		var session = new Session
 		{
 			SessionName = dto.SessionName.Trim(),
@@ -105,8 +120,8 @@ public sealed class SessionService : ISessionService
 		var hostMember = new SessionMember
 		{
 			UserId = hostUserId,
-			SlotIndex = 1,
-			SlotName = slotNames[0],
+			SlotIndex = (byte)(hostSlotPos + 1),
+			SlotName = slotNames[hostSlotPos],
 			IsReady = true,
 			IsHost = true,
 			CreatedBy = hostUser.FullName,
@@ -118,7 +133,7 @@ public sealed class SessionService : ISessionService
 		// inserted (auto-ready) in the same transaction as the session + host member.
 		var aiMembers = new List<SessionMember>();
 
-		if (dto.AiEnabled)
+		if (aiEnabled)
 		{
 			var aiUser = await _userRepository.GetByMobileNumberAsync(AiParticipantMobileNumber, cancellationToken);
 
@@ -130,12 +145,18 @@ public sealed class SessionService : ISessionService
 			}
 
 			session.AiEnabled = true;
-			session.AiVoiceGender = dto.AiVoiceGender;
-			session.AiSpeechRate = dto.AiSpeechRate;
-			session.AiQuestionDelaySec = dto.AiQuestionDelaySec;
+			// Q&A may force the AI on without the host supplying config — fall back to safe defaults.
+			session.AiVoiceName = dto.AiVoiceName ?? "aarav";   // named Indian voice persona (default Aarav)
+			session.AiVoiceGender = dto.AiVoiceGender ?? "Female";
+			session.AiSpeechRate = dto.AiSpeechRate ?? 1.00m;
+			session.AiQuestionDelaySec = dto.AiQuestionDelaySec ?? 2;
 
-			for (var slot = 1; slot < slotNames.Count; slot++)
+			// AI fills EVERY slot the host does not occupy (for Q&A this is the Interviewer slot).
+			for (var slot = 0; slot < slotNames.Count; slot++)
 			{
+				if (slot == hostSlotPos)
+					continue;
+
 				aiMembers.Add(new SessionMember
 				{
 					UserId = aiUser.UserId,
@@ -438,6 +459,7 @@ public sealed class SessionService : ISessionService
 			SessionModeType.VocabularySprint => "Vocabulary Sprint",
 			SessionModeType.FluencyDrill => "Fluency Drill",
 			SessionModeType.RepracticeRound => "Repractice Round",
+			SessionModeType.QuestionAnswer => "Question & Answer",
 			_ => throw new ArgumentOutOfRangeException(nameof(sessionMode), sessionMode, "Unsupported session mode.")
 		};
 	}
@@ -453,8 +475,9 @@ public sealed class SessionService : ISessionService
 			"Vocabulary Sprint" => SessionModeType.VocabularySprint,
 			"Vocabulary"       => SessionModeType.VocabularySprint, // legacy alias
 			"Fluency Drill"    => SessionModeType.FluencyDrill,
-			"Repractice Round" => SessionModeType.RepracticeRound,
+			"Repractice Round" => SessionModeType.RepracticeRound,  // legacy data (category retired from new uploads)
 			"Repetition"       => SessionModeType.RepracticeRound,  // legacy alias
+			"Question & Answer" => SessionModeType.QuestionAnswer,
 			_                  => SessionModeType.GrammarDrill
 		};
 	}

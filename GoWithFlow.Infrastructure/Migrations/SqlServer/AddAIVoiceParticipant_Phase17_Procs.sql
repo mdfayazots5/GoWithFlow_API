@@ -39,6 +39,7 @@ CREATE OR ALTER PROCEDURE dbo.uspSetSessionAiConfig
     @SessionId          BIGINT,
     @AiEnabled          BIT,
     @AiVoiceGender      NVARCHAR(8),
+    @AiVoiceName        NVARCHAR(32),
     @AiSpeechRate       DECIMAL(3,2),
     @AiQuestionDelaySec INT,
     @UpdatedBy          NVARCHAR(128),
@@ -50,6 +51,7 @@ BEGIN
     UPDATE dbo.tblSession
     SET AiEnabled          = @AiEnabled,
         AiVoiceGender      = @AiVoiceGender,
+        AiVoiceName        = @AiVoiceName,
         AiSpeechRate       = @AiSpeechRate,
         AiQuestionDelaySec = @AiQuestionDelaySec,
         UpdatedBy          = @UpdatedBy,

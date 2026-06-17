@@ -677,6 +677,7 @@ public sealed class ScriptRepository : IScriptRepository
 		var (speakerLabels, minRows, maxRows, mandatoryColumns) = upper switch
 		{
 			"MOCK INTERVIEW"    => ("Interviewer / Candidate",  20, 50, "G (FocusWord) required; E (GrammarTag) required"),
+			"QUESTION & ANSWER" => ("Interviewer / Candidate",  16, 40, "Interviewer rows = questions; Candidate rows = model answer (HIDDEN from candidate on-screen). E (GrammarTag) required"),
 			"VOCABULARY SPRINT" => ("Tutor / Learner",          20, 40, "D (HintText) required; G (FocusWord) required; H (PronunciationNote) required on Tutor rows"),
 			"FLUENCY DRILL"     => ("Speaker A / Speaker B",    30, 60, "E, G, H must be left blank"),
 			"REPRACTICE ROUND"  => ("Coach / Learner",          14, 28, "D (HintText) required; E (GrammarTag) required — same value on ALL rows"),

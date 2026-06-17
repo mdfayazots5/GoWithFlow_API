@@ -78,6 +78,9 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
 		builder.Property(session => session.AiVoiceGender)
 			.HasMaxLength(8);
 
+		builder.Property(session => session.AiVoiceName)
+			.HasMaxLength(32);
+
 		builder.Property(session => session.AiSpeechRate)
 			.HasPrecision(3, 2);
 

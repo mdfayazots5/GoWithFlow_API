@@ -82,6 +82,9 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				ReReadCount = turnState.ReReadCount,
 				MaxReReads = turnState.MaxReReads,
 				IsFacilitatorTurn = FacilitatorRoles.IsFacilitator(script.Category, utterance.SpeakerLabel),
+				// Phase 2 (Question & Answer) — hide on-screen question/answer text for the whole session.
+				HideScriptText = script.Category != null &&
+					string.Equals(script.Category.Trim(), "Question & Answer", StringComparison.OrdinalIgnoreCase),
 				// Phase 17 — match by slot (not UserId): the one reserved AI user can hold several slots.
 				IsAi = _dbContext.SessionMembers.Any(member =>
 					member.SessionId == turnState.SessionId &&
@@ -90,6 +93,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 					member.IsActive &&
 					member.IsDeleted == false),
 				AiVoiceGender = sessionRow.AiVoiceGender,
+				AiVoiceName = sessionRow.AiVoiceName,
 				AiSpeechRate = sessionRow.AiSpeechRate,
 				AiQuestionDelaySec = sessionRow.AiQuestionDelaySec
 			})

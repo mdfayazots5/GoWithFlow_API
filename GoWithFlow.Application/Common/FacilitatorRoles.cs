@@ -22,6 +22,8 @@ public static class FacilitatorRoles
 			// RepracticeRound / Repetition
 			["Repractice Round"] = "Coach",
 			["Repetition"]       = "Coach",
+			// Question & Answer — AI Interviewer asks (facilitator, read-only), Candidate answers (scored)
+			["Question & Answer"] = "Interviewer",
 		};
 
 	/// <summary>

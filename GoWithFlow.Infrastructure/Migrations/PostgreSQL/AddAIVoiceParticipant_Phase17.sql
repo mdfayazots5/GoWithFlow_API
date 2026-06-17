@@ -16,7 +16,8 @@ ALTER TABLE public.tblsessionmember
 -- 2) Per-session AI configuration (all nullable; populated only when AI is enabled at creation).
 ALTER TABLE public.tblsession
   ADD COLUMN IF NOT EXISTS aienabled         BOOLEAN       NULL,
-  ADD COLUMN IF NOT EXISTS aivoicegender     VARCHAR(8)    NULL,   -- 'Male' | 'Female'
+  ADD COLUMN IF NOT EXISTS aivoicegender     VARCHAR(8)    NULL,   -- 'Male' | 'Female' (legacy)
+  ADD COLUMN IF NOT EXISTS aivoicename       VARCHAR(32)   NULL,   -- named Indian voice id (aarav|ananya|vikram|meera|rohan|priya); added 2026-06-18
   ADD COLUMN IF NOT EXISTS aispeechrate      DECIMAL(3,2)  NULL,   -- TTS rate multiplier, e.g. 0.75 / 1.00 / 1.25
   ADD COLUMN IF NOT EXISTS aiquestiondelaysec INT          NULL;   -- pause before AI reads next line
 

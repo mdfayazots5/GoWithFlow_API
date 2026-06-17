@@ -337,8 +337,8 @@ public sealed class ScriptService : IScriptService
 			"Vocabulary Sprint",
 			"Vocabulary",
 			"Fluency Drill",
-			"Repractice Round",
-			"Repetition"
+			"Question & Answer"
+			// "Repractice Round" / "Repetition" retired from new uploads (legacy data still loads & maps).
 		};
 
 		if (string.IsNullOrWhiteSpace(dto.ScriptTitle))

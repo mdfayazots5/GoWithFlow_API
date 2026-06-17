@@ -38,9 +38,20 @@ public sealed class TurnStateResponseDto
 	/// </summary>
 	public bool IsAi { get; set; }
 
+	/// <summary>
+	/// Phase 2 (Question &amp; Answer) — true when the session's script category is "Question &amp; Answer".
+	/// The candidate must NOT read the question or the model answer: the client hides the utterance text,
+	/// grammar tag, and hint on BOTH the AI Interviewer turn and the candidate's answer turn, showing only
+	/// the live transcript. The recognizer still receives the expected text for scoring; it is never displayed.
+	/// </summary>
+	public bool HideScriptText { get; set; }
+
 	// Phase 17 — session-level AI config, surfaced here so the narrating client has everything it
 	// needs in the turn payload it already polls. Null on non-AI sessions.
 	public string? AiVoiceGender { get; set; }
+
+	/// <summary>Named Indian voice persona id (e.g. "aarav") chosen for this session's AI. Null on non-AI sessions.</summary>
+	public string? AiVoiceName { get; set; }
 
 	public decimal? AiSpeechRate { get; set; }
 
