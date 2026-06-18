@@ -116,6 +116,8 @@ public sealed class SessionService : ISessionService
 			// "Show Hard Words" practice aid is a Question & Answer-only feature; clamp it here so no
 			// other category can ever turn it on, regardless of what the client sends.
 			ShowHardWords = isQuestionAnswer && dto.ShowHardWords,
+			// Keep the question's key words visible while answering — also Q&A-only; clamped the same way.
+			ShowHardWordsInAnswer = isQuestionAnswer && dto.ShowHardWordsInAnswer,
 			CreatedBy = hostUser.FullName,
 			IPAddress = "127.0.0.1"
 		};

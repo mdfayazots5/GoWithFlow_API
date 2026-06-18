@@ -1508,6 +1508,7 @@ Real-time lobby updates via SignalR at `/hubs/session`.
   - `AiSpeechRate DECIMAL(3,2) NULL` *(Phase 17 — TTS rate multiplier, e.g. 0.75 / 1.00 / 1.25)*
   - `AiQuestionDelaySec INT NULL` *(Phase 17 — pause (sec) after candidate finishes before AI reads next line)*
   - `ShowHardWords BIT NOT NULL DEFAULT 0` *(2026-06-18 — Q&A "Show Hard Words" practice aid; set at create time, only ever true for Question & Answer sessions. Persisted via `uspSetSessionAiConfig` since Q&A always runs AI-on. Migration 39: `Docs/PostgreSQLMigration/39_add_hard_words.sql` — **applied to Supabase 2026-06-18**)*
+  - `ShowHardWordsInAnswer BIT NOT NULL DEFAULT 0` *(2026-06-18 — Q&A "keep key words while answering" aid; shows the question's key words on the candidate's own answer turn. Independent of `ShowHardWords`; Q&A-only, persisted via `uspSetSessionAiConfig`. Migration 41: `Docs/PostgreSQLMigration/41_add_hard_words_in_answer.sql` — **applied to Supabase 2026-06-18**)*
 - Constraints: `PK_tblSession_SessionId`, `FK_tblSession_HostUserId_tblUser_UserId`, `FK_tblSession_ScriptId_tblScript_ScriptId`, `UK_tblSession_JoinCode` (filtered `IsDeleted = 0`), `IDX_tblSession_Status`, `IDX_tblSession_HostUserId`, `IDX_tblSession_JoinCode`
 - Valid status values: `LOBBY`, `ACTIVE`, `PAUSED`, `COMPLETED`, `ABANDONED`
 
@@ -1623,6 +1624,7 @@ Body (CreateSessionRequestDto):
   - AiSpeechRate (decimal, required when AiEnabled): one of [0.75, 1.00, 1.25]
   - AiQuestionDelaySec (int, required when AiEnabled): one of [0, 1, 2, 3, 5]
   - ShowHardWords (bool, optional): *(2026-06-18 — Q&A "Show Hard Words" practice aid)* default false. The client sends it only for Question & Answer scripts; the backend clamps it to false for every other category (`SessionService.CreateSessionAsync`: `ShowHardWords = isQuestionAnswer && dto.ShowHardWords`).
+  - ShowHardWordsInAnswer (bool, optional): *(2026-06-18 — Q&A "keep key words while answering")* default false. Independent second Q&A toggle; shows the question's key words on the candidate's answer turn. Q&A-only, clamped the same way (`ShowHardWordsInAnswer = isQuestionAnswer && dto.ShowHardWordsInAnswer`).
 ```
 
 **Response Contract:**
@@ -1701,6 +1703,16 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 - **Native Listen path** (`ListenMediaService.java` `applyVoice`): mirrors the same logic — sets `Locale("en","IN")`
   (fallback UK→US via `isLanguageAvailable`) and picks the `variant`-th same-gender voice in that locale; per-line
   `variant` arrives in the `ListenMedia.start` queue. **UNVERIFIED on device until APK build.**
+- **⚠ KNOWN BUG (open, 2026-06-18) — male personas sound female on the APK.** Both gender selectors
+  (`TtsService.resolveVoiceIndex` and `ListenMediaService.applyVoice`) decide gender by checking whether the
+  device voice **name** contains the substring `"male"`/`"female"`. Android's Google `en-IN` voices are named with
+  opaque codes (`en-in-x-ene-local`, `en-in-x-end-local`, `en-in-x-cxx-network`…) that contain **neither** word, so
+  the same-gender filter matches nothing → both paths fall back to the engine's single default `en-IN` voice
+  (typically female) for **every** persona. Web is unaffected (browser voice names carry gender hints + pitch
+  varies). **Fix in progress:** a temporary diagnostic in `TtsService` (`dumpVoicesOnce()`, logs `[TTS-DIAG]` voice
+  names once on first `speak`) is shipped to capture the device's real `en-IN` voice list from IV2201; a correct
+  device-voice→gender map will then replace the substring heuristic in both paths and be verified on-device. The
+  diagnostic must be removed after the map is confirmed.
 - **AI session skips the invite screen:** because the AI fills every non-host slot, there are no guest slots to invite — on success the client navigates straight to `/session/lobby/{sessionId}` instead of `/session/invite`. Human (non-AI) sessions still go to the invite screen.
 
 **Notes on Known Drift Prevented:**
@@ -2448,7 +2460,8 @@ ApiResponse<TurnStateResponseDto>
   - AiVoiceName (string?): *(2026-06-18)* named Indian voice persona id chosen for this session's AI. The narrating client (`session-room.maybeNarrateAiTurn`) resolves it via `getVoicePersona()` and speaks with `lang: 'en-IN'`, the persona's `pitch` + `voiceVariant`. Falls back to `AiVoiceGender` then the default persona (`aarav`).
   - AiVoiceGender (string?), AiSpeechRate (decimal?), AiQuestionDelaySec (int?): *(Phase 17)* session AI config, joined from `tblSession` onto the turn payload so the narrating client has rate/voice/delay without a second call. Null on non-AI sessions.
   - ShowHardWords (bool): *(2026-06-18 — Q&A)* mirrors `tblSession.ShowHardWords`. Always present; only ever true for Question & Answer sessions created with the toggle on.
-  - HardWords (HardWordDto[] — `{word, meaning?}`): *(2026-06-18 — Q&A)* "Key words to remember". Parsed in `GetCurrentTurnAsync` from `Utterance.HardWords` (raw `word:meaning | …`) **only when `ShowHardWords && IsFacilitatorTurn`** (the Interviewer/listen turn) and capped to the first 5. Empty `[]` on the candidate's own answer turn (blind preserved) and on flag-off sessions. When empty, the raw `Utterance.HardWords` is also nulled so the model-answer vocabulary never leaks to the client. The frontend `listener-screen` renders these as a wrapped chip list; the optimistic `TURN_SHIFT` patch resets `hardWords: []` to avoid a stale flash before the canonical `getCurrentTurn` repopulates.
+  - ShowHardWordsInAnswer (bool): *(2026-06-18 — Q&A)* mirrors `tblSession.ShowHardWordsInAnswer`. True when the question's key words stay visible on the candidate's own answer turn.
+  - HardWords (HardWordDto[] — `{word, meaning?}`): *(2026-06-18 — Q&A)* "Key words". Parsed in `GetCurrentTurnAsync`, capped to 5, by exactly one branch: **`ShowHardWords && IsFacilitatorTurn`** → this interviewer utterance's words; **`ShowHardWordsInAnswer && !IsFacilitatorTurn`** → the words of the most recent preceding utterance on the same script (the question being answered); else empty. When empty the raw `Utterance.HardWords` is also nulled so model-answer vocabulary never leaks. Frontend: `listener-screen` renders the interviewer-turn list; on the answer turn `session-room` renders a room-level panel from the `answerHardWords` signal (decoupled from `SpeakerScreen` to protect the recording auto-start). The optimistic `TURN_SHIFT` patch resets both `hardWords: []` and `answerHardWords` to avoid a stale flash.
 ```
 
 **Business Rules:**
@@ -3571,23 +3584,31 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 - Excel **Column I `HardWords`** (positional cell 9, parsed by `ExcelParserService`; ≤1024 chars; empty-row check covers cols 1–9). Format: `word:meaning | word:meaning` (first `:` splits word/meaning).
 - Persisted to **`tblUtterance.HardWords NVARCHAR(1024) NULL`** through the bulk path (`ScriptRepository.CreateUtteranceTableParameter` → PG JSONB `HardWords` element / SQL Server `UtteranceTVP` column → `uspBulkInsertUtterance`) and the single-insert `uspInsertUtterance` (`@HardWords`). Carried in `UtteranceParseDto`, `Utterance`, `UtteranceResponseDto`, and the script-duplicate copy.
 
-**Session flag:**
-- `CreateSessionRequestDto.ShowHardWords` (bool, optional). `SessionService.CreateSessionAsync` sets `session.ShowHardWords = isQuestionAnswer && dto.ShowHardWords` (clamp). Q&A always forces AI on, so the flag persists via `uspSetSessionAiConfig` (`@ShowHardWords`, appended after `@AiQuestionDelaySec`). Column `tblSession.ShowHardWords BIT NOT NULL DEFAULT 0`.
+**Session flags (two independent Q&A-only toggles):**
+- `CreateSessionRequestDto.ShowHardWords` (bool, optional) — show the question's key words on the **Interviewer/listen turn**.
+- `CreateSessionRequestDto.ShowHardWordsInAnswer` (bool, optional) — *(2026-06-18, Migration 41)* keep the question's key words visible on the **candidate's own answer (speaker) turn** so they remember to use them. Independent of `ShowHardWords` (either, both, or neither may be on).
+- `SessionService.CreateSessionAsync` clamps each: `ShowHardWords = isQuestionAnswer && dto.ShowHardWords`, `ShowHardWordsInAnswer = isQuestionAnswer && dto.ShowHardWordsInAnswer`. Q&A always forces AI on, so both persist via `uspSetSessionAiConfig` (`@ShowHardWords` then `@ShowHardWordsInAnswer`, appended after `@AiQuestionDelaySec`). Columns `tblSession.ShowHardWords BIT NOT NULL DEFAULT 0`, `tblSession.ShowHardWordsInAnswer BIT NOT NULL DEFAULT 0`.
 
 **Turn payload (read):**
-- `GetCurrentTurnAsync` projects `sessionRow.ShowHardWords` → `TurnStateResponseDto.ShowHardWords` and the raw `utterance.HardWords` → `UtteranceResponseDto.HardWords`. After materialization it parses into `TurnStateResponseDto.HardWords` (`HardWordDto{Word, Meaning?}`) **only when `ShowHardWords && IsFacilitatorTurn`** (the Interviewer/listen turn), capped to 5. On any other turn / flag off it clears both the list and the raw `Utterance.HardWords` — model-answer vocabulary never leaks to the candidate's answer turn.
+- `GetCurrentTurnAsync` projects `sessionRow.ShowHardWords` → `TurnStateResponseDto.ShowHardWords`, `sessionRow.ShowHardWordsInAnswer` → `TurnStateResponseDto.ShowHardWordsInAnswer`, and the raw `utterance.HardWords` → `UtteranceResponseDto.HardWords`. After materialization the `HardWords` list (`HardWordDto{Word, Meaning?}`, capped to 5) is populated by exactly one branch:
+  - **`ShowHardWords && IsFacilitatorTurn`** → parse THIS (interviewer/question) utterance's `HardWords` (existing behavior).
+  - **`ShowHardWordsInAnswer && !IsFacilitatorTurn`** → the candidate's answer row has no words of its own, so it pulls them from the most recent **preceding utterance on the same `ScriptId` with non-null `HardWords`** (`SequenceId < current`, `ORDER BY SequenceId DESC`, first) — i.e. the question being answered. One extra indexed lookup, only on Q&A answer turns when the flag is on.
+  - else → empty.
+  When the resulting list is empty it also clears the raw `Utterance.HardWords` so model-answer vocabulary never leaks unless it is being shown.
 
 **Frontend render:**
-- `listener-screen.component`: renders `turnState.hardWords` as a wrapped chip list ("Key words to remember"); no horizontal scroll, ≤14px body (UIStandards). `session-room.handleTurnShift` resets `hardWords: []` in the optimistic patch so stale words never flash before `getCurrentTurn` repopulates.
+- `listener-screen.component`: renders `turnState.hardWords` as a wrapped chip list ("Key words to remember") on the interviewer/listen turn; no horizontal scroll, ≤14px body (UIStandards).
+- `session-room.component` (answer turn): the candidate is the **speaker**, so the words are rendered by a **room-level** panel ("Key words to use") driven by the `answerHardWords` signal — NOT passed into `SpeakerScreenComponent`'s `turnState` input. This is deliberate: `SpeakerScreen.ngOnChanges` unconditionally cancels the auto-start/auto-submit timers, so re-feeding canonical state into it on the speaker's own turn would kill the pending mic auto-start. `updateState` sets `answerHardWords = (amSpeaker && state.showHardWordsInAnswer) ? state.hardWords : []` from the canonical load; `handleTurnShift` resets it to `[]` (no stale flash). Same chip styling, ≤14px body, wraps, never scrolls sideways.
 
 **Prompt/template:** `ExcelTemplateStandard.md §6.7` (Column I rule + sample) and §2.1/§5.1 (universal column map / header). Q&A prompt template (`tblScriptPromptTemplate`, category `Question & Answer`) updated via Migration 40 (`Docs/PostgreSQLMigration/40_update_qa_prompt_hard_words.sql`; SQL Server `SqlServerSeed/40_*`) to generate `hardWords` on Interviewer rows.
 
 **Failure / fallback:** missing/blank Column I → `HardWords` null → no panel (graceful). Malformed pairs: entries without `:` keep word + null meaning; blank entries skipped; >5 words truncated.
 
-**Verification:** Migrations 39 + 40 **applied to Supabase 2026-06-18** (columns + recreated functions + Q&A prompt row verified; the prompt-template table was empty so migration 37 was applied first to insert the canonical Q&A row). Still **UNVERIFIED on device** — listen-turn panel render + on-device Q&A flow not yet confirmed on APK (IV2201). Green build/typecheck only (§5a).
+**Verification:** Migrations 39 + 40 **applied to Supabase 2026-06-18** (columns + recreated functions + Q&A prompt row verified; the prompt-template table was empty so migration 37 was applied first to insert the canonical Q&A row). **Migration 41** (`ShowHardWordsInAnswer` column + recreated `uspsetsessionaiconfig` with the new positional param) **applied to Supabase 2026-06-18** (verified: `tblsession.showhardwordsinanswer` = boolean NOT NULL default false; `uspsetsessionaiconfig` now has 10 args). Still **UNVERIFIED on device** — listen-turn panel + answer-turn panel render + on-device Q&A flow not yet confirmed on APK (IV2201). Green backend build + frontend `tsc --noEmit` only (§5a).
 
 **Notes on Drift:**
-- Positional contracts that must stay in lockstep: Excel cell 9 ↔ `tblUtterance.HardWords`; C# TVP/JSONB column order ↔ `uspBulkInsertUtterance`; C# param order ↔ PG positional `uspsetsessionaiconfig` (`@ShowHardWords` 7th).
+- Positional contracts that must stay in lockstep: Excel cell 9 ↔ `tblUtterance.HardWords`; C# TVP/JSONB column order ↔ `uspBulkInsertUtterance`; C# param order ↔ PG positional `uspsetsessionaiconfig` (`@ShowHardWords` 7th, `@ShowHardWordsInAnswer` 8th — Migration 41 drops the Migration-39 8-arg signature and recreates the 10-arg one).
+- **Answer-turn words must NOT flow through `SpeakerScreen` input (client-guard drift avoided 2026-06-18):** `SpeakerScreen.ngOnChanges` unconditionally cancels the recording auto-start/auto-submit timers, and `session-room.updateState` deliberately skips re-applying canonical state on the speaker's own turn. So the answer-turn key words are rendered by a room-level `answerHardWords` signal instead — re-feeding them through `turnState` would have cancelled the candidate's mic auto-start.
 - **Fixed 2026-06-18 — optimistic-shift guard hid words after turn 1 (stale-state / client guard drift):** the "Key words" panel showed only on the FIRST interviewer turn. Cause: `session-room.handleTurnShift` blanks `hardWords: []` in the optimistic `TURN_SHIFT` patch (to avoid a stale flash), but `updateState`'s guard `state.turnIndex > current.turnIndex` then skipped applying the canonical `getCurrentTurn` response (same turnIndex as the optimistic patch) — so the real hard words never landed on any *shifted* turn (turn 1 worked only because the initial load has no optimistic patch). **Fix:** `updateState` now also applies the canonical state when `!amSpeaker` (a listener/AI-interviewer turn has no SpeakerScreen to re-arm, so it is safe to replace) — the guard still protects the active speaker's own turn from a mid-recording re-arm. Hard words now repopulate on every interviewer turn.
 
 ---

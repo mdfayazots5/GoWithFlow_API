@@ -51,6 +51,13 @@ public sealed class Session : BaseAuditEntity
 	/// </summary>
 	public bool ShowHardWords { get; set; }
 
+	/// <summary>
+	/// Question &amp; Answer practice aid. When true, the question's hard words stay visible to the
+	/// candidate on their own ANSWER turn (so they can recall and use them). Independent of
+	/// <see cref="ShowHardWords"/>. Only ever true for Question &amp; Answer sessions.
+	/// </summary>
+	public bool ShowHardWordsInAnswer { get; set; }
+
 	public User? Host { get; set; }
 
 	public Script? Script { get; set; }

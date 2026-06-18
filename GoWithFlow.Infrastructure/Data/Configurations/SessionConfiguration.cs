@@ -89,6 +89,11 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
 			.IsRequired()
 			.HasDefaultValue(false);
 
+		// Question & Answer "Show Hard Words while answering" flag. Default false = blind answer.
+		builder.Property(session => session.ShowHardWordsInAnswer)
+			.IsRequired()
+			.HasDefaultValue(false);
+
 		builder.HasMany(session => session.Members)
 			.WithOne(member => member.Session)
 			.HasForeignKey(member => member.SessionId)

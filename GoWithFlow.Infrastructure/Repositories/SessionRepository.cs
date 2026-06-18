@@ -477,6 +477,7 @@ public sealed class SessionRepository : ISessionRepository
 		command.Parameters.Add(CreateParameter("@AiSpeechRate", session.AiSpeechRate));
 		command.Parameters.Add(CreateParameter("@AiQuestionDelaySec", session.AiQuestionDelaySec));
 		command.Parameters.Add(CreateParameter("@ShowHardWords", session.ShowHardWords));
+		command.Parameters.Add(CreateParameter("@ShowHardWordsInAnswer", session.ShowHardWordsInAnswer));
 		command.Parameters.Add(CreateParameter("@UpdatedBy", session.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", session.IPAddress));
 

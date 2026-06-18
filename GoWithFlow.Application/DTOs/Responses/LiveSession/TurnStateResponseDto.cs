@@ -64,9 +64,17 @@ public sealed class TurnStateResponseDto
 	public bool ShowHardWords { get; set; }
 
 	/// <summary>
-	/// "Key words to remember" for this turn — populated only on the Interviewer/listen turn and only
-	/// when <see cref="ShowHardWords"/> is true. Empty on the candidate's own answer turn (stays blind)
-	/// and on every session where the flag is off. Capped to the first 5 words to protect the layout.
+	/// Question &amp; Answer practice aid. True when the session keeps the question's key words visible
+	/// while the candidate is ANSWERING. When true AND this is the candidate's own answer turn,
+	/// <see cref="HardWords"/> carries the words from the question being answered.
+	/// </summary>
+	public bool ShowHardWordsInAnswer { get; set; }
+
+	/// <summary>
+	/// "Key words to remember" for this turn. Populated on the Interviewer/listen turn when
+	/// <see cref="ShowHardWords"/> is true, and on the candidate's own answer turn when
+	/// <see cref="ShowHardWordsInAnswer"/> is true (carrying the question's words). Empty otherwise.
+	/// Capped to the first 5 words to protect the layout.
 	/// </summary>
 	public IReadOnlyList<HardWordDto> HardWords { get; set; } = [];
 }

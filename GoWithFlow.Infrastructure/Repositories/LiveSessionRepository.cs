@@ -97,18 +97,42 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				AiVoiceName = sessionRow.AiVoiceName,
 				AiSpeechRate = sessionRow.AiSpeechRate,
 				AiQuestionDelaySec = sessionRow.AiQuestionDelaySec,
-				ShowHardWords = sessionRow.ShowHardWords
+				ShowHardWords = sessionRow.ShowHardWords,
+				ShowHardWordsInAnswer = sessionRow.ShowHardWordsInAnswer
 			})
 			.FirstOrDefaultAsync(cancellationToken);
 
-		// Question & Answer "Show Hard Words" aid: parse the raw word:meaning list into structured words,
-		// but ONLY on the Interviewer/listen turn and ONLY when the flag is on. On the candidate's own
-		// answer turn (or when the flag is off) the words stay hidden so the blind-answer design holds.
+		// Question & Answer "Show Hard Words" aid: parse the raw word:meaning list into structured words.
+		// Two independent flags decide when words are shown:
+		//   • ShowHardWords        → on the Interviewer/listen turn, show THIS utterance's words.
+		//   • ShowHardWordsInAnswer → on the candidate's own answer turn, show the words from the
+		//                             question being answered (the preceding interviewer utterance).
+		// When neither applies the words stay hidden so the blind design holds.
 		if (turn is not null)
 		{
-			turn.HardWords = turn.ShowHardWords && turn.IsFacilitatorTurn
-				? ParseHardWords(turn.Utterance.HardWords)
-				: [];
+			if (turn.ShowHardWords && turn.IsFacilitatorTurn)
+			{
+				turn.HardWords = ParseHardWords(turn.Utterance.HardWords);
+			}
+			else if (turn.ShowHardWordsInAnswer && !turn.IsFacilitatorTurn)
+			{
+				// The candidate's answer row carries no words of its own; pull them from the most recent
+				// preceding utterance on this script that has hard words (the Interviewer's question).
+				var questionHardWords = await _dbContext.Utterances.AsNoTracking()
+					.Where(u => u.ScriptId == turn.Utterance.ScriptId
+						&& u.SequenceId < turn.Utterance.SequenceId
+						&& u.IsDeleted == false
+						&& u.HardWords != null)
+					.OrderByDescending(u => u.SequenceId)
+					.Select(u => u.HardWords)
+					.FirstOrDefaultAsync(cancellationToken);
+
+				turn.HardWords = ParseHardWords(questionHardWords);
+			}
+			else
+			{
+				turn.HardWords = [];
+			}
 
 			// Never ship the raw model-answer-derived words to the client unless they are being shown.
 			if (turn.HardWords.Count == 0)

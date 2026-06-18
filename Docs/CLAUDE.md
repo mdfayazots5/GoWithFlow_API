@@ -271,7 +271,7 @@ This framework is permanent and applies to all future tasks by default, without 
 | Voice / audio | `@capacitor-community/speech-recognition` (on-device ASR) + `capacitor-voice-recorder` (capture). See the Voice gate (§5a). |
 | Realtime | **SignalR** (`@microsoft/signalr`) for live session events. |
 | Backend API | **ASP.NET Core C#** — Clean Architecture across `GoWithFlow.API` / `.Application` / `.Domain` / `.Infrastructure`, CQRS, SignalR hubs. |
-| Database | **SQL Server** (current) with an in-progress **PostgreSQL** migration (`Backend/Docs/PostgreSQLMigration`, `New SQL Format.txt`). Preserve provider parity. |
+| Database | **SQL Server** (localdb, dev) + **PostgreSQL** (Supabase, **production**). Preserve provider parity. Migrations: `Backend/Docs/PostgreSQLMigration` (PG) mirrored in `Backend/Docs/SqlServerSeed`. **The Supabase PostgreSQL connection string is already in `Backend/GoWithFlow.API/appsettings.json` (`ConnectionStrings:PostgreSQL`) — apply migrations via that string/Npgsql; never re-search for `psql` or the credentials.** |
 | E2E tests | **Playwright** (`test:e2e`). |
 
 ### Architecture Rules

@@ -31,4 +31,8 @@ public sealed class CreateSessionRequestDto
 	// Question & Answer only — "Show Hard Words" practice aid. When true, the Interviewer/listen turn
 	// surfaces the turn's key words to the candidate. Ignored (forced false) for other categories.
 	public bool ShowHardWords { get; set; }
+
+	// Question & Answer only — keep the question's key words visible while the candidate is ANSWERING
+	// (so they can recall and use them). Independent of ShowHardWords. Ignored (forced false) elsewhere.
+	public bool ShowHardWordsInAnswer { get; set; }
 }
