@@ -44,7 +44,6 @@ ALTER TABLE tblscript            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tblscriptversion     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tblutterance         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tblrefreshtoken      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tblotpverification   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tblsession           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tblsessionmember     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tblturnstate         ENABLE ROW LEVEL SECURITY;
@@ -97,13 +96,6 @@ CREATE POLICY policy_tblutterance_select ON tblutterance
 -- ============================================
 CREATE POLICY policy_tblrefreshtoken_select ON tblrefreshtoken
     FOR SELECT USING (userid = current_user_id() AND isdeleted = FALSE);
-
--- ============================================
--- tblOtpVerification
--- No direct read access — all access via SPs.
--- ============================================
-CREATE POLICY policy_tblotpverification_select ON tblotpverification
-    FOR SELECT USING (FALSE);
 
 -- ============================================
 -- tblSession

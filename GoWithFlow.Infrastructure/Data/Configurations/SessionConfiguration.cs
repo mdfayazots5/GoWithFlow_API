@@ -84,6 +84,11 @@ public sealed class SessionConfiguration : IEntityTypeConfiguration<Session>
 		builder.Property(session => session.AiSpeechRate)
 			.HasPrecision(3, 2);
 
+		// Question & Answer "Show Hard Words" practice-aid flag. Default false = blind interview.
+		builder.Property(session => session.ShowHardWords)
+			.IsRequired()
+			.HasDefaultValue(false);
+
 		builder.HasMany(session => session.Members)
 			.WithOne(member => member.Session)
 			.HasForeignKey(member => member.SessionId)

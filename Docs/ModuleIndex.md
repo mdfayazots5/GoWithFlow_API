@@ -24,6 +24,11 @@ Logic source: `ProjectOverview.md` only.
 | advance-ai | Backend Live Session Module | Backend Live Session Module |
 | ai turn | Backend Live Session Module | Backend Live Session Module |
 | isai | Backend Live Session Module | Backend Live Session Module |
+| hard word | Backend Live Session Module | Backend Live Session Module |
+| hard words | Backend Live Session Module | Backend Live Session Module |
+| hardwords | Backend Live Session Module | Backend Live Session Module |
+| show hard words | Backend Live Session Module | Backend Live Session Module |
+| key words | Backend Live Session Module | Backend Live Session Module |
 | voice engine | Backend Live Session Module | Frontend Voice Recognition Engine |
 | voice recognition | Backend Live Session Module | Frontend Voice Recognition Engine |
 | voice recorder | Backend Live Session Module | Frontend Voice Recognition Engine |

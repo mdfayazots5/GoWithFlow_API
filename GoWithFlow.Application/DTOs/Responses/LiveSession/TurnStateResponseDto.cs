@@ -56,4 +56,17 @@ public sealed class TurnStateResponseDto
 	public decimal? AiSpeechRate { get; set; }
 
 	public int? AiQuestionDelaySec { get; set; }
+
+	/// <summary>
+	/// Question &amp; Answer practice aid. True when the session was created with "Show Hard Words" on.
+	/// When true AND this is the Interviewer/listen turn, <see cref="HardWords"/> carries the words to show.
+	/// </summary>
+	public bool ShowHardWords { get; set; }
+
+	/// <summary>
+	/// "Key words to remember" for this turn — populated only on the Interviewer/listen turn and only
+	/// when <see cref="ShowHardWords"/> is true. Empty on the candidate's own answer turn (stays blind)
+	/// and on every session where the flag is off. Capped to the first 5 words to protect the layout.
+	/// </summary>
+	public IReadOnlyList<HardWordDto> HardWords { get; set; } = [];
 }

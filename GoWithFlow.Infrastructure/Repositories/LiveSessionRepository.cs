@@ -43,7 +43,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 
 	public async Task<TurnStateResponseDto?> GetCurrentTurnAsync(long sessionId, CancellationToken cancellationToken = default)
 	{
-		return await (
+		var turn = await (
 			from turnState in _dbContext.TurnStates.AsNoTracking()
 			join activeMember in _dbContext.Users.AsNoTracking() on turnState.ActiveMemberId equals activeMember.UserId
 			join utterance in _dbContext.Utterances.AsNoTracking() on turnState.UtteranceId equals utterance.UtteranceId
@@ -76,7 +76,8 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 					GrammarTag = utterance.GrammarTag,
 					ContextTag = utterance.ContextTag,
 					FocusWord = utterance.FocusWord,
-					PronunciationNote = utterance.PronunciationNote
+					PronunciationNote = utterance.PronunciationNote,
+					HardWords = utterance.HardWords
 				},
 				ReReadAllowed = turnState.ReReadAllowed,
 				ReReadCount = turnState.ReReadCount,
@@ -95,9 +96,66 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				AiVoiceGender = sessionRow.AiVoiceGender,
 				AiVoiceName = sessionRow.AiVoiceName,
 				AiSpeechRate = sessionRow.AiSpeechRate,
-				AiQuestionDelaySec = sessionRow.AiQuestionDelaySec
+				AiQuestionDelaySec = sessionRow.AiQuestionDelaySec,
+				ShowHardWords = sessionRow.ShowHardWords
 			})
 			.FirstOrDefaultAsync(cancellationToken);
+
+		// Question & Answer "Show Hard Words" aid: parse the raw word:meaning list into structured words,
+		// but ONLY on the Interviewer/listen turn and ONLY when the flag is on. On the candidate's own
+		// answer turn (or when the flag is off) the words stay hidden so the blind-answer design holds.
+		if (turn is not null)
+		{
+			turn.HardWords = turn.ShowHardWords && turn.IsFacilitatorTurn
+				? ParseHardWords(turn.Utterance.HardWords)
+				: [];
+
+			// Never ship the raw model-answer-derived words to the client unless they are being shown.
+			if (turn.HardWords.Count == 0)
+			{
+				turn.Utterance.HardWords = null;
+			}
+		}
+
+		return turn;
+	}
+
+	// Parses a pipe-separated "word:meaning | word:meaning" string into up to 5 structured hard words.
+	// The first ':' splits word from meaning; entries without a meaning keep a null meaning. Blank/garbage
+	// entries are skipped. The 5-word cap protects the mobile "Key words to remember" layout.
+	private static IReadOnlyList<HardWordDto> ParseHardWords(string? raw)
+	{
+		if (string.IsNullOrWhiteSpace(raw))
+		{
+			return [];
+		}
+
+		var words = new List<HardWordDto>();
+
+		foreach (var entry in raw.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+		{
+			var separatorIndex = entry.IndexOf(':');
+			var word = (separatorIndex >= 0 ? entry[..separatorIndex] : entry).Trim();
+			var meaning = separatorIndex >= 0 ? entry[(separatorIndex + 1)..].Trim() : null;
+
+			if (string.IsNullOrWhiteSpace(word))
+			{
+				continue;
+			}
+
+			words.Add(new HardWordDto
+			{
+				Word = word,
+				Meaning = string.IsNullOrWhiteSpace(meaning) ? null : meaning
+			});
+
+			if (words.Count == 5)
+			{
+				break;
+			}
+		}
+
+		return words;
 	}
 
 	public async Task<TurnState?> GetCurrentTurnEntityAsync(long sessionId, CancellationToken cancellationToken = default)

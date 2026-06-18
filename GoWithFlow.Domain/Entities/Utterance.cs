@@ -22,5 +22,14 @@ public sealed class Utterance : BaseAuditEntity
 
 	public string? PronunciationNote { get; set; }
 
+	/// <summary>
+	/// Question &amp; Answer only — optional set of hard/important words for this turn, authored on
+	/// Interviewer rows. Stored as pipe-separated <c>word:meaning</c> pairs
+	/// (e.g. <c>mitigate:to reduce harm | leverage:to make use of</c>). Surfaced as a "Key words to
+	/// remember" study aid on the Interviewer/listen turn only when the session's ShowHardWords flag is on.
+	/// Null/blank for every other category.
+	/// </summary>
+	public string? HardWords { get; set; }
+
 	public Script? Script { get; set; }
 }

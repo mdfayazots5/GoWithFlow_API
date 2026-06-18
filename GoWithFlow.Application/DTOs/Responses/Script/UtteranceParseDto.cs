@@ -17,4 +17,7 @@ public sealed class UtteranceParseDto
 	public string? FocusWord { get; set; }
 
 	public string? PronunciationNote { get; set; }
+
+	/// <summary>Question &amp; Answer — pipe-separated <c>word:meaning</c> hard-words list (Column I). Null elsewhere.</summary>
+	public string? HardWords { get; set; }
 }

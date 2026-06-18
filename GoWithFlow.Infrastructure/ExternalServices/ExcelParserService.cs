@@ -35,6 +35,7 @@ public sealed class ExcelParserService : IExcelParserService
 			var contextTag = GetNullableCellValue(row.Cell(6));
 			var focusWord = GetNullableCellValue(row.Cell(7));
 			var pronunciationNote = GetNullableCellValue(row.Cell(8));
+			var hardWords = GetNullableCellValue(row.Cell(9));
 
 			var sequenceId = ValidateSequenceId(rowNumber, sequenceText, sequenceIds, rowErrors);
 
@@ -57,6 +58,11 @@ public sealed class ExcelParserService : IExcelParserService
 				rowErrors.Add(CreateError(rowNumber, "HintText", "HintText cannot exceed 512 characters."));
 			}
 
+			if (hardWords?.Length > 1024)
+			{
+				rowErrors.Add(CreateError(rowNumber, "HardWords", "HardWords cannot exceed 1024 characters."));
+			}
+
 			if (rowErrors.Count > 0)
 			{
 				result.ErrorRows.AddRange(rowErrors);
@@ -72,7 +78,8 @@ public sealed class ExcelParserService : IExcelParserService
 				GrammarTag = grammarTag,
 				ContextTag = contextTag,
 				FocusWord = focusWord,
-				PronunciationNote = pronunciationNote
+				PronunciationNote = pronunciationNote,
+				HardWords = hardWords
 			});
 		}
 
@@ -112,7 +119,7 @@ public sealed class ExcelParserService : IExcelParserService
 
 	private static bool IsRowEmpty(IXLRow row)
 	{
-		return row.Cells(1, 8).All(cell => string.IsNullOrWhiteSpace(cell.GetString()));
+		return row.Cells(1, 9).All(cell => string.IsNullOrWhiteSpace(cell.GetString()));
 	}
 
 	private static ExcelRowError CreateError(int rowNumber, string columnName, string errorMessage)

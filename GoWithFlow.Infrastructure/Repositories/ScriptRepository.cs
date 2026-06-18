@@ -54,6 +54,7 @@ public sealed class ScriptRepository : IScriptRepository
 		command.Parameters.Add(CreateParameter("@ContextTag", utterance.ContextTag));
 		command.Parameters.Add(CreateParameter("@FocusWord", utterance.FocusWord));
 		command.Parameters.Add(CreateParameter("@PronunciationNote", utterance.PronunciationNote));
+		command.Parameters.Add(CreateParameter("@HardWords", utterance.HardWords));
 		command.Parameters.Add(CreateParameter("@CreatedBy", utterance.CreatedBy));
 		command.Parameters.Add(CreateParameter("@IPAddress", utterance.IPAddress));
 
@@ -173,7 +174,8 @@ public sealed class ScriptRepository : IScriptRepository
 				GrammarTag = utterance.GrammarTag,
 				ContextTag = utterance.ContextTag,
 				FocusWord = utterance.FocusWord,
-				PronunciationNote = utterance.PronunciationNote
+				PronunciationNote = utterance.PronunciationNote,
+				HardWords = utterance.HardWords
 			})
 			.ToListAsync(cancellationToken);
 
@@ -290,7 +292,8 @@ public sealed class ScriptRepository : IScriptRepository
 				utterance.GrammarTag,
 				utterance.ContextTag,
 				utterance.FocusWord,
-				utterance.PronunciationNote
+				utterance.PronunciationNote,
+				utterance.HardWords
 			});
 
 			return DbCommandHelper.CreateJsonParameter(
@@ -308,6 +311,7 @@ public sealed class ScriptRepository : IScriptRepository
 		dataTable.Columns.Add("ContextTag", typeof(string));
 		dataTable.Columns.Add("FocusWord", typeof(string));
 		dataTable.Columns.Add("PronunciationNote", typeof(string));
+		dataTable.Columns.Add("HardWords", typeof(string));
 
 		foreach (var utterance in utterances)
 		{
@@ -319,7 +323,8 @@ public sealed class ScriptRepository : IScriptRepository
 				utterance.GrammarTag ?? (object)DBNull.Value,
 				utterance.ContextTag ?? (object)DBNull.Value,
 				utterance.FocusWord ?? (object)DBNull.Value,
-				utterance.PronunciationNote ?? (object)DBNull.Value);
+				utterance.PronunciationNote ?? (object)DBNull.Value,
+				utterance.HardWords ?? (object)DBNull.Value);
 		}
 
 		return new SqlParameter("@Utterances", SqlDbType.Structured)
@@ -677,7 +682,7 @@ public sealed class ScriptRepository : IScriptRepository
 		var (speakerLabels, minRows, maxRows, mandatoryColumns) = upper switch
 		{
 			"MOCK INTERVIEW"    => ("Interviewer / Candidate",  20, 50, "G (FocusWord) required; E (GrammarTag) required"),
-			"QUESTION & ANSWER" => ("Interviewer / Candidate",  16, 40, "Interviewer rows = questions; Candidate rows = model answer (HIDDEN from candidate on-screen). E (GrammarTag) required"),
+			"QUESTION & ANSWER" => ("Interviewer / Candidate",  16, 40, "Interviewer rows = questions; Candidate rows = model answer (HIDDEN from candidate on-screen). E (GrammarTag) required. Column I (HardWords) optional on Interviewer rows: 2-4 'word:meaning' pairs separated by ' | ' (e.g. 'mitigate:to reduce harm | leverage:to make use of')"),
 			"VOCABULARY SPRINT" => ("Tutor / Learner",          20, 40, "D (HintText) required; G (FocusWord) required; H (PronunciationNote) required on Tutor rows"),
 			"FLUENCY DRILL"     => ("Speaker A / Speaker B",    30, 60, "E, G, H must be left blank"),
 			"REPRACTICE ROUND"  => ("Coach / Learner",          14, 28, "D (HintText) required; E (GrammarTag) required — same value on ALL rows"),
@@ -754,6 +759,7 @@ public sealed class ScriptRepository : IScriptRepository
 				ContextTag        = u.ContextTag,
 				FocusWord         = u.FocusWord,
 				PronunciationNote = u.PronunciationNote,
+				HardWords         = u.HardWords,
 				CreatedBy         = createdBy
 			});
 		}

@@ -76,6 +76,7 @@ The backend parser reads **Row 1 as the header row** and data from **Row 2 onwar
 | F      | `ContextTag`      | String      | NO       | 64 chars   | Scene context; e.g. `Office`, `Airport`, `Hospital`       |
 | G      | `FocusWord`       | String      | NO       | 64 chars   | Highlighted vocabulary word from EnglishText              |
 | H      | `PronunciationNote`| String     | NO       | 256 chars  | IPA or phonetic guide for the focus word                  |
+| I      | `HardWords`       | String      | NO       | 1024 chars | **Question & Answer only** — pipe-separated `word:meaning` pairs on Interviewer rows (see §6.7). Ignored for all other categories. |
 
 ### 2.2 Parser Behaviour
 
@@ -192,6 +193,7 @@ Every Excel file must follow this structure exactly.
 | F      | `ContextTag`          |
 | G      | `FocusWord`           |
 | H      | `PronunciationNote`   |
+| I      | `HardWords`           |
 
 > Header text must be exactly as shown above (case-sensitive). The parser skips row 1, but validation tooling and AI generation pipelines rely on exact header names.
 
@@ -677,6 +679,7 @@ AI-driven mock interview. An **AI voice reads each Interviewer question aloud**;
 | F      | YES      | Interview type; consistent on every row                                          |
 | G      | NO       | Professional/industry term relevant to the question or answer                    |
 | H      | NO       | IPA for the FocusWord                                                            |
+| I      | NO       | **HardWords** — on `Interviewer` rows only: 2–4 `word:meaning` pairs separated by ` \| ` (e.g. `mitigate:to reduce harm \| leverage:to make use of`). The "Show Hard Words" session toggle surfaces these as a "Key words to remember" study aid while the AI reads the question. Leave blank on `Candidate` rows. |
 
 #### Content Rules
 
@@ -690,19 +693,20 @@ AI-driven mock interview. An **AI voice reads each Interviewer question aloud**;
 8. ContextTag (column F) identical on every row (same interview type)
 9. Close with a natural interview ending (candidate-style closing answer or mutual farewell)
 10. Strictly alternate `Interviewer` → `Candidate`; no speaker has 2 consecutive turns
+11. **HardWords (Column I, optional):** on each `Interviewer` row, list 2–4 hard/important words the candidate should understand and try to use, as `word:meaning` pairs separated by ` | ` (meanings 2–5 plain words). These are shown live only when the session's **Show Hard Words** toggle is on — and only on the listen turn. Never populate Column I on `Candidate` rows.
 
 #### Sample Data — Question & Answer (HR Interview / excerpt — first 8 of ≥16 rows)
 
-| SequenceId | SpeakerLabel | EnglishText                                                                                   | HintText                                                        | GrammarTag      | ContextTag   | FocusWord     | PronunciationNote |
-|------------|--------------|-----------------------------------------------------------------------------------------------|-----------------------------------------------------------------|-----------------|--------------|---------------|-------------------|
-| 1          | Interviewer  | Please tell me a little about yourself and your background.                                    | దయచేసి మీ గురించి మరియు మీ నేపథ్యం గురించి కొంచెం చెప్పండి.       | Formal Register | HR Interview | background    | /ˈbækɡraʊnd/      |
-| 2          | Candidate    | I am a computer science graduate with two years of experience in web development. I enjoy building reliable applications and learning new tools. In my last role I delivered three major projects on time. | నేను రెండు సంవత్సరాల అనుభవం ఉన్న కంప్యూటర్ సైన్స్ గ్రాడ్యుయేట్‌ని. | STAR Method     | HR Interview | experience    | /ɪkˈspɪəriəns/    |
-| 3          | Interviewer  | What is your greatest professional strength?                                                   | మీ అతిపెద్ద వృత్తిపరమైన బలం ఏమిటి?                               | Question Forms  | HR Interview | strength      | /streŋθ/          |
-| 4          | Candidate    | My greatest strength is problem solving. When our team faced a critical bug before a release, I traced the root cause and fixed it within a day. This kept the launch on schedule. | నా అతిపెద్ద బలం సమస్య పరిష్కారం.                                 | STAR Method     | HR Interview | problem       | /ˈprɒbləm/        |
-| 5          | Interviewer  | Tell me about a time you handled a difficult situation at work.                                | పనిలో మీరు ఒక కష్టమైన పరిస్థితిని ఎదుర్కొన్న సమయం గురించి చెప్పండి. | STAR Method     | HR Interview | situation     | /ˌsɪtʃuˈeɪʃən/    |
-| 6          | Candidate    | In my previous job a client changed the requirements close to the deadline. I organised a short planning session, re-prioritised the tasks, and we delivered the core features on time. The client was satisfied with the result. | నా మునుపటి ఉద్యోగంలో ఒక క్లయింట్ గడువుకు దగ్గరగా అవసరాలను మార్చారు. | STAR Method     | HR Interview | requirements  | /rɪˈkwaɪəmənts/   |
-| 7          | Interviewer  | Why do you want to work with our company?                                                      | మీరు మా కంపెనీతో ఎందుకు పని చేయాలనుకుంటున్నారు?                  | Question Forms  | HR Interview | company       | /ˈkʌmpəni/        |
-| 8          | Candidate    | I admire your focus on quality and continuous learning. The role matches my skills in backend development, and I believe I can contribute quickly. I am also excited to grow alongside an experienced team. | మీ నాణ్యత మరియు నిరంతర అభ్యాసంపై దృష్టిని నేను మెచ్చుకుంటాను.    | Formal Register | HR Interview | contribute    | /kənˈtrɪbjuːt/    |
+| SequenceId | SpeakerLabel | EnglishText                                                                                   | HintText                                                        | GrammarTag      | ContextTag   | FocusWord     | PronunciationNote | HardWords |
+|------------|--------------|-----------------------------------------------------------------------------------------------|-----------------------------------------------------------------|-----------------|--------------|---------------|-------------------|-----------|
+| 1          | Interviewer  | Please tell me a little about yourself and your background.                                    | దయచేసి మీ గురించి మరియు మీ నేపథ్యం గురించి కొంచెం చెప్పండి.       | Formal Register | HR Interview | background    | /ˈbækɡraʊnd/      | background:your history and experience \| strengths:things you are good at |
+| 2          | Candidate    | I am a computer science graduate with two years of experience in web development. I enjoy building reliable applications and learning new tools. In my last role I delivered three major projects on time. | నేను రెండు సంవత్సరాల అనుభవం ఉన్న కంప్యూటర్ సైన్స్ గ్రాడ్యుయేట్‌ని. | STAR Method     | HR Interview | experience    | /ɪkˈspɪəriəns/    |  |
+| 3          | Interviewer  | What is your greatest professional strength?                                                   | మీ అతిపెద్ద వృత్తిపరమైన బలం ఏమిటి?                               | Question Forms  | HR Interview | strength      | /streŋθ/          | strength:strong quality \| professional:work-related |
+| 4          | Candidate    | My greatest strength is problem solving. When our team faced a critical bug before a release, I traced the root cause and fixed it within a day. This kept the launch on schedule. | నా అతిపెద్ద బలం సమస్య పరిష్కారం.                                 | STAR Method     | HR Interview | problem       | /ˈprɒbləm/        |  |
+| 5          | Interviewer  | Tell me about a time you handled a difficult situation at work.                                | పనిలో మీరు ఒక కష్టమైన పరిస్థితిని ఎదుర్కొన్న సమయం గురించి చెప్పండి. | STAR Method     | HR Interview | situation     | /ˌsɪtʃuˈeɪʃən/    | handled:dealt with \| situation:event or problem |
+| 6          | Candidate    | In my previous job a client changed the requirements close to the deadline. I organised a short planning session, re-prioritised the tasks, and we delivered the core features on time. The client was satisfied with the result. | నా మునుపటి ఉద్యోగంలో ఒక క్లయింట్ గడువుకు దగ్గరగా అవసరాలను మార్చారు. | STAR Method     | HR Interview | requirements  | /rɪˈkwaɪəmənts/   |  |
+| 7          | Interviewer  | Why do you want to work with our company?                                                      | మీరు మా కంపెనీతో ఎందుకు పని చేయాలనుకుంటున్నారు?                  | Question Forms  | HR Interview | company       | /ˈkʌmpəni/        | motivation:reason you want it \| contribute:add value |
+| 8          | Candidate    | I admire your focus on quality and continuous learning. The role matches my skills in backend development, and I believe I can contribute quickly. I am also excited to grow alongside an experienced team. | మీ నాణ్యత మరియు నిరంతర అభ్యాసంపై దృష్టిని నేను మెచ్చుకుంటాను.    | Formal Register | HR Interview | contribute    | /kənˈtrɪbjuːt/    |  |
 
 > Rows 9–16+ continue the same alternating Interviewer → Candidate pattern with at least one challenging follow-up probe and a natural closing.
 

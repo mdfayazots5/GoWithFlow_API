@@ -44,6 +44,13 @@ public sealed class Session : BaseAuditEntity
 
 	public int? AiQuestionDelaySec { get; set; }
 
+	/// <summary>
+	/// Question &amp; Answer practice aid. When true, the Interviewer/listen turn surfaces the turn's
+	/// hard words ("Key words to remember") to the candidate. Default false = pure blind interview.
+	/// Only ever set true for Question &amp; Answer sessions (which always run with the AI enabled).
+	/// </summary>
+	public bool ShowHardWords { get; set; }
+
 	public User? Host { get; set; }
 
 	public Script? Script { get; set; }

@@ -5,9 +5,9 @@
 -- Run order: 2 of 10
 -- Dependencies: 01_extensions.sql
 -- ============================================
--- Tables migrated: 18
+-- Tables migrated: 17
 --   tblUser, tblScript, tblRefreshToken, tblUserBadge, tblUserStreak,
---   tblDashboardMetric, tblOtpVerification, tblUtterance, tblSession,
+--   tblDashboardMetric, tblUtterance, tblSession,
 --   tblScriptVersion, tblAdminNote, tblSessionMember, tblListenerFeedback,
 --   tblTurnState, tblMistake, tblVoiceAnalysis, tblRepracticeSession,
 --   tblRepracticeUtterance
@@ -19,11 +19,6 @@
 -- Known incompatibilities:
 --   - UtteranceTVP (SQL Server table-valued parameter) has no direct PostgreSQL
 --     equivalent; replaced with temporary table approach in functions file
---   - tblOtpVerification did not exist as a table in the source DB but is
---     required by uspInsertOtpVerification and uspVerifyOtp SPs; schema inferred
---     from stored procedure parameters
--- Manual review required:
---   - tblOtpVerification schema inferred from SP usage — verify column types
 -- ============================================
 
 BEGIN;
@@ -205,36 +200,6 @@ CREATE TABLE IF NOT EXISTS tbldashboardmetric
     isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_tbldashboardmetric_dashboardmetricid PRIMARY KEY (dashboardmetricid)
-);
-
--- ============================================
--- TABLE: tblotpverification
--- No FK dependencies
--- Schema inferred from uspInsertOtpVerification and uspVerifyOtp
--- [MANUAL REVIEW REQUIRED: schema inferred — verify against application requirements]
--- ============================================
-CREATE TABLE IF NOT EXISTS tblotpverification
-(
-    otpverificationid       BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
-    mobilenumber            VARCHAR(16) NOT NULL,
-    otpcode                 VARCHAR(8) NOT NULL,
-    expiresat               TIMESTAMP NOT NULL,
-    isverified              BOOLEAN NOT NULL DEFAULT FALSE,
-    verifiedat              TIMESTAMP NULL,
-    attemptcount            INTEGER NOT NULL DEFAULT 0,
-    tag                     VARCHAR(64) NULL,
-    comments                VARCHAR(256) NULL,
-    sortorder               INTEGER NOT NULL DEFAULT 0,
-    ipaddress               VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
-    createdby               VARCHAR(128) NOT NULL DEFAULT 'Admin',
-    datecreated             TIMESTAMP NOT NULL DEFAULT NOW(),
-    updatedby               VARCHAR(128) NULL,
-    lastupdated             TIMESTAMP NULL,
-    deletedby               VARCHAR(128) NULL,
-    datedeleted             TIMESTAMP NULL,
-    isdeleted               BOOLEAN NOT NULL DEFAULT FALSE,
-
-    CONSTRAINT pk_tblotpverification_otpverificationid PRIMARY KEY (otpverificationid)
 );
 
 -- ============================================

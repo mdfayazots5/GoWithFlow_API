@@ -56,7 +56,6 @@ DROP TABLE IF EXISTS tbldashboardmetric      CASCADE;
 DROP TABLE IF EXISTS tbluserstreak           CASCADE;
 DROP TABLE IF EXISTS tbluserbadge            CASCADE;
 DROP TABLE IF EXISTS tblrefreshtoken         CASCADE;
-DROP TABLE IF EXISTS tblotpverification      CASCADE;
 DROP TABLE IF EXISTS tblscript               CASCADE;
 DROP TABLE IF EXISTS tbluser                 CASCADE;
 

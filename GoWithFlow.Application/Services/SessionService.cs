@@ -113,6 +113,9 @@ public sealed class SessionService : ISessionService
 			ScriptId = dto.ScriptId,
 			Status = SessionStatusType.LOBBY.ToString(),
 			RoomExpiryMinutes = dto.RoomExpiryMinutes,
+			// "Show Hard Words" practice aid is a Question & Answer-only feature; clamp it here so no
+			// other category can ever turn it on, regardless of what the client sends.
+			ShowHardWords = isQuestionAnswer && dto.ShowHardWords,
 			CreatedBy = hostUser.FullName,
 			IPAddress = "127.0.0.1"
 		};

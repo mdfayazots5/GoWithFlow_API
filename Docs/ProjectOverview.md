@@ -338,8 +338,9 @@ Key queries:
 
 #### Removed live table
 
-- `tblOtpVerification` was dropped by EF migration `20260517000000_RemoveOtpVerification`
-- live SQL Server no longer contains the table even though residual OTP stored procedures still exist in the catalog
+- `tblOtpVerification` was dropped from SQL Server by EF migration `20260517000000_RemoveOtpVerification`; the orphaned SQL Server SPs `uspInsertOtpVerification` / `uspVerifyOtp` are dropped by EF migration `20260518000000_DropOtpVerificationProcedures`
+- on the live PostgreSQL DB (Supabase — the active `DatabaseProvider`), the equivalent functions `uspinsertotpverification` / `uspverifyotp` and the orphaned (empty) `public.tblotpverification` table were dropped directly on 2026-06-18 and verified gone; the OTP PostgreSQL scripts (`PostgreSQLMigration/02,06,09,10,00`) were stripped to match
+- OTP is fully decommissioned across both providers: no table, no SPs/functions, no entity, no endpoint
 
 #### User-defined types
 
@@ -348,7 +349,7 @@ Key queries:
 ### Stored Procedures
 
 - User: `uspInsertUser`, `uspGetUserByMobileNumber`, `uspGetUserByUserId`, `uspUpdateUserLastLogin`, `uspSoftDeleteUser`
-- OTP catalog drift: `uspInsertOtpVerification`, `uspVerifyOtp` still exist in SQL Server, but their backing table `tblOtpVerification` is no longer present; treat the OTP persistence contract as `[VERIFY]`
+- OTP: no OTP stored procedures exist — `uspInsertOtpVerification` / `uspVerifyOtp` were dropped (migration `20260518000000_DropOtpVerificationProcedures`) along with their already-removed table; the feature is decommissioned
 - Refresh token: `uspInsertRefreshToken`, `uspGetRefreshTokenByToken`, `uspRevokeRefreshToken`
 - Admin/reporting: `uspInsertAdminNote`, `uspGetAdminAnalyticsOverview`, `uspGetAdminDashboardSummary`, `uspGetAdminNoteByTargetUserId`, `uspGetAllUserBySearch`, `uspGetRecentActivityList`, `uspGetUserDetailByUserId`, `uspGetUserReportSummaryList`, `uspGetUserFullReportByUserId`, `uspExportUserReportData`
 - Script/library: `uspInsertScript`, `uspInsertScriptVersion`, `uspBulkInsertUtterance`, `uspInsertUtterance`, `uspCheckScriptTitleExists`, `uspSoftDeleteScriptByScriptId`, `uspUpdateScriptActiveStatusByScriptId`, `uspUpdateScriptUtteranceCount`, `uspGetScriptBySearch`, `uspGetScriptDetailByScriptId`, `uspGetScriptVersionHistoryByScriptId`
@@ -360,7 +361,7 @@ Key queries:
 ### Domain Model
 
 - Live persistence entities in this foundation: `User`, `RefreshToken`
-- OTP persistence entity status: `[VERIFY]` SQL table removed from live schema; do not treat `OtpVerification` as a validated database contract
+- OTP persistence: decommissioned — no `OtpVerification` entity, table, or stored procedures exist in the system
 - Shared base entity: `BaseAuditEntity`
 - Enums: `AgeGroupType`, `PreferredHintLanguageType`, `UserRoleType`
 
@@ -406,7 +407,7 @@ Key queries:
 - Refresh token: secure random, 7-day expiry, persisted in `tblRefreshToken`
 - Role defaults to `USER` on registration
 - `uspUpdateUserLastLogin` updates `LastLoginDate`, `UpdatedBy`, `LastUpdated` only — streak is managed separately by `uspUpsertUserStreak`
-- OTP persistence remains `[VERIFY]` only; no live `AuthController` endpoint currently exposes OTP send/verify flows
+- No OTP flow exists: there is no `AuthController` OTP send/verify endpoint, and the OTP persistence layer (table + SPs) has been fully removed
 
 ### Infrastructure Wiring
 
@@ -420,8 +421,7 @@ Key queries:
   - PostgreSQL migration output exposes auth routines as `CREATE OR REPLACE FUNCTION`, so `DbCommandHelper.ExecuteReaderAsync`, `ExecuteScalarAsync`, and `ExecuteNonQueryAsync` rewrite `CommandType.StoredProcedure` calls into explicit PostgreSQL `SELECT` statements at execution time
 - startup connectivity guard:
   - `DatabaseStartupValidationHostedService` fails app boot if the selected provider cannot connect
-- Repositories and services touching OTP persistence should be treated as `[VERIFY]` until the removed table contract is reconciled
-- External services: `JwtService`, `OtpService`, `ExcelExportService`
+- External services: `JwtService`, `ExcelExportService`
 - Middleware: `ExceptionMiddleware`
 - Authorization policies: `AdminOnly`, `UserOrAdmin`, `ActiveUser`
 - Real-time identity: `JwtUserIdProvider`, `HubConnectionTracker`
@@ -1124,7 +1124,7 @@ Success (200):
 #### tblUtterance
 
 - Primary key: `UtteranceId BIGINT IDENTITY(1,1)`
-- Business columns: `ScriptId BIGINT NOT NULL`, `SequenceId INT NOT NULL`, `SpeakerLabel NVARCHAR(64) NOT NULL`, `EnglishText NVARCHAR(512) NOT NULL`, `HintText NVARCHAR(512) NULL`, `GrammarTag NVARCHAR(64) NULL`, `ContextTag NVARCHAR(64) NULL`, `FocusWord NVARCHAR(64) NULL`, `PronunciationNote NVARCHAR(256) NULL`
+- Business columns: `ScriptId BIGINT NOT NULL`, `SequenceId INT NOT NULL`, `SpeakerLabel NVARCHAR(64) NOT NULL`, `EnglishText NVARCHAR(512) NOT NULL`, `HintText NVARCHAR(512) NULL`, `GrammarTag NVARCHAR(64) NULL`, `ContextTag NVARCHAR(64) NULL`, `FocusWord NVARCHAR(64) NULL`, `PronunciationNote NVARCHAR(256) NULL`, `HardWords NVARCHAR(1024) NULL` *(2026-06-18 — Q&A Excel Column I; pipe-separated `word:meaning` pairs on Interviewer rows; blank for other categories. Migration 39)*
 - Constraints: `PK_tblUtterance_UtteranceId`, `FK_tblUtterance_ScriptId_tblScript_ScriptId`, `IDX_tblUtterance_ScriptId`, `UK_tblUtterance_ScriptId_SequenceId`
 
 #### tblScriptVersion
@@ -1158,6 +1158,7 @@ Success (200):
 - Each category defines: fixed speaker labels, mandatory columns (D/G/H), row count limits, content rules, metadata defaults, and sample data
 - Speaker labels by category: GrammarDrill → `Speaker A/B`; Roleplay → role-based; MockInterview → `Interviewer/Candidate`; VocabularySprint → `Tutor/Learner`; FluencyDrill → `Speaker A/B`; QuestionAnswer → `Interviewer/Candidate` (Interviewer rows = questions, Candidate rows = model answer HIDDEN on-screen); RepracticeRound *(legacy)* → `Coach/Learner`
 - **Question & Answer** prompt-data rules (`ScriptRepository.GetPromptDataForCategoryAsync`): labels `Interviewer / Candidate`, rows 16–40, `E (GrammarTag)` required. `SessionModeType.QuestionAnswer = 7`; facilitator = `Interviewer`. Blind-answer UX + AI-as-Interviewer are Phase 2 (see `QuestionAnswerCategoryPlan.md`).
+- **Question & Answer "Hard Words" practice aid (2026-06-18):** optional **Excel Column I `HardWords`** (`NVARCHAR(1024)`, parsed positionally by `ExcelParserService`, cell 9) holds pipe-separated `word:meaning` pairs on **Interviewer rows** (Q&A only; blank elsewhere). A per-session toggle **`tblSession.ShowHardWords`** (set at create time, Q&A-only, default off) surfaces them as a **"Key words to remember"** panel on the **Interviewer/listen turn** (`listener-screen`). See the dedicated flow capture under *Live Session — Question & Answer Hard Words*.
 - Column D (HintText) mandatory for: `Vocabulary Sprint`, `Repractice Round`
 - Column G (FocusWord) mandatory for: `Mock Interview`, `Vocabulary Sprint`
 - Column H (PronunciationNote) mandatory on Tutor rows for: `Vocabulary Sprint`
@@ -1506,6 +1507,7 @@ Real-time lobby updates via SignalR at `/hubs/session`.
   - `AiVoiceName NVARCHAR(32) NULL` *(2026-06-18 — named Indian voice persona id: `aarav`|`ananya`|`vikram`|`meera`|`rohan`|`priya`)*
   - `AiSpeechRate DECIMAL(3,2) NULL` *(Phase 17 — TTS rate multiplier, e.g. 0.75 / 1.00 / 1.25)*
   - `AiQuestionDelaySec INT NULL` *(Phase 17 — pause (sec) after candidate finishes before AI reads next line)*
+  - `ShowHardWords BIT NOT NULL DEFAULT 0` *(2026-06-18 — Q&A "Show Hard Words" practice aid; set at create time, only ever true for Question & Answer sessions. Persisted via `uspSetSessionAiConfig` since Q&A always runs AI-on. Migration 39: `Docs/PostgreSQLMigration/39_add_hard_words.sql` — **applied to Supabase 2026-06-18**)*
 - Constraints: `PK_tblSession_SessionId`, `FK_tblSession_HostUserId_tblUser_UserId`, `FK_tblSession_ScriptId_tblScript_ScriptId`, `UK_tblSession_JoinCode` (filtered `IsDeleted = 0`), `IDX_tblSession_Status`, `IDX_tblSession_HostUserId`, `IDX_tblSession_JoinCode`
 - Valid status values: `LOBBY`, `ACTIVE`, `PAUSED`, `COMPLETED`, `ABANDONED`
 
@@ -1532,7 +1534,7 @@ Real-time lobby updates via SignalR at `/hubs/session`.
 | `uspInsertSession` | `@SessionName`, `@SessionMode`, `@MaxMembers`, `@SessionDuration`, `@HostUserId`, `@ScriptId`, `@RoomExpiryMinutes`, `@CreatedBy`, `@IPAddress` | OUTPUT `@SessionId BIGINT`, `@JoinCode NVARCHAR(8)` |
 | `uspInsertSessionMember` | `@SessionId`, `@UserId`, `@SlotIndex`, `@SlotName`, `@IsHost`, `@CreatedBy`, `@IPAddress` | `SessionMemberId` (non-query) |
 | `uspInsertAiSessionMember` *(Phase 17)* | `@SessionId`, `@UserId`, `@SlotIndex`, `@SlotName`, `@CreatedBy`, `@IPAddress` | non-query; inserts `IsAi=1`, `IsReady=1`, `IsHost=0`; slot-occupied guard only (no duplicate-user guard) |
-| `uspSetSessionAiConfig` *(Phase 17; +`@AiVoiceName` 2026-06-18)* | `@SessionId`, `@AiEnabled`, `@AiVoiceGender`, `@AiVoiceName`, `@AiSpeechRate`, `@AiQuestionDelaySec`, `@UpdatedBy`, `@IPAddress` | non-query; UPDATE AI config on `tblSession`. **Positional** — `@AiVoiceName` is the 4th param (PG fn `uspsetsessionaiconfig` recreated via Migration 38: `Docs/PostgreSQLMigration/38_add_ai_voice_name.sql`, applied to Supabase). |
+| `uspSetSessionAiConfig` *(Phase 17; +`@AiVoiceName` 2026-06-18; +`@ShowHardWords` 2026-06-18)* | `@SessionId`, `@AiEnabled`, `@AiVoiceGender`, `@AiVoiceName`, `@AiSpeechRate`, `@AiQuestionDelaySec`, `@ShowHardWords`, `@UpdatedBy`, `@IPAddress` | non-query; UPDATE AI config + `ShowHardWords` on `tblSession`. **Positional** — `@AiVoiceName` is the 4th param; `@ShowHardWords` is appended after `@AiQuestionDelaySec` (PG fn recreated via Migration 39: `Docs/PostgreSQLMigration/39_add_hard_words.sql`). Q&A always runs AI-on, so the Q&A-only flag rides this write. |
 | `uspGetSessionByJoinCode` | `@JoinCode` | RS1: `SessionId`, `SessionName`, `SessionMode`, `ScriptTitle`, `ScriptGrammarTag`, `Duration`, `MaxMembers`, `CurrentMemberCount`, `Status`; RS2: `SlotIndex`, `SlotName`, `IsOccupied`, `UserFullName`, `IsReady` |
 | `uspGetSessionBySessionId` | `@SessionId` | RS1: `SessionId`, `SessionName`, `JoinCode`, `SessionMode`, `ScriptTitle`, `MaxMembers`, `SessionDuration`, `Status` (may be absent — see drift note); RS2: `UserId`, `FullName`, `AvatarUrl`, `SlotIndex`, `SlotName`, `IsReady`, `IsHost` (active members only) |
 | `uspValidateJoinCode` | `@JoinCode` | OUTPUT: `@IsValid BIT`, `@SessionId BIGINT`, `@SessionName NVARCHAR(128)`, `@Status NVARCHAR(16)`, `@CurrentMemberCount INT` |
@@ -1620,6 +1622,7 @@ Body (CreateSessionRequestDto):
   - AiVoiceGender (string, optional/legacy): `Male` | `Female` — derived from the persona on the client; only validated if supplied
   - AiSpeechRate (decimal, required when AiEnabled): one of [0.75, 1.00, 1.25]
   - AiQuestionDelaySec (int, required when AiEnabled): one of [0, 1, 2, 3, 5]
+  - ShowHardWords (bool, optional): *(2026-06-18 — Q&A "Show Hard Words" practice aid)* default false. The client sends it only for Question & Answer scripts; the backend clamps it to false for every other category (`SessionService.CreateSessionAsync`: `ShowHardWords = isQuestionAnswer && dto.ShowHardWords`).
 ```
 
 **Response Contract:**
@@ -2444,6 +2447,8 @@ ApiResponse<TurnStateResponseDto>
   - HideScriptText (bool): *(Phase 2 — Question & Answer)* true when the session's script `Category == "Question & Answer"` (case-insensitive, trimmed). Computed in the SAME projection as `IsFacilitatorTurn` (`LiveSessionRepository.GetCurrentTurnAsync`, client-eval). When true the client hides the utterance text, grammar tag, and hint on BOTH the AI Interviewer turn (listener-screen) and the candidate's answer turn (speaker-screen) — the candidate only hears the question and sees their own live transcript. The recognizer still receives `expectedText` for scoring; it is never displayed. `AdvanceAiTurn` returns the same DTO shape, so it carries this flag too.
   - AiVoiceName (string?): *(2026-06-18)* named Indian voice persona id chosen for this session's AI. The narrating client (`session-room.maybeNarrateAiTurn`) resolves it via `getVoicePersona()` and speaks with `lang: 'en-IN'`, the persona's `pitch` + `voiceVariant`. Falls back to `AiVoiceGender` then the default persona (`aarav`).
   - AiVoiceGender (string?), AiSpeechRate (decimal?), AiQuestionDelaySec (int?): *(Phase 17)* session AI config, joined from `tblSession` onto the turn payload so the narrating client has rate/voice/delay without a second call. Null on non-AI sessions.
+  - ShowHardWords (bool): *(2026-06-18 — Q&A)* mirrors `tblSession.ShowHardWords`. Always present; only ever true for Question & Answer sessions created with the toggle on.
+  - HardWords (HardWordDto[] — `{word, meaning?}`): *(2026-06-18 — Q&A)* "Key words to remember". Parsed in `GetCurrentTurnAsync` from `Utterance.HardWords` (raw `word:meaning | …`) **only when `ShowHardWords && IsFacilitatorTurn`** (the Interviewer/listen turn) and capped to the first 5. Empty `[]` on the candidate's own answer turn (blind preserved) and on flag-off sessions. When empty, the raw `Utterance.HardWords` is also nulled so the model-answer vocabulary never leaks to the client. The frontend `listener-screen` renders these as a wrapped chip list; the optimistic `TURN_SHIFT` patch resets `hardWords: []` to avoid a stale flash before the canonical `getCurrentTurn` repopulates.
 ```
 
 **Business Rules:**
@@ -3551,6 +3556,37 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 - `SessionReportComponent.scoreboard`: filters `MemberScores` to `!isFacilitator && !isAi` for the performance leaderboard. Facilitator names shown in a separate "Facilitator" section; AI Voice Participant(s) shown in a separate "AI Partner" chip (Phase 17) — never ranked. `topScore` likewise excludes facilitators + AI.
 - **Mobile leaderboard layout (2026-06-17):** the report leaderboard renders as **stacked per-member cards on mobile** (`md:hidden`) and the full **table only on desktop** (`hidden md:block`) — honors the no-horizontal-scroll standard (the 5-column table was clipping Rating/Mistakes on phones). Header/stat sizes tightened to the mobile caps (≤22px scores).
 - `handleTurnShift()` in `SessionRoomComponent`: optimistic update sets `isFacilitatorTurn: false` (safe default — the canonical `loadCurrentTurn()` call immediately follows and sets the correct value).
+
+---
+
+### Live Session — Question & Answer Hard Words *(2026-06-18)*
+
+**Purpose:** Q&A practice aid. Each Q&A pair can carry hard/important words on the Interviewer row; when a session is created with the "Show Hard Words" toggle on, the candidate sees a **"Key words to remember"** panel while the AI interviewer reads the question — so they can recall and use those words in their spoken answer. Default OFF = pure blind interview. **Q&A only** (the toggle is hidden for every other category and clamped to false server-side).
+
+**Entry Points:** Excel upload (admin) authors Column I; create-session screen (`/session/create`) toggles it; the words render in `live-session` on the listen turn.
+
+**UI Trigger:** create-session "Show Hard Words" switch (shown only when the selected script's derived mode is `Question & Answer`); during the session, the panel renders automatically on the Interviewer/listen turn when the flag is on.
+
+**Data (Excel → DB):**
+- Excel **Column I `HardWords`** (positional cell 9, parsed by `ExcelParserService`; ≤1024 chars; empty-row check covers cols 1–9). Format: `word:meaning | word:meaning` (first `:` splits word/meaning).
+- Persisted to **`tblUtterance.HardWords NVARCHAR(1024) NULL`** through the bulk path (`ScriptRepository.CreateUtteranceTableParameter` → PG JSONB `HardWords` element / SQL Server `UtteranceTVP` column → `uspBulkInsertUtterance`) and the single-insert `uspInsertUtterance` (`@HardWords`). Carried in `UtteranceParseDto`, `Utterance`, `UtteranceResponseDto`, and the script-duplicate copy.
+
+**Session flag:**
+- `CreateSessionRequestDto.ShowHardWords` (bool, optional). `SessionService.CreateSessionAsync` sets `session.ShowHardWords = isQuestionAnswer && dto.ShowHardWords` (clamp). Q&A always forces AI on, so the flag persists via `uspSetSessionAiConfig` (`@ShowHardWords`, appended after `@AiQuestionDelaySec`). Column `tblSession.ShowHardWords BIT NOT NULL DEFAULT 0`.
+
+**Turn payload (read):**
+- `GetCurrentTurnAsync` projects `sessionRow.ShowHardWords` → `TurnStateResponseDto.ShowHardWords` and the raw `utterance.HardWords` → `UtteranceResponseDto.HardWords`. After materialization it parses into `TurnStateResponseDto.HardWords` (`HardWordDto{Word, Meaning?}`) **only when `ShowHardWords && IsFacilitatorTurn`** (the Interviewer/listen turn), capped to 5. On any other turn / flag off it clears both the list and the raw `Utterance.HardWords` — model-answer vocabulary never leaks to the candidate's answer turn.
+
+**Frontend render:**
+- `listener-screen.component`: renders `turnState.hardWords` as a wrapped chip list ("Key words to remember"); no horizontal scroll, ≤14px body (UIStandards). `session-room.handleTurnShift` resets `hardWords: []` in the optimistic patch so stale words never flash before `getCurrentTurn` repopulates.
+
+**Prompt/template:** `ExcelTemplateStandard.md §6.7` (Column I rule + sample) and §2.1/§5.1 (universal column map / header). Q&A prompt template (`tblScriptPromptTemplate`, category `Question & Answer`) updated via Migration 40 (`Docs/PostgreSQLMigration/40_update_qa_prompt_hard_words.sql`; SQL Server `SqlServerSeed/40_*`) to generate `hardWords` on Interviewer rows.
+
+**Failure / fallback:** missing/blank Column I → `HardWords` null → no panel (graceful). Malformed pairs: entries without `:` keep word + null meaning; blank entries skipped; >5 words truncated.
+
+**Verification:** Migrations 39 + 40 **applied to Supabase 2026-06-18** (columns + recreated functions + Q&A prompt row verified; the prompt-template table was empty so migration 37 was applied first to insert the canonical Q&A row). Still **UNVERIFIED on device** — listen-turn panel render + on-device Q&A flow not yet confirmed on APK (IV2201). Green build/typecheck only (§5a).
+
+**Notes on Drift:** new feature, no prior drift. Positional contracts that must stay in lockstep: Excel cell 9 ↔ `tblUtterance.HardWords`; C# TVP/JSONB column order ↔ `uspBulkInsertUtterance`; C# param order ↔ PG positional `uspsetsessionaiconfig` (`@ShowHardWords` 7th).
 
 ---
 

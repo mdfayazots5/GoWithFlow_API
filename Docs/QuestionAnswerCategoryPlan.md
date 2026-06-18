@@ -1,6 +1,7 @@
 # Question & Answer Category — Phase-Wise Implementation Plan
 
-> Status: **Phases 1–3 CODE COMPLETE (build-verified) — UNVERIFIED ON DEVICE.** Created 2026-06-18.
+> Status: **Phases 1–4 CODE COMPLETE (build-verified) — UNVERIFIED ON DEVICE.** Created 2026-06-18.
+> Phase 4 = "Hard Words" practice aid (Excel Column I + ShowHardWords toggle + listener "Key words" panel). Migrations 39 + 40 APPLIED to Supabase 2026-06-18; on-device APK check still owed.
 > Remaining to ship: on-device APK verification (IV2201) of the blind Q&A flow + report render; then Phase 1.b leftovers
 > (Q&A prompt-template seed, ExcelTemplateStandard.md Q&A section). Phase 3 required no code — data routes by construction.
 > Owner roles: Product Manager (Priya) + Chief Architect (Ravi) + Frontend/Mobile (Kenji) +
@@ -90,6 +91,19 @@ Mic-ownership rule preserved: **AI narrates first, recognizer listens after — 
 - [x] **No new scoring code** — matches decision #3. Existing report's AI-evaluation/export path is the meaningful evaluation over the transcript.
 - [ ] **Render-verify (folds into the Phase 2 on-device check):** open a completed Q&A session's review and confirm the question shows on Interviewer turns and the transcript shows on Candidate turns. UNVERIFIED until then.
 - **Gate:** QA — PASSED at code level (data present + rendered by existing component). Visual confirmation pending with Phase 2 device check.
+
+### Phase 4 — "Hard Words" practice aid — ⚠️ CODE COMPLETE 2026-06-18, **UNVERIFIED ON DEVICE**
+**Decisions (user, 2026-06-18, via Clarify-&-Confirm):** new Excel **Column I `HardWords`** (multiple `word:meaning` pairs); shown **on the Interviewer/listen turn only**; **per-session toggle at create time** ("Show Hard Words", Q&A-only, default off); **update both** the Excel standard + the Q&A prompt template.
+- [x] **DB (Migration 39** — `Docs/PostgreSQLMigration/39_add_hard_words.sql`; SQL Server parity `SqlServerSeed/39_add_hard_words.sql`): `tblUtterance.HardWords NVARCHAR(1024) NULL` + `tblSession.ShowHardWords BIT NOT NULL DEFAULT 0`; extended `uspBulkInsertUtterance`/`uspInsertUtterance` (HardWords) + `uspSetSessionAiConfig` (`@ShowHardWords`). **APPLIED to Supabase 2026-06-18** — verified: both columns present; `uspsetsessionaiconfig` now 9 args, `uspinsertutterance` 12 args.
+- [x] **Parser:** `ExcelParserService` reads cell 9 (Column I), ≤1024 validation, empty-row check 1–9. Carried through `UtteranceParseDto` → bulk TVP/JSONB + single insert + script-duplicate copy + `GetUtterances` projection.
+- [x] **API:** `CreateSessionRequestDto.ShowHardWords` (clamped to Q&A in `SessionService`); `TurnStateResponseDto.ShowHardWords` + `HardWords` (`HardWordDto[]`); `GetCurrentTurnAsync` parses → list **only on `ShowHardWords && IsFacilitatorTurn`**, cap 5, clears raw words otherwise (no model-answer leak).
+- [x] **Create-session UI:** "Show Hard Words" toggle shown only when `isQuestionAnswer()`; sends `showHardWords` for Q&A only.
+- [x] **Listener screen:** "Key words to remember" wrapped chip panel (UIStandards: ≤14px, no horizontal scroll). Optimistic `TURN_SHIFT` resets `hardWords: []`.
+- [x] **Templates:** `ExcelTemplateStandard.md` §2.1/§5.1/§6.7 (Column I rule + sample); Q&A prompt template **Migration 40** (`40_update_qa_prompt_hard_words.sql`; SQL Server `SqlServerSeed/40_*`). **APPLIED to Supabase 2026-06-18.** NOTE: the live `tblscriptprompttemplate` was found EMPTY (migration 37 / migration-19 category seeds had never been applied to this DB), so migration 37 was applied first to insert the canonical Q&A row, then 40 updated it. Q&A prompt now `prompttemplateid=1`, length 6418, contains the HardWords / Column I rules. (Upload still falls back to the locally-built prompt — `GetPromptDataForCategoryAsync` mandatory-columns string also updated for HardWords.) The other six category prompt rows were ALSO seeded 2026-06-18 by applying migration 19 (`19_add_script_prompt_template.sql`, `ON CONFLICT DO NOTHING`) — `tblscriptprompttemplate` now holds all 7 rows (Fluency Drill, Grammar Drill, Mock Interview, Question & Answer, Repractice Round, Roleplay, Vocabulary Sprint).
+- [x] **Builds clean:** backend `dotnet build` 0/0; frontend `tsc --noEmit` exit 0.
+- [x] Migrations 39 + 40 applied to Supabase (2026-06-18).
+- [ ] **MANDATORY BEFORE SIGN-OFF — on-device APK verification (IV2201):** (a) upload a Q&A sheet with Column I; (b) create a Q&A session with "Show Hard Words" ON → on the AI Interviewer/listen turn the "Key words to remember" panel shows the words; with it OFF the panel never shows; (c) words never appear on the candidate's own answer turn. Green build is NOT acceptance (§5a). **Currently UNVERIFIED — needs device check.**
+- **Gate:** Architecture + Standards + QA — PASSED at build level. On-device + render verification PENDING.
 
 ---
 

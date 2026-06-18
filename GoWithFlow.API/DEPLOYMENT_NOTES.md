@@ -44,7 +44,7 @@
 - ☐ `/api/health` returns `Healthy`.
 - ☐ `/api/health/db` confirms SQL Server connectivity.
 - ☐ `/api/health/detailed` returns structured per-check status output.
-- ☐ Auth endpoints are working: `send-otp`, `verify-otp`, `refresh-token`, `logout`.
+- ☐ Auth endpoints are working: `login`, `register`, `refresh-token`, `logout`.
 - ☐ Admin report export and user report Excel generation are working.
 - ☐ Script upload and sample template download are working.
 - ☐ SignalR hubs connect successfully for both `/hubs/session` and `/hubs/live-session`.

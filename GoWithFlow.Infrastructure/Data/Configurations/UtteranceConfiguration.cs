@@ -39,6 +39,10 @@ public sealed class UtteranceConfiguration : IEntityTypeConfiguration<Utterance>
 		builder.Property(utterance => utterance.PronunciationNote)
 			.HasMaxLength(256);
 
+		// Question & Answer hard-words list (pipe-separated word:meaning pairs). Nullable; other categories leave it blank.
+		builder.Property(utterance => utterance.HardWords)
+			.HasMaxLength(1024);
+
 		ConfigureAuditColumns(builder);
 
 		builder.HasIndex(utterance => utterance.ScriptId)

@@ -43,6 +43,7 @@
 | `tblsessionmember` | Who was in which session slot | `tblsession`, `tbluser` |
 | `tblsessioninvitation` | Push-based role assignment invitations | `tblsession`, `tbluser` |
 | `tblaudioarchive` | R2 audio recording references per session | `tblsession`, `tbluser` |
+| `tblsessionrecording` | Consolidated session recording rows (added post-migration-31; no enforced FK) | (none enforced) |
 | `tbluservocabulary` | Focus words extracted from sessions | `tbluser`, `tblsession` |
 | `tblsession` | Session records (lobby → completed) | `tbluser`, `tblscript` |
 | `tblweeklychallenge` | Weekly speaking challenge definitions | `tblscript` |
@@ -55,7 +56,6 @@
 | `tbladminnote` | Admin notes written about users | `tbluser` |
 | `tblusergoal` | Learning goals set by users | `tbluser` |
 | `tbldashboardmetric` | Daily dashboard metric snapshots | none |
-| `tblotpverification` | OTP verification records | none |
 
 ---
 
@@ -98,7 +98,6 @@ tblusergoal            → tbluser
 tblcohort              ← tbluser.cohortid FK (ON DELETE SET NULL)
 
 tbldashboardmetric     → none
-tblotpverification     → none
 ```
 
 ---
@@ -132,7 +131,6 @@ UNION ALL SELECT 'tbluserstreak',         COUNT(*) FROM tbluserstreak
 UNION ALL SELECT 'tbladminnote',          COUNT(*) FROM tbladminnote
 UNION ALL SELECT 'tblusergoal',           COUNT(*) FROM tblusergoal
 UNION ALL SELECT 'tbldashboardmetric',    COUNT(*) FROM tbldashboardmetric
-UNION ALL SELECT 'tblotpverification',    COUNT(*) FROM tblotpverification
 UNION ALL SELECT 'tblcohort',             COUNT(*) FROM tblcohort
 UNION ALL SELECT 'tbluser (PRESERVED)',   COUNT(*) FROM tbluser
 ORDER BY tbl;
@@ -171,6 +169,7 @@ DELETE FROM public.tblturnstate;
 DELETE FROM public.tblsessionmember;
 DELETE FROM public.tblsessioninvitation;
 DELETE FROM public.tblaudioarchive;
+DELETE FROM public.tblsessionrecording;   -- added 2026-06-18 (post-migration-31 table; no FK, holds consolidated session recordings)
 DELETE FROM public.tbluservocabulary;
 
 -- ── Layer 4: Sessions ─────────────────────────────────────────────────────────
@@ -193,7 +192,6 @@ DELETE FROM public.tblusergoal;
 
 -- ── Layer 8: Metrics and auth records ────────────────────────────────────────
 DELETE FROM public.tbldashboardmetric;
-DELETE FROM public.tblotpverification;
 
 -- ── Layer 9: User counter reset (users preserved, counters zeroed) ───────────
 UPDATE public.tbluser
@@ -368,35 +366,27 @@ SELECT COUNT(*) FROM public.tbluser;           -- expect: unchanged from pre-che
 
 Run after any bulk delete to keep identity sequences consistent. Prevents gaps and application-side confusion on first insert after reset.
 
+> **Use this generic block** (replaced the old hard-coded per-column list on 2026-06-18 — that list had a
+> wrong PK name for `tblsessioninvitation` and missed new tables). It resets EVERY sequence in `public`
+> to its own table's `MAX(pk)+1`, so emptied tables go to 1 and **`tbluser` correctly stays above its
+> real max** (users preserved). No column names to maintain; covers any future table automatically.
+
 ```sql
-BEGIN;
-
-SELECT SETVAL(pg_get_serial_sequence('tblscript',               'scriptid'),               COALESCE((SELECT MAX(scriptid)               FROM tblscript),               0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblscriptversion',        'scriptversionid'),        COALESCE((SELECT MAX(scriptversionid)        FROM tblscriptversion),        0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblutterance',            'utteranceid'),            COALESCE((SELECT MAX(utteranceid)            FROM tblutterance),            0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblsession',              'sessionid'),              COALESCE((SELECT MAX(sessionid)              FROM tblsession),              0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblsessionmember',        'sessionmemberid'),        COALESCE((SELECT MAX(sessionmemberid)        FROM tblsessionmember),        0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblsessioninvitation',    'sessioninvitationid'),    COALESCE((SELECT MAX(sessioninvitationid)    FROM tblsessioninvitation),    0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblturnstate',            'turnstateid'),            COALESCE((SELECT MAX(turnstateid)            FROM tblturnstate),            0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tbllistenerfeedback',     'listenerfeedbackid'),     COALESCE((SELECT MAX(listenerfeedbackid)     FROM tbllistenerfeedback),     0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblmistake',              'mistakeid'),              COALESCE((SELECT MAX(mistakeid)              FROM tblmistake),              0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblvoiceanalysis',        'voiceanalysisid'),        COALESCE((SELECT MAX(voiceanalysisid)        FROM tblvoiceanalysis),        0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblrepracticesession',    'repracticesessionid'),    COALESCE((SELECT MAX(repracticesessionid)    FROM tblrepracticesession),    0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblrepracticeutterance',  'repracticeutteranceid'),  COALESCE((SELECT MAX(repracticeutteranceid)  FROM tblrepracticeutterance),  0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblweeklychallenge',      'challengeid'),            COALESCE((SELECT MAX(challengeid)            FROM tblweeklychallenge),      0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblchallengeattempt',     'challengeattemptid'),     COALESCE((SELECT MAX(challengeattemptid)     FROM tblchallengeattempt),     0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblaudioarchive',         'audioarchiveid'),         COALESCE((SELECT MAX(audioarchiveid)         FROM tblaudioarchive),         0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tbluservocabulary',       'uservocabularyid'),       COALESCE((SELECT MAX(uservocabularyid)       FROM tbluservocabulary),       0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblrefreshtoken',         'refreshtokenid'),         COALESCE((SELECT MAX(refreshtokenid)         FROM tblrefreshtoken),         0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tbluserbadge',            'userbadgeid'),            COALESCE((SELECT MAX(userbadgeid)            FROM tbluserbadge),            0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tbluserstreak',           'userstreakid'),           COALESCE((SELECT MAX(userstreakid)           FROM tbluserstreak),           0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tbladminnote',            'adminnoteid'),            COALESCE((SELECT MAX(adminnoteid)            FROM tbladminnote),            0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblusergoal',             'usergoalid'),             COALESCE((SELECT MAX(usergoalid)             FROM tblusergoal),             0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tbldashboardmetric',      'dashboardmetricid'),      COALESCE((SELECT MAX(dashboardmetricid)      FROM tbldashboardmetric),      0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblotpverification',      'otpverificationid'),      COALESCE((SELECT MAX(otpverificationid)      FROM tblotpverification),      0) + 1, FALSE);
-SELECT SETVAL(pg_get_serial_sequence('tblcohort',               'cohortid'),               COALESCE((SELECT MAX(cohortid)               FROM tblcohort),               0) + 1, FALSE);
-
-COMMIT;
+DO $$
+DECLARE r RECORD; mx BIGINT;
+BEGIN
+  FOR r IN
+    SELECT s.relname AS seqname, t.relname AS tabname, a.attname AS colname
+    FROM pg_class s
+    JOIN pg_depend d ON d.objid = s.oid AND d.deptype IN ('a','i')
+    JOIN pg_class t ON t.oid = d.refobjid
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+    WHERE s.relkind = 'S' AND t.relnamespace = 'public'::regnamespace
+  LOOP
+    EXECUTE format('SELECT COALESCE(MAX(%I),0)+1 FROM public.%I', r.colname, r.tabname) INTO mx;
+    EXECUTE format('SELECT setval(%L, %s, false)', 'public.'||r.seqname, mx);
+  END LOOP;
+END $$;
 ```
 
 ---
@@ -421,10 +411,6 @@ COMMIT;
 **Partial production cleanup** (remove only expired/stale data, not full reset):
 
 ```sql
--- Remove expired OTP records older than 24 hours
-DELETE FROM public.tblotpverification
-WHERE  expiresat < NOW() - INTERVAL '24 hours';
-
 -- Revoke expired refresh tokens older than 30 days
 DELETE FROM public.tblrefreshtoken
 WHERE  expiresat < NOW() - INTERVAL '30 days';
@@ -443,3 +429,5 @@ WHERE  metricdate < CURRENT_DATE - INTERVAL '90 days';
 | Date | Change | Author |
 |---|---|---|
 | 2026-06-03 | Initial version — full schema coverage through migration 31 | Project AI Engineer |
+| 2026-06-18 | **Mode A executed on production (Supabase)** — wiped all transactional data + scripts, users preserved (7). Added `tblsessionrecording` to Mode A + inventory; replaced Step 7 with the generic sequence-reset block (old list had a wrong `tblsessioninvitation` PK name). | Project AI Engineer |
+| 2026-06-18 | **Deep wipe (Steps 4 + 5) executed** — also cleared `tblcohort` (1→0, users unlinked via `cohortid = NULL`) and `tblscriptprompttemplate` (7→0). Only `tbluser` (7) remains. NOTE: deleting prompt templates removed the seeded category prompts incl. Q&A — re-run `PostgreSQLMigration/19_*` + `37_*` to restore the DB-sourced admin prompts (upload still works via the client `buildClaudePrompt` fallback meanwhile). | Project AI Engineer |

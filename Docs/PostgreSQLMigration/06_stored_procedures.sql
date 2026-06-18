@@ -160,24 +160,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- --------------------------------------------
--- uspInsertOtpVerification
--- --------------------------------------------
-CREATE OR REPLACE FUNCTION uspinsertotpverification(
-    p_mobilenumber VARCHAR(16),
-    p_otpcode      VARCHAR(8),
-    p_expiresat    TIMESTAMPTZ,
-    p_createdby    VARCHAR(128),
-    p_ipaddress    VARCHAR(64)
-) RETURNS TABLE (otpverificationid BIGINT) AS $$
-BEGIN
-    RETURN QUERY
-    INSERT INTO tblotpverification (mobilenumber, otpcode, expiresat, createdby, ipaddress)
-    VALUES (p_mobilenumber, p_otpcode, p_expiresat, p_createdby, p_ipaddress)
-    RETURNING tblotpverification.otpverificationid;
-END;
-$$ LANGUAGE plpgsql;
-
--- --------------------------------------------
 -- uspInsertRefreshToken
 -- --------------------------------------------
 CREATE OR REPLACE FUNCTION uspinsertrefreshtoken(
@@ -2461,73 +2443,6 @@ BEGIN
         p_isvalid   := TRUE;
         p_sessionid := v_tempid;
     END IF;
-END;
-$$ LANGUAGE plpgsql;
-
--- --------------------------------------------
--- uspVerifyOtp
--- SQL Server OUTPUT params → PostgreSQL OUT params
--- Multiple COMMIT TRAN → single transaction in caller; early returns just set OUT values
--- --------------------------------------------
-CREATE OR REPLACE FUNCTION uspverifyotp(
-    p_mobilenumber VARCHAR(16),
-    p_otpcode      VARCHAR(8),
-    p_updatedby    VARCHAR(128),
-    p_ipaddress    VARCHAR(64),
-    OUT p_isvalid  BOOLEAN,
-    OUT p_userid   BIGINT
-) RETURNS RECORD AS $$
-DECLARE
-    v_otpverificationid BIGINT      := 0;
-    v_storedotpcode     VARCHAR(8)  := '';
-    v_expiresat         TIMESTAMPTZ := NULL;
-    v_attemptcount      INT         := 0;
-    v_maxattempts       INT         := 3;
-BEGIN
-    p_isvalid := FALSE;
-    p_userid  := 0;
-
-    SELECT otp.otpverificationid, otp.otpcode, otp.expiresat, otp.attemptcount
-    INTO v_otpverificationid, v_storedotpcode, v_expiresat, v_attemptcount
-    FROM tblotpverification AS otp
-    WHERE otp.mobilenumber = p_mobilenumber
-      AND otp.isverified   = FALSE
-      AND otp.isdeleted    = FALSE
-    ORDER BY otp.otpverificationid DESC
-    LIMIT 1;
-
-    IF v_otpverificationid IS NULL OR v_otpverificationid = 0 THEN
-        RETURN;
-    END IF;
-
-    UPDATE tblotpverification
-    SET attemptcount = attemptcount + 1,
-        updatedby    = p_updatedby,
-        lastupdated  = NOW(),
-        ipaddress    = p_ipaddress
-    WHERE otpverificationid = v_otpverificationid;
-
-    IF v_attemptcount >= v_maxattempts THEN RETURN; END IF;
-    IF v_expiresat <= NOW()            THEN RETURN; END IF;
-    IF v_storedotpcode <> p_otpcode    THEN RETURN; END IF;
-
-    UPDATE tblotpverification
-    SET isverified  = TRUE,
-        verifiedat  = NOW(),
-        updatedby   = p_updatedby,
-        lastupdated = NOW(),
-        ipaddress   = p_ipaddress
-    WHERE otpverificationid = v_otpverificationid;
-
-    SELECT usr.userid INTO p_userid
-    FROM tbluser AS usr
-    WHERE usr.mobilenumber = p_mobilenumber
-      AND usr.isdeleted    = FALSE
-      AND usr.isactive     = TRUE
-    LIMIT 1;
-
-    p_isvalid := TRUE;
-    p_userid  := COALESCE(p_userid, 0);
 END;
 $$ LANGUAGE plpgsql;
 

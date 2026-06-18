@@ -49,13 +49,6 @@ SELECT SETVAL(
     FALSE
 );
 
--- tblOtpVerification
-SELECT SETVAL(
-    PG_GET_SERIAL_SEQUENCE('tblotpverification', 'otpverificationid'),
-    COALESCE((SELECT MAX(otpverificationid) FROM tblotpverification), 0) + 1,
-    FALSE
-);
-
 -- tblSession
 SELECT SETVAL(
     PG_GET_SERIAL_SEQUENCE('tblsession', 'sessionid'),

@@ -27,4 +27,8 @@ public sealed class CreateSessionRequestDto
 	public decimal? AiSpeechRate { get; set; }    // 0.75 | 1.00 | 1.25
 
 	public int? AiQuestionDelaySec { get; set; }  // 0 | 1 | 2 | 3 | 5
+
+	// Question & Answer only — "Show Hard Words" practice aid. When true, the Interviewer/listen turn
+	// surfaces the turn's key words to the candidate. Ignored (forced false) for other categories.
+	public bool ShowHardWords { get; set; }
 }
