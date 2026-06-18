@@ -131,12 +131,15 @@ public sealed class MistakeRepository : IMistakeRepository
 			return new MistakeSummaryResponseDto();
 		}
 
+		// Null-safe + provider-agnostic: the aggregate SP returns one row even with zero mistakes, where
+		// SUM(CASE...) over no rows is NULL — reading those as non-null int/decimal would throw a 500.
+		// Convert also bridges PostgreSQL BIGINT (long) ↔ SQL Server INT for the COUNT/SUM columns.
 		return new MistakeSummaryResponseDto
 		{
-			TotalMistakes = GetInt32(reader, "TotalMistakes"),
-			ResolvedMistakes = GetInt32(reader, "ResolvedMistakes"),
-			PendingMistakes = GetInt32(reader, "PendingMistakes"),
-			ImprovementPercent = GetDecimal(reader, "ImprovementPercent")
+			TotalMistakes = GetInt32Safe(reader, "TotalMistakes"),
+			ResolvedMistakes = GetInt32Safe(reader, "ResolvedMistakes"),
+			PendingMistakes = GetInt32Safe(reader, "PendingMistakes"),
+			ImprovementPercent = GetDecimalSafe(reader, "ImprovementPercent")
 		};
 	}
 
@@ -271,6 +274,20 @@ public sealed class MistakeRepository : IMistakeRepository
 	private static decimal GetDecimal(DbDataReader reader, string columnName)
 	{
 		return reader.GetDecimal(reader.GetOrdinal(columnName));
+	}
+
+	// Null-safe, provider-agnostic numeric reads for aggregate result sets (COUNT/SUM rows that can be
+	// NULL when there are no source rows, and that differ in width between PostgreSQL BIGINT and SQL Server INT).
+	private static int GetInt32Safe(DbDataReader reader, string columnName)
+	{
+		var ordinal = reader.GetOrdinal(columnName);
+		return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt32(reader.GetValue(ordinal));
+	}
+
+	private static decimal GetDecimalSafe(DbDataReader reader, string columnName)
+	{
+		var ordinal = reader.GetOrdinal(columnName);
+		return reader.IsDBNull(ordinal) ? 0m : Convert.ToDecimal(reader.GetValue(ordinal));
 	}
 
 	private static DateTime GetDateTime(DbDataReader reader, string columnName)

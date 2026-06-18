@@ -3586,7 +3586,9 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 
 **Verification:** Migrations 39 + 40 **applied to Supabase 2026-06-18** (columns + recreated functions + Q&A prompt row verified; the prompt-template table was empty so migration 37 was applied first to insert the canonical Q&A row). Still **UNVERIFIED on device** — listen-turn panel render + on-device Q&A flow not yet confirmed on APK (IV2201). Green build/typecheck only (§5a).
 
-**Notes on Drift:** new feature, no prior drift. Positional contracts that must stay in lockstep: Excel cell 9 ↔ `tblUtterance.HardWords`; C# TVP/JSONB column order ↔ `uspBulkInsertUtterance`; C# param order ↔ PG positional `uspsetsessionaiconfig` (`@ShowHardWords` 7th).
+**Notes on Drift:**
+- Positional contracts that must stay in lockstep: Excel cell 9 ↔ `tblUtterance.HardWords`; C# TVP/JSONB column order ↔ `uspBulkInsertUtterance`; C# param order ↔ PG positional `uspsetsessionaiconfig` (`@ShowHardWords` 7th).
+- **Fixed 2026-06-18 — optimistic-shift guard hid words after turn 1 (stale-state / client guard drift):** the "Key words" panel showed only on the FIRST interviewer turn. Cause: `session-room.handleTurnShift` blanks `hardWords: []` in the optimistic `TURN_SHIFT` patch (to avoid a stale flash), but `updateState`'s guard `state.turnIndex > current.turnIndex` then skipped applying the canonical `getCurrentTurn` response (same turnIndex as the optimistic patch) — so the real hard words never landed on any *shifted* turn (turn 1 worked only because the initial load has no optimistic patch). **Fix:** `updateState` now also applies the canonical state when `!amSpeaker` (a listener/AI-interviewer turn has no SpeakerScreen to re-arm, so it is safe to replace) — the guard still protects the active speaker's own turn from a mid-recording re-arm. Hard words now repopulate on every interviewer turn.
 
 ---
 
@@ -3772,6 +3774,8 @@ Handled structurally by the facilitator turn UI: facilitator turns render "Read 
 #### GET /api/mistakes/summary
 
 - Returns: total, resolved, pending, improvement-percentage for authenticated user
+- SP `uspGetMistakeSummaryByUserId` (aggregate, no GROUP BY → always returns exactly one row). Mapped in `MistakeRepository.GetMistakeSummaryAsync`.
+- **Notes on Drift (fixed 2026-06-18 — DB-contract drift / null-handling):** for a user with **zero mistakes** the row's `SUM(CASE…)` columns (`resolvedmistakes`/`pendingmistakes`) came back **NULL**, and the repo read them with a non-null `Int32` cast → `InvalidCastException` → HTTP 500 (`/user/my-mistakes` showed "Server error. Please try again later."). **Fix (two layers):** (1) **Migration 41** `Docs/PostgreSQLMigration/41_fix_mistake_summary_null_sums.sql` wraps the sums in `COALESCE(…,0)` so the SP never returns NULL — **applied to Supabase 2026-06-18**, verified `0/0/0/0.00` for a no-mistake user (SQL Server parity `SqlServerSeed/41_*`, `ISNULL`). (2) `MistakeRepository` now reads the four aggregate columns with `GetInt32Safe`/`GetDecimalSafe` (DBNull→0, `Convert` bridges PostgreSQL `BIGINT`↔SQL Server `INT`) so an SP drift can never 500 this again.
 
 #### GET /api/mistakes/grammar-progress
 
