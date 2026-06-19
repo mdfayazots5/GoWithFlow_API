@@ -98,8 +98,16 @@ gw-text / gw-text-muted / gw-card-border / gw-error / gw-warning / gw-success / 
 
 - **Touch targets ≥ 44px** for primary/interactive controls (`w-11 h-11`). Secondary icon buttons ≥ 40px
   (`w-10 h-10`). Form inputs/selects ≥ 44px (`h-11`), 48px (`h-12`) for prominent create/session forms.
+- **One page gutter, owned by the shell.** The horizontal/top gutter is provided **once** by the user
+  shell `.user-content-area` (`app.component`): `16px` sides + top on phones, `24px`/`20px` on tablet+
+  (`@media ≥768px`). **Page root containers must NOT add their own `px-4`/`pt-*`** — doing so double-pads
+  (content was being inset 32px/side and squeezed). Page roots are `max-w-lg mx-auto gwf-page-bottom …`
+  (max-width cap + centering + bottom clearance only). If an inner element needs to break out, do it
+  inside the page, not by re-adding a page gutter.
 - **Bottom padding** on scrollable user pages uses the safe-area-aware utility **`.gwf-page-bottom`**
-  (`calc(68px + env(safe-area-inset-bottom) + 16px)`) — never hardcoded `pb-28`.
+  (`calc(68px + env(safe-area-inset-bottom) + 16px)`) — never hardcoded `pb-28`. This is the **sole**
+  bottom/nav clearance; the shell no longer adds its own `padding-bottom` (that previously stacked ~164px
+  above the nav).
 - Full-screen / docked surfaces use `env(safe-area-inset-*)` (e.g. `pb-[max(1rem,env(safe-area-inset-bottom))]`).
 - Admin shell already handles safe area (`calc(84px + env(safe-area-inset-bottom))`) — match it.
 

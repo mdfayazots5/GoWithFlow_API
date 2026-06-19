@@ -1702,16 +1702,19 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 - **Native Listen path** (`ListenMediaService.java` `applyVoice`): mirrors the same logic — sets `Locale("en","IN")`
   (fallback UK→US via `isLanguageAvailable`) and picks the `variant`-th same-gender voice in that locale; per-line
   `variant` arrives in the `ListenMedia.start` queue. **UNVERIFIED on device until APK build.**
-- **⚠ KNOWN BUG (open, 2026-06-18) — male personas sound female on the APK.** Both gender selectors
-  (`TtsService.resolveVoiceIndex` and `ListenMediaService.applyVoice`) decide gender by checking whether the
-  device voice **name** contains the substring `"male"`/`"female"`. Android's Google `en-IN` voices are named with
-  opaque codes (`en-in-x-ene-local`, `en-in-x-end-local`, `en-in-x-cxx-network`…) that contain **neither** word, so
-  the same-gender filter matches nothing → both paths fall back to the engine's single default `en-IN` voice
-  (typically female) for **every** persona. Web is unaffected (browser voice names carry gender hints + pitch
-  varies). **Fix in progress:** a temporary diagnostic in `TtsService` (`dumpVoicesOnce()`, logs `[TTS-DIAG]` voice
-  names once on first `speak`) is shipped to capture the device's real `en-IN` voice list from IV2201; a correct
-  device-voice→gender map will then replace the substring heuristic in both paths and be verified on-device. The
-  diagnostic must be removed after the map is confirmed.
+- **Gender selection — voiceURI code map (FIXED + APK-VERIFIED 2026-06-19).** Earlier bug: both selectors
+  (`TtsService.resolveVoiceIndex` + `ListenMediaService.applyVoice`) decided gender by a `"male"`/`"female"`
+  substring in the voice **name**. On a real device the Google `en-IN` voices are all named **"English India"**
+  (the plugin's `name`) — no gender word — so the filter matched nothing and **every** persona fell back to one
+  default (female-sounding) voice. **Fix:** gender is now read from the **voiceURI code** (`en-in-x-<code>-local`).
+  Verified by ear on IV2201 (2026-06-19): **`ena`/`enc` = Female, `end`/`ene` = Male** (`TtsService.VOICE_GENDER`
+  + `voiceGender()`; mirrored in `ListenMediaService.voiceGender()` which reads Android `Voice.getName()` = the
+  code). `resolveVoiceIndex` also now filters to the **exact resolved locale** (`en-IN`) before the variant pick,
+  so personas keep the Indian accent. Result (verified): the 6 personas map to 6 distinct, correctly-gendered
+  en-IN voices — aarav→end-local, vikram→end-network, rohan→ene-local (Male); ananya→ena-local, meera→ena-network,
+  priya→enc-local (Female). The temporary `[TTS-DIAG]` diagnostic has been removed.
+- **Notes on Drift:** device voice `name` carries no gender — never gender-match on the plugin `name`; use the
+  voiceURI code. Extend `VOICE_GENDER`/`voiceGender()` as other locales' Google codes are confirmed by ear.
 - **AI session skips the invite screen:** because the AI fills every non-host slot, there are no guest slots to invite — on success the client navigates straight to `/session/lobby/{sessionId}` instead of `/session/invite`. Human (non-AI) sessions still go to the invite screen.
 
 **Notes on Known Drift Prevented:**
@@ -3600,7 +3603,7 @@ Hub payload: `{ tag: string, fromUserId: long }` → `listenerTagFlash.set(tagDa
 
 **Failure / fallback:** missing/blank Column I → `HardWords` null → no panel (graceful). Malformed pairs: entries without `:` keep word + null meaning; blank entries skipped; >5 words truncated.
 
-**Verification:** Migrations 39 + 40 **applied to Supabase 2026-06-18** (columns + recreated functions + Q&A prompt row verified; the prompt-template table was empty so migration 37 was applied first to insert the canonical Q&A row). **Migration 41** (`ShowHardWordsInAnswer` column + recreated `uspsetsessionaiconfig` with the new positional param) **applied to Supabase 2026-06-18** (verified: `tblsession.showhardwordsinanswer` = boolean NOT NULL default false; `uspsetsessionaiconfig` now has 10 args). Still **UNVERIFIED on device** — room-settings "Show Hard Words" toggle + bottom panel on both question and answer turns + on-device Q&A flow not yet confirmed on APK (IV2201). Green backend build + frontend `tsc --noEmit` only (§5a).
+**Verification:** Migrations 39 + 40 **applied to Supabase 2026-06-18** (columns + recreated functions + Q&A prompt row verified; the prompt-template table was empty so migration 37 was applied first to insert the canonical Q&A row). **Migration 41** (`ShowHardWordsInAnswer` column + recreated `uspsetsessionaiconfig` with the new positional param) **applied to Supabase 2026-06-18** (verified: `tblsession.showhardwordsinanswer` = boolean NOT NULL default false; `uspsetsessionaiconfig` now has 10 args). **APK-VERIFIED on IV2201 (2026-06-19):** built + installed the debug APK, ran an AI Q&A session (script 1). Confirmed: toggle defaults OFF (no panel); enabling the room-settings "Show Hard Words" pref shows the "KEY WORDS TO USE" panel at the BOTTOM of the candidate's answer turn carrying the question's words (`briefly / full stack / introduce`); the mic auto-started ("Listening…") with the panel present (room-level decoupling protected the recording); backend served `hardWords` on the answer turn while the vestigial DB `showHardWords`/`showHardWordsInAnswer` flags were both false (gating is the client pref).
 
 **Notes on Drift:**
 - **Control moved from per-session DB flag → client-side room preference (2026-06-18, same day).** Originally two create-session toggles (`ShowHardWords` + `ShowHardWordsInAnswer`) persisted to `tblSession` and gated the backend projection. Per user direction this was replaced by a single live **room-settings pref** (`SessionPreferencesService.showHardWords`, default false) that controls BOTH turns; create-session toggles removed; backend now sends words on every Q&A turn (gated by category, not flags) and the client shows/hides. **Trade-off accepted:** the key words now reach the device even when the toggle is off (a practice aid, not a secret) — "blind" is a display choice, not a server guarantee. The DB columns/DTO fields are left as harmless vestigial.
@@ -5335,6 +5338,17 @@ and the extra vertical padding pushed a `100dvh` page past the viewport → unwa
 - `.user-content-area.flush { padding: 0; }` — full-bleed pages own their entire layout +
   background; no light frame, no added height. Mirrors how admin routes render full-screen.
 - Keep `.no-bottom-pad` (zeroes only bottom padding) for non-full-bleed pages with no nav.
+
+**Single page gutter — double-padding removed (2026-06-19):** the shell `.user-content-area` is the
+**sole owner** of the page gutter. Previously it set `padding: 16px` AND every page root *also* added
+`px-4 pt-2` → **32px/side** horizontal + 24px top (cards looked cramped/narrow), and the shell's
+`padding-bottom: calc(80px + safe-area)` stacked on top of each page's `.gwf-page-bottom` (~84px) →
+~164px above the nav. Fixed by: (a) shell now `padding: 16px 16px 0` (phone) / `20px 24px 0` (≥768px),
+**no bottom padding** — `.gwf-page-bottom` is the only nav clearance; (b) **removed `px-4`/`pt-*` from
+all 17 user/session/scripts page root containers** (now `max-w-lg mx-auto gwf-page-bottom …`). Net per
+device: gutter 32→16px (phone) / 24px tablet, top 24→16px, bottom ~164→~84px. Rule codified in
+`UIStandards.md §6`. **APK-VERIFIED on IV2201 (2026-06-19)** — dashboard + Script Library render with a
+single ~16px gutter and full-width cards (the prior ~32px double-inset is gone).
 
 **Login redesign (`auth/login`):** **LIGHT theme as of 2026-06-17** (user-confirmed; rephrased to match
 the rest of the app per `UIStandards.md`). Previously a dark gradient — now `--gwf-bg` page, white card
