@@ -453,9 +453,19 @@ public sealed class LiveSessionService : ILiveSessionService
 			var activeMembers = await _liveSessionRepository.GetActiveSessionMembersBySessionIdAsync(sessionId, cancellationToken);
 			var practiceMinutes = ResolvePracticeMinutes(completedSession);
 
+			// Question & Answer is a free-form spoken answer with no single scripted "expected"
+			// sentence, so word-correction scoring / mistake extraction is not meaningful. The
+			// candidate keeps the spoken transcript + "what you said / expected" reference in the
+			// UI, but no mistakes are persisted for Q&A. Streaks/badges still accrue.
+			var skipMistakeExtraction = IsQuestionAndAnswerSession(completedSession);
+
 			foreach (var memberId in activeMembers.Select(sessionMember => sessionMember.UserId).Distinct())
 			{
-				await _mistakeService.SaveMistakesFromSessionAsync(sessionId, memberId, cancellationToken);
+				if (!skipMistakeExtraction)
+				{
+					await _mistakeService.SaveMistakesFromSessionAsync(sessionId, memberId, cancellationToken);
+				}
+
 				await _userService.UpsertStreakAsync(memberId, practiceMinutes, cancellationToken);
 				await _userService.CheckAndAwardBadgesAsync(memberId, cancellationToken);
 			}
@@ -721,6 +731,12 @@ public sealed class LiveSessionService : ILiveSessionService
 		// Accepts both canonical and legacy names.
 		return string.Equals(session.SessionMode, "Vocabulary Sprint", StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(session.SessionMode, "Vocabulary", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool IsQuestionAndAnswerSession(Session session)
+	{
+		// SessionMode stores the human-readable script category (e.g. "Question & Answer").
+		return string.Equals(session.SessionMode, "Question & Answer", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static int ResolvePracticeMinutes(Session session)

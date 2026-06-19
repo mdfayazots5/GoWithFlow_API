@@ -1676,6 +1676,7 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 
 **Frontend (Phase 17 — AI Voice Participant):**
 - `create-session.component.ts` has an "AI Voice Participant" toggle card. When ON it reveals three selects: **Voice** (6 named Indian voices from `AI_VOICES` → `aiVoiceName`; payload also sends the derived `aiVoiceGender` for back-compat), Speed (Slow/Normal/Fast → `aiSpeechRate` 0.75/1.00/1.25), Delay (0/1/2/3/5s → `aiQuestionDelaySec`). The payload includes these fields only when the toggle is on.
+- **AI sessions SKIP the lobby/ready page (2026-06-19).** After `createSession`, when the session is AI-solo — i.e. the AI toggle is ON **or** the derived mode is `Question & Answer` (Q&A force-enables the AI on the backend even if the toggle is off) — `create-session.component.ts` calls `SessionService.startSession(sessionId)` (REST `POST /api/sessions/{id}/start`) and on success redirects straight to `/live-session/room/{sessionId}`. The lobby route is never visited. Rationale: every non-host slot is already held by an always-`IsReady` AI, so the ready/start screen has nothing to wait for. **Fallback:** if auto-start returns `success:false` or errors, it degrades to `/session/lobby/{sessionId}` so the host can start manually. `SessionService.startSession` now unwraps the `ApiResponse<bool>` envelope (`success && data`) so a business failure (e.g. not all ready) is detected — a green HTTP 200 is not assumed to be success. Non-AI multi-human sessions are unchanged (invite → lobby → manual start).
 
 #### AI Voice Personas — Indian English (2026-06-18, shared by AI room + Listen)
 
@@ -2813,9 +2814,9 @@ ApiResponse<SessionSummaryResponseDto>
 2. Mark current active turn `COMPLETED` (if any exists)
 3. `UpdateSessionStatus` → `COMPLETED`
 4. For each distinct active member:
-   a. `SaveMistakesFromSessionAsync(sessionId, memberId)` — extracts mistakes from voice analysis
-   b. `UpsertStreakAsync(memberId, practiceMinutes)` — `practiceMinutes` = `ActualDurationSec / 60` (min 1) or `SessionDuration` if no actual duration
-   c. `CheckAndAwardBadgesAsync(memberId)`
+   a. `SaveMistakesFromSessionAsync(sessionId, memberId)` — extracts mistakes from voice analysis. **SKIPPED for `SessionMode == "Question & Answer"` (2026-06-19)** — Q&A is a free-form spoken answer with no single scripted "expected" sentence, so word-correction/mistake extraction is not meaningful. Gated by `IsQuestionAndAnswerSession(completedSession)` in `LiveSessionService.CompleteSessionAsync`. The candidate still keeps the spoken transcript + "what you said / expected" reference in the live feedback UI; nothing is persisted to `tblMistake` for Q&A.
+   b. `UpsertStreakAsync(memberId, practiceMinutes)` — `practiceMinutes` = `ActualDurationSec / 60` (min 1) or `SessionDuration` if no actual duration. **Still runs for Q&A** (streaks/badges accrue regardless of mistake extraction).
+   c. `CheckAndAwardBadgesAsync(memberId)` — **still runs for Q&A.**
 5. `GetSessionCompletionSummary(sessionId)` → `uspGetSessionCompletionSummary`
 6. Mistake counts in summary reflect persisted mistake records (extracted before summary built)
 
@@ -3455,7 +3456,8 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 
 - `SpeakerScreenComponent` imports `VoiceRecorderComponent` + `VoiceFeedbackComponent` as standalone components
 - `VoiceRecorderComponent` emits: `recordingComplete(VoiceSessionResult)`, `recordingStarted()`, `errorOccurred(string)`
-- `VoiceFeedbackComponent` receives: `@Input() result: VoiceSessionResult | null`
+- `VoiceFeedbackComponent` receives: `@Input() result: VoiceSessionResult | null`, `@Input() hideScoring: boolean` *(2026-06-19)*
+- **`hideScoring` — Q&A feedback simplification (2026-06-19):** `SpeakerScreenComponent` binds `[hideScoring]="!!turnState.hideScriptText"`. When true (Q&A blind-answer turns), `VoiceFeedbackComponent` suppresses the overall band banner, the Fluency/Confidence/Speed score strip, the word-level correction highlight row + legend, and the hesitation notice — only the plain **"You said / Expected"** comparison panel is shown (and it is forced visible regardless of `showDetailedBreakdown`). Pairs with the backend rule that skips `tblMistake` extraction for Q&A: the candidate sees the transcript-vs-expected reference but no word-correction scoring or saved mistakes. `RepracticeSpeakerComponent` does **not** pass `hideScoring` (Mistake-Repractice module keeps full scoring).
 - `VoiceRecognitionEngine` is `providedIn: 'root'` — single instance per app
 - `AudioActivityDetector`, `PronunciationScorer`, `TranscriptNormalizer` are all `providedIn: 'root'`
 
