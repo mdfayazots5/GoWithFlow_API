@@ -102,19 +102,18 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 			})
 			.FirstOrDefaultAsync(cancellationToken);
 
-		// Question & Answer "Show Hard Words" aid: parse the raw word:meaning list into structured words.
-		// Two independent flags decide when words are shown:
-		//   • ShowHardWords        → on the Interviewer/listen turn, show THIS utterance's words.
-		//   • ShowHardWordsInAnswer → on the candidate's own answer turn, show the words from the
-		//                             question being answered (the preceding interviewer utterance).
-		// When neither applies the words stay hidden so the blind design holds.
+		// Question & Answer "Key words" aid: the backend always carries the question's key words on the
+		// relevant turn; the client decides whether to show them (room-settings "Show Hard Words" pref).
+		// Gated to Q&A only (HideScriptText is the Q&A marker) so non-Q&A turns skip the extra lookup.
+		//   • Interviewer/question turn → this utterance's words.
+		//   • Candidate's answer turn   → the words from the question being answered (preceding utterance).
 		if (turn is not null)
 		{
-			if (turn.ShowHardWords && turn.IsFacilitatorTurn)
+			if (turn.HideScriptText && turn.IsFacilitatorTurn)
 			{
 				turn.HardWords = ParseHardWords(turn.Utterance.HardWords);
 			}
-			else if (turn.ShowHardWordsInAnswer && !turn.IsFacilitatorTurn)
+			else if (turn.HideScriptText && !turn.IsFacilitatorTurn)
 			{
 				// The candidate's answer row carries no words of its own; pull them from the most recent
 				// preceding utterance on this script that has hard words (the Interviewer's question).
@@ -134,7 +133,7 @@ public sealed class LiveSessionRepository : ILiveSessionRepository
 				turn.HardWords = [];
 			}
 
-			// Never ship the raw model-answer-derived words to the client unless they are being shown.
+			// When there are no words to carry, null the raw field so it is never sent half-populated.
 			if (turn.HardWords.Count == 0)
 			{
 				turn.Utterance.HardWords = null;
