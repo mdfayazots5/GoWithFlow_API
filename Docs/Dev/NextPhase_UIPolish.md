@@ -24,8 +24,20 @@ the latent build finding are **deferred to the next phase**.
 
 ## Deferred to next phase
 
-### 2. Header-icon consistency across the tab/list pages
-The list-page headers are inconsistent three ways:
+### 2. Header-icon consistency across the tab/list pages — ✅ DONE 2026-06-19 (APK-VERIFIED on IV2201)
+Standardized: every main tab/list page now shows the Listen-style left badge
+(`w-10 h-10 rounded-xl bg-gw-primary/10` + `i-lucide text-gw-primary`, size 20) before the title.
+Pages updated: script-library (BookOpen), session-list + session-history (History — moved from right→left),
+my-mistakes (AlertCircle), learning-goals (Target), vocabulary-bank (BookOpen), improvement-tracker/progress
+(TrendingUp), interview-performance (BarChart2), pronunciation-timeline (Volume2), my-invitations (Inbox),
+user-settings (User). **Profile was SKIPPED** — it's a hero-card layout (avatar + name `<h2>`), not a
+title/subtitle page-header, so the badge pattern doesn't apply; revisit only if a profile header is wanted.
+On-device verification: navigated all 10 routes via CDP — `badgeInHeading:true` for every page; Script Library
+header screenshotted matching the Listen badge.
+
+<details><summary>Original finding (for history)</summary>
+
+The list-page headers were inconsistent three ways:
 - **Listen** (`listen-picker`): rounded **icon badge on the LEFT**, before the title.
 - **Session History**: icon badge on the **RIGHT**, after the title.
 - **Script Library** (and several others): **no icon**, title only.
@@ -37,6 +49,7 @@ using the **Listen-style left-aligned badge** (`w-10 h-10 rounded-xl bg-gw-prima
 move to left), my-mistakes (AlertCircle), learning-goals (Target), vocabulary-bank (BookOpen),
 improvement-tracker/progress (TrendingUp), interview-performance, pronunciation-timeline, my-invitations,
 settings, profile. Verify rendered per page (§5a).
+</details>
 
 ### Latent build finding — `styles.scss` custom classes stripped from the built CSS
 The entire custom-class layer of `Frontend/src/styles/styles.scss` (`.gwf-card`, `.gwf-page-bottom`,

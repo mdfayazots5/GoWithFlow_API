@@ -68,8 +68,8 @@
 - JWT settings:
   - Issuer: `GoWithFlow`
   - Audience: `GoWithFlowApp`
-  - Access token expiry: 15 minutes
-  - Refresh token expiry: 7 days
+  - Access token expiry: 120 minutes (`AccessTokenExpiryMinutes`)
+  - Refresh token expiry: 30 days (`RefreshTokenExpiryDays`) — extended from 7 for "stay logged in"
 - OTP settings:
   - Expiry: 5 minutes
   - Max attempts: 3
@@ -402,9 +402,13 @@ Key queries:
 
 ### Authentication Business Logic
 
-- JWT claims: `UserId`, `FullName`, `Role`, `MobileNumber`; 15-minute expiry
+- JWT claims: `UserId`, `FullName`, `Role`, `MobileNumber`; 120-minute expiry
 - Frontend post-login: `ADMIN` → `/admin/dashboard`; `USER` → `/user/dashboard`; dashboard greeting falls back to `Member` if cache not ready
-- Refresh token: secure random, 7-day expiry, persisted in `tblRefreshToken`
+- Refresh token: secure random, **30-day** expiry, persisted in `tblRefreshToken`; **rotated** on every refresh (old revoked, new issued)
+- **Stay-logged-in / silent refresh (Frontend, 2026-06-22):**
+  - `AuthService.refreshToken()` now de-dupes a SINGLE in-flight refresh shared by ALL callers (HTTP `authInterceptor` 401 retry, SignalR `accessTokenFactory`, startup hydration) via `shareReplay`. This prevents the rotation race that previously logged users out the next day (two concurrent refreshes → loser sends a now-revoked token → `logout()`).
+  - `AuthService.ensureFreshSessionOnStartup()` (called from `AppComponent` constructor) decodes the access-token `exp`; if expired and a `gwf_refreshToken` exists, it silently refreshes once on launch so reopening the app lands in-session instead of on the login screen.
+  - Tokens persist in `localStorage` (`gwf_token`, `gwf_refreshToken`); `authGuard` gate is unchanged (token presence).
 - Role defaults to `USER` on registration
 - `uspUpdateUserLastLogin` updates `LastLoginDate`, `UpdatedBy`, `LastUpdated` only — streak is managed separately by `uspUpsertUserStreak`
 - No OTP flow exists: there is no `AuthController` OTP send/verify endpoint, and the OTP persistence layer (table + SPs) has been fully removed
@@ -784,6 +788,7 @@ Key queries: PostgreSQL deployment stores these routines as `public.uspgetuserby
 #### POST /api/users/profile/avatar
 
 - Multipart form file; validates type (jpg/jpeg/png/webp) and size (max `MaxFileSizeMB` from `FileStorageSettings`)
+- **Client crop + validation (Frontend `user-settings.component`, 2026-06-22):** the avatar picker (`accept=png/jpeg/webp`) first validates type and a **2 MB** size cap, showing a clear toast on violation (Item 7). Valid images open `AvatarCropperComponent` (self-contained square pan/zoom cropper, no external lib) which exports a normalized **512×512 JPEG (q0.9)** that is what gets uploaded (Item 6). Upload success/failure both surface a toast.
 - **Phase 10 (R2):** uploads to `gwf-avatars` bucket; key pattern `avatars/{userId}/{timestampMs}.{ext}`; saves R2 object key (not URL) to `tblUser.AvatarUrl`; returns presigned URL (1440-minute expiry)
 - `GET /api/users/profile` — if `AvatarUrl` is an R2 key (does not start with `/` or `http`), a fresh presigned URL is generated on every fetch; old URL-style values returned as-is (backwards compatible)
 
@@ -1411,6 +1416,39 @@ chips → new `setRepeat(mode)` — direct setter added alongside the existing `
 scattered Speed `MatMenu` + Repeat cycle button + separate `ListenVoicesSheetComponent` trigger
 (`ListenVoicesSheetComponent` file retained but no longer wired into the player).
 
+### Listen player fixes & additions (2026-06-22) — UNVERIFIED ON DEVICE
+
+> Built and build-green; **NOT yet APK-verified** (voice/UI — needs IV2201 check per Voice §6 / §5a).
+
+- **Item 1 — Settings sheet surface fixed.** The `preview-bottom-sheet` panel had **no defined
+  background** (Material container unstyled) so it floated over the dark player. Added a global
+  `.preview-bottom-sheet .mat-bottom-sheet-container` rule in `index.css` (solid `--gw-card-bg`,
+  rounded top, safe-area, max-height 85vh) **and** the sheet's own root now carries `bg-gw-card-bg`.
+- **Item 2 — Desktop had no audio.** Root cause: the JS loop hard-coded `lang:'en-IN'` (desktop has no
+  en-IN voice → silence) and `TtsService.resolveBestLang()` cached `en-IN` from an **empty** web voice
+  list (web `getVoices()` populates async). Fix: the loop no longer passes `lang` (TtsService resolves
+  en-IN→en-GB→en-US to whatever is installed); `getVoices()` retries until non-empty and never caches a
+  fallback derived from an empty list.
+- **Item 3 — First word clipped.** `TtsService.warmUp()` (idempotent, near-silent priming utterance at
+  volume 0) is called from `ListenScriptComponent.ngOnInit` within the nav gesture to spin up the engine
+  before the first real line.
+- **Item 4 — Practice / Repeat group (Settings sheet).** New engine state `practiceMode`,
+  `repeatCount` (1–3, default 2), `pauseToRepeat` — global Listen prefs persisted to `localStorage`
+  (`gwf_listen_practice`, `gwf_listen_repeat_count`, `gwf_listen_pause_to_repeat`), default OFF. When ON
+  the engine forces the **JS line loop on every platform** (`useNativeService()` returns false) so per-line
+  repeat + pause timing works; pause length ≈ estimated line duration (`estimateLineMs`, ~380 ms/word ÷ rate).
+  Native foreground media service still drives plain playback when practice is OFF.
+- **Item 8 — Transport prev/next now jump by QUESTION (music-app style).** `questionStarts` computed =
+  indices where `speakerLabel === roles()[0]` (the questioner; falls back to `[0]`). `next()` → start of
+  next question; `prev()` → restart current question if partway in, else previous question start.
+  Line-level stepping still available via `stepLine()` and the snap-to-line seek bar. Works on web + native
+  (index-based `seekTo`).
+- **Item 9 — Scroll-follow "Now playing" pill.** A MANUAL scroll suspends auto-follow (`autoFollow=false`)
+  so the list no longer yanks back on role/line change; a floating pill (chevron up/down toward the
+  off-screen playing line + "Now playing") appears and, on tap, re-centers and re-enables follow.
+  Programmatic scrolls are flagged (`beginProgrammaticScroll`) so they don't disable follow. Explicit
+  jumps (transport, line tap, seek) re-enable follow.
+
 ### Native Media Service (Android — lock screen / notification / background)
 
 On the APK, `ScriptPlaybackService` does **not** drive `TtsService` directly — it delegates to a native
@@ -1676,7 +1714,7 @@ HTTP 200 — ApiResponse<CreateSessionResponseDto>
 
 **Frontend (Phase 17 — AI Voice Participant):**
 - `create-session.component.ts` has an "AI Voice Participant" toggle card. When ON it reveals three selects: **Voice** (6 named Indian voices from `AI_VOICES` → `aiVoiceName`; payload also sends the derived `aiVoiceGender` for back-compat), Speed (Slow/Normal/Fast → `aiSpeechRate` 0.75/1.00/1.25), Delay (0/1/2/3/5s → `aiQuestionDelaySec`). The payload includes these fields only when the toggle is on.
-- **AI sessions SKIP the lobby/ready page (2026-06-19).** After `createSession`, when the session is AI-solo — i.e. the AI toggle is ON **or** the derived mode is `Question & Answer` (Q&A force-enables the AI on the backend even if the toggle is off) — `create-session.component.ts` calls `SessionService.startSession(sessionId)` (REST `POST /api/sessions/{id}/start`) and on success redirects straight to `/live-session/room/{sessionId}`. The lobby route is never visited. Rationale: every non-host slot is already held by an always-`IsReady` AI, so the ready/start screen has nothing to wait for. **Fallback:** if auto-start returns `success:false` or errors, it degrades to `/session/lobby/{sessionId}` so the host can start manually. `SessionService.startSession` now unwraps the `ApiResponse<bool>` envelope (`success && data`) so a business failure (e.g. not all ready) is detected — a green HTTP 200 is not assumed to be success. Non-AI multi-human sessions are unchanged (invite → lobby → manual start).
+- **AI sessions SKIP the lobby/ready page (2026-06-19; APK-VERIFIED on IV2201).** After `createSession`, when the session is AI-solo — i.e. the AI toggle is ON **or** the derived mode is `Question & Answer` (Q&A force-enables the AI on the backend even if the toggle is off) — `create-session.component.ts` calls `SessionService.startSession(sessionId)` (REST `POST /api/sessions/{id}/start`) and on success redirects straight to `/live-session/room/{sessionId}`. The lobby route is never visited. *(Verified on device: Q&A create with AI toggle OFF went `/session/create → /live-session/room/{id}` with no `/session/lobby` in between.)* Rationale: every non-host slot is already held by an always-`IsReady` AI, so the ready/start screen has nothing to wait for. **Fallback:** if auto-start returns `success:false` or errors, it degrades to `/session/lobby/{sessionId}` so the host can start manually. `SessionService.startSession` now unwraps the `ApiResponse<bool>` envelope (`success && data`) so a business failure (e.g. not all ready) is detected — a green HTTP 200 is not assumed to be success. Non-AI multi-human sessions are unchanged (invite → lobby → manual start).
 
 #### AI Voice Personas — Indian English (2026-06-18, shared by AI room + Listen)
 
@@ -3457,7 +3495,7 @@ Thresholds are set at runtime via `configure()` — values differ between deskto
 - `SpeakerScreenComponent` imports `VoiceRecorderComponent` + `VoiceFeedbackComponent` as standalone components
 - `VoiceRecorderComponent` emits: `recordingComplete(VoiceSessionResult)`, `recordingStarted()`, `errorOccurred(string)`
 - `VoiceFeedbackComponent` receives: `@Input() result: VoiceSessionResult | null`, `@Input() hideScoring: boolean` *(2026-06-19)*
-- **`hideScoring` — Q&A feedback simplification (2026-06-19):** `SpeakerScreenComponent` binds `[hideScoring]="!!turnState.hideScriptText"`. When true (Q&A blind-answer turns), `VoiceFeedbackComponent` suppresses the overall band banner, the Fluency/Confidence/Speed score strip, the word-level correction highlight row + legend, and the hesitation notice — only the plain **"You said / Expected"** comparison panel is shown (and it is forced visible regardless of `showDetailedBreakdown`). Pairs with the backend rule that skips `tblMistake` extraction for Q&A: the candidate sees the transcript-vs-expected reference but no word-correction scoring or saved mistakes. `RepracticeSpeakerComponent` does **not** pass `hideScoring` (Mistake-Repractice module keeps full scoring).
+- **`hideScoring` — Q&A feedback simplification (2026-06-19; APK-VERIFIED on IV2201):** `SpeakerScreenComponent` binds `[hideScoring]="!!turnState.hideScriptText"`. When true (Q&A blind-answer turns), `VoiceFeedbackComponent` suppresses the overall band banner, the Fluency/Confidence/Speed score strip, the word-level correction highlight row + legend, and the hesitation notice — only the plain **"You said / Expected"** comparison panel is shown (and it is forced visible regardless of `showDetailedBreakdown`). *(Verified on device: feedback DOM on a Q&A answer turn had `band-banner/score-strip/word-highlight-row/hesitation-row` all absent and only `.detail-panel` present.)* Pairs with the backend rule that skips `tblMistake` extraction for Q&A: the candidate sees the transcript-vs-expected reference but no word-correction scoring or saved mistakes. `RepracticeSpeakerComponent` does **not** pass `hideScoring` (Mistake-Repractice module keeps full scoring).
 - `VoiceRecognitionEngine` is `providedIn: 'root'` — single instance per app
 - `AudioActivityDetector`, `PronunciationScorer`, `TranscriptNormalizer` are all `providedIn: 'root'`
 
@@ -4669,6 +4707,7 @@ All 7 items implemented:
 - Framework: Capacitor 8.4.0 wrapping Angular 19 + Vite (AnalogJS) web app
 - App ID: `com.gowithflow.app`
 - App Name: `GoWithFlow`
+- **App icon (2026-06-22, "Voice-wave G"):** adaptive vector icon — background `@color/ic_launcher_background` = brand deep blue `#3D5A99`; foreground `@drawable/ic_launcher_foreground` = white circular **G** (open right) with rounded sound-wave bars in its mouth, centre bar accent orange `#E07B39`; `<monochrome>` layer added (themed icons). Both `mipmap-anydpi-v26/ic_launcher.xml` + `ic_launcher_round.xml` repointed from the stock `@mipmap/ic_launcher_foreground` to the new vector. **Residual:** legacy raster `mipmap-*/ic_launcher*.png` (pre-API-26 fallback) still show the old Bugdroid art — regenerating them needs a rasterizer (none available in this env); API 26+ (virtually all devices) shows the new icon. UNVERIFIED — needs APK build + on-device check.
 - **App Version: `1.6` (versionCode 9)** — set in `Frontend/android/app/build.gradle`. History: 1.1.1 (vc 3) → 1.2 (vc 4, 2026-06-05: Web Speech secure-context/capability fix) → 1.2 rebuild (vc 5, 2026-06-05: + lobby `JoinLobby`/`MEMBER_JOINED` realtime fix) → 1.3 (vc 6, 2026-06-05: production distribution build from current `main`, no logic change) → 1.4 (vc 7, 2026-06-06: production distribution build for sharing, includes Session Room UX redesign phases 0–5, no new logic change) → 1.5 (vc 8, 2026-06-08: production distribution build from current `main`, no new logic change) → 1.6 (vc 9, 2026-06-17: production distribution build for sharing from current `main`, no new logic change). Bump `versionCode` on every distributable build (keep `versionName` for user-facing releases).
 - Web Dir: `dist/analog/public` (Vite production build output)
 - Android Scheme: `https` — required for JWT cookies and SignalR auth to function correctly on device
